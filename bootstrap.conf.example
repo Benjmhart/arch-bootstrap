@@ -1,0 +1,60 @@
+# arch-bootstrap configuration
+#
+# Copy to `bootstrap.conf` and fill in. That file is gitignored -- it holds the
+# person- and machine-specific values, which is what keeps bootstrap.sh itself
+# free of anything private and safe to publish.
+#
+# You do not have to create it by hand: run ./bootstrap.sh and stage 00 will
+# offer to generate it interactively on first run.
+#
+# Every value here can also be supplied as an environment variable, which takes
+# precedence over nothing -- the config file is sourced after the defaults, so
+# the file wins. Export a value and comment the line out here if you want the
+# environment to win.
+
+# ---------------------------------------------------------------- required-ish
+
+# Bare git repo holding your dotfiles, checked out with --work-tree=$HOME.
+# SSH remotes are the normal case, and are why stage 05 is a hard gate.
+DOTFILES_REMOTE="git@github.com:you/your-dotfiles.git"
+
+# Repo holding your password vault and other secrets. Leave empty to skip
+# stage 35 entirely.
+SECRETS_REMOTE=""
+
+# ---------------------------------------------------------------- optional
+
+# Absolute path to an Obsidian vault. Leave empty to skip the Obsidian sync
+# stages (55 and the unit generation in 60) completely.
+OBSIDIAN_VAULT=""
+
+# Set ONLY if you use a non-standard config root, e.g. "$HOME/.configure".
+# Leave empty for the standard ~/.config.
+#
+# If you do set it, note that systemd user units still live in ~/.config/systemd/user
+# regardless -- systemd does not honour XDG_CONFIG_HOME for unit lookup. The script
+# already handles that; it is called out here because it surprises people.
+CONFIG_HOME_OVERRIDE=""
+
+# Shell to chsh into during stage 40.
+LOGIN_SHELL="zsh"
+
+# URL of a precompiled SSH key-transfer helper binary, if you have one. Stage 05
+# fetches it over plain HTTPS before anything else, because it needs no
+# credentials to download -- that is what breaks the chicken-and-egg where
+# cloning your dotfiles requires a key that lives in your dotfiles.
+#
+# Leave empty and stage 05 will instead offer to ssh-keygen and walk you through
+# registering the public key by hand.
+KEYXFER_URL=""
+
+# ---------------------------------------------------------------- paths
+
+#DOTFILES_DIR="$HOME/.dot"
+#SECRETS_DIR="$HOME/secrets"
+#XMONAD_DIR="$HOME/.xmonad"
+
+# Major node version to pin. Native modules (better-sqlite3 in obsidian-headless,
+# for one) are compiled against a specific NODE_MODULE_VERSION, so a floating
+# node breaks them with ERR_DLOPEN_FAILED.
+#NODE_MAJOR="24"

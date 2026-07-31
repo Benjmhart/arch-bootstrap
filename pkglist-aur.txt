@@ -1,0 +1,9 @@
+claude-desktop
+google-chrome
+lightworks
+nitrogen
+otf-hasklig
+pacmixer
+rambox-pro-bin
+yay
+zoom
