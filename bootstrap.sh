@@ -720,14 +720,11 @@ stage_session() {
     todo "expected it to arrive with the dotfiles; check the tree"
   fi
 
-  # User units must survive logout, or anything you enable dies with the session.
-  if loginctl show-user "$USER" 2>/dev/null | grep -q 'Linger=yes'; then
-    ok "lingering already enabled"
-  else
-    info "enabling lingering so systemd user units survive logout"
-    run sudo loginctl enable-linger "$USER"
-    did "lingering enabled"
-  fi
+  # Deliberately NOT enabling lingering here. systemd starts a user manager at login
+  # and pulls in default.target, so `WantedBy=default.target` units come up by
+  # themselves every session. Linger governs one thing only -- whether user units keep
+  # running while you are logged OUT -- and on a single-user desktop that window is
+  # usually worth nothing. It stays opt-in; see the note in the services stage.
 }
 
 # --------------------------------------------------------------------------- 50
@@ -933,6 +930,8 @@ EOF
   if [[ -f $XDG_CONFIG_HOME/obsidian-headless/auth_token ]]; then
     run systemctl --user enable --now obsidian-sync.service
     did "obsidian-sync enabled and started"
+    info "the unit is session-scoped: it starts at login and stops with your last"
+    info "session. To keep syncing while logged out: sudo loginctl enable-linger \$USER"
   else
     warn "no obsidian-headless auth token -- NOT starting the daemon"
     todo "run the obsidian stage first, then: ./bootstrap.sh --redo services"
@@ -956,7 +955,6 @@ stage_verify() {
   [[ -n $SECRETS_REMOTE  ]] && check "secrets repo present"  "[ -d '$SECRETS_DIR' ]"
   [[ -d $XMONAD_DIR ]]      && check "xmonad binary built"   "command -v xmonad"
   check "nvm present"                   "[ -s \"\${NVM_DIR:-\$HOME/.nvm}/nvm.sh\" ]"
-  check "lingering enabled"             "loginctl show-user '$USER' | grep -q Linger=yes"
 
   if [[ -n $OBSIDIAN_VAULT ]]; then
     check "obsidian auth token"         "[ -f '$XDG_CONFIG_HOME/obsidian-headless/auth_token' ]"

@@ -95,7 +95,7 @@ Each pause accepts Enter to continue or `s` to skip that step.
 25-toolchains  rustup, stack, go, nvm+node (pinned), mise, luarocks, gem
 30-dotfiles    bare clone, collision-safe checkout into $HOME, fix repo config
 35-secrets     clone the secrets repo; prompt to unlock the vault
-40-session     login shell, NetworkManager, font cache, .xinitrc, user lingering
+40-session     login shell, NetworkManager, font cache, .xinitrc check
 50-xmonad      stack build + xmonad --recompile  (slow: GHC from scratch)
 55-obsidian    interactive: ob login, sync-setup, sync-status
 60-services    GENERATE systemd user units against resolved paths, then enable
