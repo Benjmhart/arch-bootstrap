@@ -572,6 +572,64 @@ stage_toolchains() {
   for t in mise luarocks gem starship; do
     have "$t" && ok "$t present" || warn "$t missing"
   done
+
+  install_self_distributed_binaries
+}
+
+# Tools that are neither pacman, AUR, cargo nor npm: single binaries published by
+# their upstream and updated in place. Installing them here rather than committing
+# them to a dotfiles repo keeps a self-updating binary from leaving the repo
+# permanently dirty, and keeps the repo from carrying a large blob per version.
+install_self_distributed_binaries() {
+  # herdr -- terminal multiplexer. Referenced by xmonad's startup hook
+  # (spawnOnOnce "2" "alacritty -e herdr"), so a machine without it fails at login
+  # with "command not found".
+  [[ -n ${HERDR_MANIFEST:-} ]] || HERDR_MANIFEST="https://herdr.dev/latest.json"
+
+  if have herdr; then
+    ok "herdr present ($(herdr --version 2>/dev/null | head -1))"
+    info "it self-updates: run 'herdr update' when you want a newer build"
+    return 0
+  fi
+
+  if (( DRY_RUN )); then
+    printf '%s  would run:%s install herdr from %s\n' "$C_DIM" "$C_RESET" "$HERDR_MANIFEST"
+    return 0
+  fi
+
+  local arch asset
+  case "$(uname -m)" in
+    x86_64)         arch=linux-x86_64  ;;
+    aarch64|arm64)  arch=linux-aarch64 ;;
+    *) warn "no herdr build for $(uname -m) -- skipping"; return 0 ;;
+  esac
+
+  info "resolving herdr $arch from $HERDR_MANIFEST"
+  # Deliberately no jq dependency -- this runs before much is installed.
+  asset="$(curl -fsSL "$HERDR_MANIFEST" 2>/dev/null \
+           | grep -o "\"$arch\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" \
+           | head -1 | sed 's/.*"\(https[^"]*\)".*/\1/')"
+
+  if [[ -z $asset ]]; then
+    warn "could not resolve a herdr download URL -- install it by hand"
+    todo "see https://herdr.dev"
+    return 0
+  fi
+
+  mkdir -p "$HOME/.local/bin"
+  if curl -fsSL "$asset" -o "$HOME/.local/bin/herdr.tmp"; then
+    chmod +x "$HOME/.local/bin/herdr.tmp"
+    mv "$HOME/.local/bin/herdr.tmp" "$HOME/.local/bin/herdr"
+    ok "herdr installed ($("$HOME/.local/bin/herdr" --version 2>/dev/null | head -1))"
+  else
+    rm -f "$HOME/.local/bin/herdr.tmp"
+    warn "herdr download failed from $asset"
+  fi
+
+  case ":$PATH:" in
+    *":$HOME/.local/bin:"*) : ;;
+    *) todo "~/.local/bin is not on PATH -- herdr will not be found until it is" ;;
+  esac
 }
 
 # --------------------------------------------------------------------------- 30
@@ -955,6 +1013,7 @@ stage_verify() {
   [[ -n $SECRETS_REMOTE  ]] && check "secrets repo present"  "[ -d '$SECRETS_DIR' ]"
   [[ -d $XMONAD_DIR ]]      && check "xmonad binary built"   "command -v xmonad"
   check "nvm present"                   "[ -s \"\${NVM_DIR:-\$HOME/.nvm}/nvm.sh\" ]"
+  check "herdr installed"               "command -v herdr"
 
   if [[ -n $OBSIDIAN_VAULT ]]; then
     check "obsidian auth token"         "[ -f '$XDG_CONFIG_HOME/obsidian-headless/auth_token' ]"
