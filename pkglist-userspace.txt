@@ -5,6 +5,7 @@ bat
 cbatticon
 chromium
 dmenu
+dmidecode
 docker
 eva
 eza
@@ -17,6 +18,7 @@ git
 github-cli
 go
 gst-plugin-pipewire
+jq
 kdenlive
 keepassxc
 less
