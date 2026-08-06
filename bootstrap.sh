@@ -217,7 +217,16 @@ run_interactive() {
     return 0
   fi
   info "running: $*"
-  "$@" </dev/tty >/dev/tty 2>&1 || return $?
+  # Fall back to the inherited stdio with no controlling terminal. Redirecting to
+  # /dev/tty there fails with ENXIO before the command ever starts, so the caller
+  # sees a non-zero exit and reports the TOOL as broken -- which is how a run
+  # without a tty produced "sync-status reported a problem" against a daemon that
+  # was in fact healthy. A misattributed failure is worse than a missing prompt.
+  if have_tty; then
+    "$@" </dev/tty >/dev/tty 2>&1 || return $?
+  else
+    "$@" || return $?
+  fi
 }
 
 # ------------------------------------------------------------------- state / resume
@@ -1119,15 +1128,26 @@ stage_xmonad() {
                 -name '*.hs' -newer "$built" -o \
                 -name '*.yaml' -newer "$built" -o \
                 -name '*.cabal' -newer "$built" 2>/dev/null)" ]]; then
-    ok "xmonad binary is newer than its sources -- nothing to rebuild"
-  else
-    ( cd "$XMONAD_DIR" && stack build )
-    did "xmonad config project compiled"
+    # Both the build AND the recompile sit behind this guard, deliberately.
+    #
+    # `xmonad --recompile` looks like it does its own mtime check, and it does --
+    # until a `build` script is present in XMONAD_DIR, at which point xmonad hands
+    # the decision to that script and ALWAYS forces ("XMonad recompiling
+    # (forced)"). So on a box with a custom build script this stage rewrote the
+    # binary on every single run. Cheap, but not nothing, and not idempotent.
+    #
+    # There is nothing to validate when no input has changed. Force it with
+    # `--redo xmonad`, or touch the config.
+    ok "xmonad binary is newer than its sources -- nothing to build or recompile"
+    return 0
   fi
+
+  ( cd "$XMONAD_DIR" && stack build )
+  did "xmonad config project compiled"
 
   if have xmonad; then
     if ( cd "$XMONAD_DIR" && xmonad --recompile ); then
-      ok "xmonad --recompile clean"
+      did "xmonad --recompile clean"
     else
       warn "recompile failed -- see $XMONAD_DIR/xmonad.errors"
       return 1
