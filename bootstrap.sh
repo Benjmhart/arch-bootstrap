@@ -29,8 +29,21 @@
 #   ./bootstrap.sh --yes                  assume yes for optional prompts
 #   ./bootstrap.sh --reset-state          forget all completion marks
 #
-# Every stage is idempotent. Completion is recorded per-stage, so you can Ctrl-C out
-# to another TTY, do something by hand, and re-run -- finished stages will not repeat.
+# RESUMABLE vs IDEMPOTENT -- two different properties, and this script has both.
+#
+#   Resumable: completion is recorded per-stage, so you can Ctrl-C out to another
+#   TTY, do something by hand, and re-run -- finished stages will not repeat.
+#
+#   Idempotent: a full run against an already-provisioned machine changes NOTHING.
+#   Every stage checks the state of the world before acting, reports `ok` when it
+#   was already correct, and `did` only when it changed something. The run ends
+#   with a count of the `did` lines, so "nothing happened" is a fact you read off
+#   the last line rather than one you infer.
+#
+# That second property is what makes it safe to re-run as a routine check that the
+# script still reproduces the machine. Note that a re-run deliberately does NOT
+# upgrade the system: packages are installed only when missing. Upgrading is a
+# separate job with a separate risk profile; do it with pacman directly.
 
 set -euo pipefail
 
@@ -50,6 +63,14 @@ NODE_MAJOR="${NODE_MAJOR:-24}"
 KEYXFER_URL="${KEYXFER_URL:-}"                  # optional SSH key-transfer helper binary
 CONFIG_HOME_OVERRIDE="${CONFIG_HOME_OVERRIDE:-}" # set if you use a non-standard XDG dir
 LOGIN_SHELL="${LOGIN_SHELL:-zsh}"
+
+# ~/.ssh is deliberately NOT tracked in a dotfiles repo, so nothing restores it on
+# a rebuild. Stage 05 writes a minimal config instead. How long the agent should
+# hold a decrypted key is a judgement call about your own threat model, not a
+# default anyone else should pick for you -- `yes` keeps it for the session, which
+# is ssh's own behaviour. Set a duration (e.g. 2m, 1h) in bootstrap.conf to expire
+# it sooner.
+SSH_ADD_KEYS_TO_AGENT="${SSH_ADD_KEYS_TO_AGENT:-yes}"
 
 BOOTSTRAP_CONFIG="${BOOTSTRAP_CONFIG:-$SCRIPT_DIR/bootstrap.conf}"
 # shellcheck disable=SC1090
@@ -105,17 +126,62 @@ run() {
 
 # Confirmation of something that ACTUALLY happened. Silent under --dry-run, where
 # claiming "installed" right after printing "would run" would just be a lie.
-did()   { (( DRY_RUN )) || ok "$*"; }
+#
+# The counter is the idempotency test. A run against a machine that is already
+# provisioned must finish with DID_COUNT at zero -- every stage reporting `ok`,
+# nothing reporting `did`. The summary at the end of main() prints it, so the
+# property is checked by running the script rather than by reading it.
+#
+# Under --dry-run the message is suppressed but the call is still COUNTED. That is
+# not a fudge: every `did` sits on a branch chosen by a real read-only check, and
+# only the mutation is stubbed out. So a dry run answers "how many things would
+# change" honestly, and the idempotency property can be tested without touching a
+# working machine.
+DID_COUNT=0
+did() {
+  DID_COUNT=$(( DID_COUNT + 1 ))
+  (( DRY_RUN )) && return 0
+  ok "$*"
+}
 
 confirm() {
   (( ASSUME_YES )) && return 0
   (( DRY_RUN ))    && return 1
-  local reply
-  read -r -p "$(printf '%s  ?   %s %s [y/N] ' "$C_YEL" "$C_RESET" "$1")" reply </dev/tty
+  # No controlling terminal (cron, a pipe, ssh without -t): answer NO rather than
+  # dying on an unbound $reply under `set -u`. Every caller treats a declined
+  # prompt as "leave it alone", so refusing is the safe reading of silence.
+  if ! have_tty; then
+    warn "no terminal to ask on -- assuming no: $1"
+    return 1
+  fi
+  local reply=""
+  read -r -p "$(printf '%s  ?   %s %s [y/N] ' "$C_YEL" "$C_RESET" "$1")" reply </dev/tty || true
   [[ $reply == [yY]* ]]
 }
 
 have() { command -v "$1" >/dev/null 2>&1; }
+
+# Is there a controlling terminal we can prompt on?
+#
+# `[[ -r /dev/tty ]]` is NOT this test: the device node's permission bits are
+# readable even in a session with no controlling terminal, so it returns true and
+# the redirect then fails with ENXIO. Opening it is the only honest check.
+have_tty() { { : </dev/tty; } 2>/dev/null; }
+
+# Set a git config key only if it does not already hold the wanted value, so a
+# re-run reports `ok` instead of claiming it configured something.
+#   git_config_ensure <label> <key> <value> <git-argv...>
+git_config_ensure() {
+  local label="$1" key="$2" want="$3"; shift 3
+  local cur
+  cur="$("$@" config --local --get "$key" 2>/dev/null || true)"
+  if [[ $cur == "$want" ]]; then
+    ok "$label: $key already '$want'"
+  else
+    run "$@" config --local "$key" "$want"
+    did "$label: $key set to '$want'"
+  fi
+}
 
 # --------------------------------------------------------------- interactive helpers
 
@@ -130,9 +196,15 @@ pause_for() {
     info "(dry run -- would wait for you here)"
     return 0
   fi
-  local reply
+  # Same no-terminal guard as confirm(). A manual step nobody can be asked about
+  # is a skipped manual step, not a crash.
+  if ! have_tty; then
+    warn "no terminal to prompt on -- treating as skipped: $what"
+    return 1
+  fi
+  local reply=""
   read -r -p "$(printf '\n%s  ?   %s Done? [Enter=yes / s=skip this step] ' \
-    "$C_YEL" "$C_RESET")" reply </dev/tty
+    "$C_YEL" "$C_RESET")" reply </dev/tty || true
   [[ $reply == [sS]* ]] && { warn "skipped: $what"; return 1; }
   return 0
 }
@@ -342,8 +414,27 @@ stage_packages() {
   stage_banner "10 packages -- user-space only"
 
   info "installing from pkglist-userspace.txt -- no kernel, microcode, GPU or firmware"
-  run sudo pacman -Syu --needed --noconfirm - < "$SCRIPT_DIR/pkglist-userspace.txt"
-  did "user-space repo packages installed"
+
+  local -a want=() missing=()
+  mapfile -t want < <(grep -vE '^[[:space:]]*(#|$)' "$SCRIPT_DIR/pkglist-userspace.txt")
+
+  # `pacman -T` prints only what is genuinely unsatisfied and understands provides
+  # and virtual packages, which a loop over `pacman -Qq <name>` does not: `sh` is
+  # satisfied by bash but has no package of its own, and `-Qq sh` reports it
+  # missing forever. -T exits 127 when anything is unsatisfied, hence the `|| true`.
+  mapfile -t missing < <(pacman -T "${want[@]}" 2>/dev/null || true)
+
+  if (( ${#missing[@]} == 0 )); then
+    ok "all ${#want[@]} user-space packages already installed"
+  else
+    info "${#missing[@]} missing: ${missing[*]}"
+    # -Syu rather than -S, and only on the path that actually installs something.
+    # Installing against a stale sync database is Arch's partial-upgrade trap, so
+    # the refresh has to happen; doing it unconditionally would mean a routine
+    # re-run silently upgraded the whole system, which is not this script's job.
+    run sudo pacman -Syu --needed --noconfirm "${missing[@]}"
+    did "${#missing[@]} user-space package(s) installed"
+  fi
 
   if [[ -f $SCRIPT_DIR/pkglist-hardware.txt ]]; then
     info "held back for stage 15 to decide: \
@@ -505,12 +596,22 @@ stage_aur() {
     did "yay built"
   fi
 
-  local pkgs
-  pkgs="$(grep -vx 'yay' "$SCRIPT_DIR/pkglist-aur.txt" | tr '\n' ' ')"
-  info "installing AUR packages: $pkgs"
-  # shellcheck disable=SC2086
-  run yay -S --needed --noconfirm $pkgs
-  did "AUR packages installed"
+  local -a want=() missing=()
+  mapfile -t want < <(grep -vE '^[[:space:]]*(#|$)' "$SCRIPT_DIR/pkglist-aur.txt" | grep -vx 'yay')
+
+  # Same reasoning as stage 10. An AUR package is an ordinary pacman package once
+  # built, so -T answers for these too -- and asking pacman rather than yay avoids
+  # yay's habit of hitting the AUR RPC on every invocation.
+  mapfile -t missing < <(pacman -T "${want[@]}" 2>/dev/null || true)
+
+  if (( ${#missing[@]} == 0 )); then
+    ok "all ${#want[@]} AUR packages already installed"
+  else
+    info "${#missing[@]} missing from the AUR list: ${missing[*]}"
+    # shellcheck disable=SC2086
+    run yay -S --needed --noconfirm "${missing[@]}"
+    did "${#missing[@]} AUR package(s) installed"
+  fi
 }
 
 # --------------------------------------------------------------------------- 25
@@ -548,6 +649,7 @@ stage_toolchains() {
   else
     info "installing nvm"
     run bash -c 'curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash'
+    did "nvm installed"
   fi
 
   if (( DRY_RUN )); then
@@ -556,14 +658,30 @@ stage_toolchains() {
     # nvm is a function, not a binary -- must be sourced, and it trips `set -u`.
     set +u; # shellcheck disable=SC1091
     . "$NVM_DIR/nvm.sh"
-    nvm install "$NODE_MAJOR"
-    nvm alias default "$NODE_MAJOR"
-    nvm use "$NODE_MAJOR"
+
+    # `nvm install` on an already-installed version is close to a no-op, but it
+    # still resolves the version index over the network on every run. Ask locally.
+    if nvm ls --no-colors "$NODE_MAJOR" >/dev/null 2>&1; then
+      ok "node v$NODE_MAJOR already installed"
+    else
+      nvm install "$NODE_MAJOR"
+      did "node v$NODE_MAJOR installed"
+    fi
+
+    if [[ "$(nvm alias default --no-colors 2>/dev/null)" == *"v$NODE_MAJOR."* ]]; then
+      ok "nvm default alias already -> v$NODE_MAJOR"
+    else
+      nvm alias default "$NODE_MAJOR" >/dev/null
+      did "nvm default alias set to v$NODE_MAJOR"
+    fi
+
+    nvm use "$NODE_MAJOR" >/dev/null
     ok "node $(node --version) active (pinned to v$NODE_MAJOR)"
+
     if [[ -n $OBSIDIAN_VAULT ]]; then
       npm ls -g --depth 0 2>/dev/null | grep -q obsidian-headless \
         && ok "obsidian-headless already installed" \
-        || { npm install -g obsidian-headless && ok "obsidian-headless installed"; }
+        || { npm install -g obsidian-headless && did "obsidian-headless installed"; }
     fi
     set -u
   fi
@@ -643,43 +761,31 @@ stage_dotfiles() {
   fi
 
   local dot=(git --git-dir="$DOTFILES_DIR" --work-tree="$HOME")
+  local fresh_clone=0
 
   if [[ -d $DOTFILES_DIR ]]; then
     ok "$DOTFILES_DIR already cloned"
   else
     run git clone --bare "$DOTFILES_REMOTE" "$DOTFILES_DIR"
     did "cloned dotfiles"
+    fresh_clone=1
   fi
 
   if (( DRY_RUN )); then
-    printf '%s  would run:%s checkout into $HOME, backing up collisions\n' "$C_DIM" "$C_RESET"
+    printf '%s  would run:%s checkout into $HOME (backing up collisions only on a first clone)\n' \
+      "$C_DIM" "$C_RESET"
   else
-    # A bare clone over a fresh $HOME collides with the files useradd created
-    # (.bashrc, .bash_profile -- commonly tracked). Back them up, then force.
-    if ! "${dot[@]}" checkout 2>/dev/null; then
-      local backup="$HOME/.dotfiles-backup-$(date +%Y%m%d-%H%M%S)"
-      mkdir -p "$backup"
-      warn "checkout collided -- backing up existing files to $backup"
-      "${dot[@]}" checkout 2>&1 \
-        | grep -E '^\s+\.' \
-        | awk '{print $1}' \
-        | while read -r f; do
-            mkdir -p "$backup/$(dirname "$f")"
-            mv "$HOME/$f" "$backup/$f"
-          done
-      "${dot[@]}" checkout
-    fi
-    ok "dotfiles checked out into \$HOME"
+    dotfiles_checkout "$fresh_clone" || return 1
   fi
 
   # core.bare=true makes git ignore --work-tree for index operations, which is
   # why `<alias> ls-files` returns nothing on a bare dotfiles repo. These two
   # settings are what make day-to-day use behave.
-  run "${dot[@]}" config --local status.showUntrackedFiles no
+  git_config_ensure "dotfiles" status.showUntrackedFiles no "${dot[@]}"
   # A bare clone has no fetch refspec, so origin/master never exists locally and
   # a bare `pull`/`push` fails. Set it so new machines don't inherit that quirk.
-  run "${dot[@]}" config --local remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
-  did "dotfiles repo configured (showUntrackedFiles=no, fetch refspec set)"
+  git_config_ensure "dotfiles" remote.origin.fetch \
+    '+refs/heads/*:refs/remotes/origin/*' "${dot[@]}"
 
   if [[ -n $CONFIG_HOME_OVERRIDE ]]; then
     [[ -d $CONFIG_HOME_OVERRIDE ]] \
@@ -699,6 +805,134 @@ stage_dotfiles() {
   fi
 }
 
+# Check the bare dotfiles repo out into $HOME.
+#
+# There are two ways `checkout` can fail here and they call for OPPOSITE responses.
+# Conflating them is how a routine re-run eats a day of uncommitted work:
+#
+#   FIRST CLONE -- the collisions are the stock files `useradd` wrote (.bashrc,
+#     .bash_profile, commonly tracked). Nobody typed them, moving them aside is
+#     right, and it is what makes an unattended first run possible.
+#
+#   RE-RUN -- the repo was already here, so the checkout that failed had succeeded
+#     before. The usual cause is LOCAL MODIFICATIONS to tracked files: your edits.
+#     Nothing that runs routinely may move those aside without asking. Stop and
+#     report instead, and let the human decide.
+#
+# git's own error header distinguishes the two, so this reads the header rather
+# than inferring intent from the path list.
+dotfiles_checkout() {
+  local fresh=$1
+  local dot=(git --git-dir="$DOTFILES_DIR" --work-tree="$HOME")
+  local err f
+
+  if err="$("${dot[@]}" checkout 2>&1)"; then
+    ok "dotfiles checked out into \$HOME"
+    return 0
+  fi
+
+  if grep -q 'Your local changes to the following files' <<<"$err"; then
+    warn "checkout refused: you have uncommitted changes to tracked dotfiles."
+    printf '%s\n' "$err" | sed 's/^/        /'
+    warn "This stage will NOT move them aside -- they are your edits, not stock files."
+    todo "review:  git --git-dir=$DOTFILES_DIR --work-tree=\$HOME status"
+    todo "then commit or stash them and re-run:  $0 --redo dotfiles"
+    return 1
+  fi
+
+  if ! grep -q 'untracked working tree files would be overwritten' <<<"$err"; then
+    warn "checkout failed in a way this stage does not recognise -- not guessing:"
+    printf '%s\n' "$err" | sed 's/^/        /'
+    return 1
+  fi
+
+  # ---- untracked collisions -------------------------------------------------
+  #
+  # Build the set of tracked paths from the REPO and use it to validate what we
+  # parse out of the error.
+  #
+  # NOTE the missing --work-tree. core.bare=true makes git ignore --work-tree for
+  # index operations, and `ls-tree` then returns ZERO lines with exit status 0 --
+  # a silent empty answer, not an error. Passing it here would make every
+  # collision look untracked and the guard below would fire on a healthy repo.
+  local -A is_tracked=()
+  while IFS= read -r f; do
+    [[ -n $f ]] && is_tracked["$f"]=1
+  done < <(git --git-dir="$DOTFILES_DIR" ls-tree -r --name-only HEAD 2>/dev/null || true)
+
+  if (( ${#is_tracked[@]} == 0 )); then
+    warn "could not enumerate tracked paths in $DOTFILES_DIR -- refusing to move anything"
+    printf '%s\n' "$err" | sed 's/^/        /'
+    return 1
+  fi
+
+  # git indents each offending path with a single TAB. Two bugs lived in the old
+  # parse of this list, both only reachable on a re-run:
+  #
+  #   grep -E '^\s+\.'  matched only paths beginning with a dot. 497 of the 623
+  #                     paths tracked on the reference box do not -- the whole of
+  #                     bin/. They were never moved, the retry failed again, and
+  #                     the work tree was left HALF CHECKED OUT.
+  #   awk '{print $1}'  truncated any path containing a space at the first space.
+  #
+  # Take the whole line minus its indent, then keep only what the repo actually
+  # tracks.
+  local -a collisions=() unknown=()
+  while IFS= read -r f; do
+    f="${f#"${f%%[![:space:]]*}"}"          # strip leading whitespace
+    [[ -z $f ]] && continue
+    if [[ -n ${is_tracked[$f]:-} ]]; then
+      collisions+=("$f")
+    else
+      unknown+=("$f")
+    fi
+  done < <(grep -E '^[[:space:]]' <<<"$err" || true)
+
+  if (( ${#unknown[@]} )); then
+    warn "git named ${#unknown[@]} colliding path(s) that are not tracked in HEAD:"
+    printf '%s\n' "${unknown[@]}" | sed 's/^/        /'
+    warn "that should not happen -- not touching anything"
+    return 1
+  fi
+
+  if (( ${#collisions[@]} == 0 )); then
+    warn "checkout reported a collision but no path could be parsed from it:"
+    printf '%s\n' "$err" | sed 's/^/        /'
+    return 1
+  fi
+
+  if ! (( fresh )); then
+    warn "${#collisions[@]} untracked file(s) in \$HOME collide with tracked paths."
+    warn "The repo was already cloned, so these are not the stock files useradd made:"
+    printf '%s\n' "${collisions[@]}" | sed 's/^/        /'
+    confirm "move them into a backup directory and continue?" || {
+      warn "left untouched -- resolve by hand, then: $0 --redo dotfiles"
+      return 1
+    }
+  fi
+
+  local backup="$HOME/.dotfiles-backup-$(date +%Y%m%d-%H%M%S)"
+  mkdir -p "$backup"
+  warn "backing up ${#collisions[@]} colliding file(s) to $backup"
+  for f in "${collisions[@]}"; do
+    mkdir -p "$backup/$(dirname "$f")"
+    mv "$HOME/$f" "$backup/$f"
+  done
+
+  if err="$("${dot[@]}" checkout 2>&1)"; then
+    did "dotfiles checked out (${#collisions[@]} collision(s) saved in $backup)"
+    return 0
+  fi
+
+  # Never leave this ambiguous. A half-checked-out $HOME that reports success is
+  # worse than either outcome.
+  warn "checkout STILL failed after backing up the collisions. \$HOME may now be"
+  warn "half checked out. Do not log out until this is resolved."
+  printf '%s\n' "$err" | sed 's/^/        /'
+  todo "the backed-up files are in $backup -- nothing was deleted"
+  return 1
+}
+
 # --------------------------------------------------------------------------- 35
 
 stage_secrets() {
@@ -709,11 +943,13 @@ stage_secrets() {
     return 0
   fi
 
+  local fresh_clone=0
   if [[ -d $SECRETS_DIR ]]; then
     ok "$SECRETS_DIR already cloned"
   else
     run git clone "$SECRETS_REMOTE" "$SECRETS_DIR"
     did "cloned secrets repo"
+    fresh_clone=1
   fi
 
   (( DRY_RUN )) || {
@@ -725,10 +961,17 @@ stage_secrets() {
 
   have keepassxc && ok "keepassxc installed" || warn "keepassxc not installed"
 
-  pause_for "Unlock your password vault." \
-    "The master password comes from your memory. It is the one step in this" \
-    "entire chain that cannot be automated, and everything downstream that" \
-    "needs a credential depends on it." || true
+  # Only on the run that actually cloned the repo. An unconditional prompt here is
+  # a blocking manual step on a machine that has been set up for months, which is
+  # exactly what stops anyone re-running this as a routine check.
+  if (( fresh_clone )); then
+    pause_for "Unlock your password vault." \
+      "The master password comes from your memory. It is the one step in this" \
+      "entire chain that cannot be automated, and everything downstream that" \
+      "needs a credential depends on it." || true
+  else
+    ok "secrets repo was already present -- not prompting for the vault"
+  fi
 }
 
 # --------------------------------------------------------------------------- 40
@@ -765,9 +1008,65 @@ stage_session() {
 
   # Font cache. Newly installed fonts are invisible to running apps until this
   # runs, which looks exactly like the font failing to install.
+  #
+  # Note the missing -f. `-f` forces a full rebuild of every directory whether or
+  # not anything changed, so this stage always reported that it had done work.
+  # Plain fc-cache re-reads only the directories whose cache is stale, and says
+  # which it did, so the report can be honest.
   if have fc-cache; then
-    run fc-cache -f
-    did "font cache rebuilt"
+    if (( DRY_RUN )); then
+      printf '%s  would run:%s fc-cache\n' "$C_DIM" "$C_RESET"
+    else
+      local fcout
+      fcout="$(fc-cache -v 2>&1 || true)"
+      if grep -q 'caching, new cache contents' <<<"$fcout"; then
+        did "font cache rebuilt ($(grep -c 'caching, new cache contents' <<<"$fcout") dir(s))"
+      else
+        ok "font cache already up to date"
+      fi
+    fi
+  fi
+
+  # ~/.ssh/config and the agent socket. Neither is restored by anything else:
+  # ~/.ssh is deliberately untracked in the dotfiles repo, so on a rebuilt machine
+  # these simply do not exist and their absence is silent -- ssh keeps working,
+  # it just re-prompts for the passphrase on every single operation.
+  if [[ -f $HOME/.ssh/config ]]; then
+    if grep -qi '^[[:space:]]*AddKeysToAgent' "$HOME/.ssh/config"; then
+      ok "~/.ssh/config present with an AddKeysToAgent setting"
+    else
+      ok "~/.ssh/config present"
+      todo "no AddKeysToAgent line -- consider adding one (see bootstrap.conf)"
+    fi
+  elif (( DRY_RUN )); then
+    printf '%s  would write:%s ~/.ssh/config (AddKeysToAgent %s)\n' \
+      "$C_DIM" "$C_RESET" "$SSH_ADD_KEYS_TO_AGENT"
+  else
+    mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh"
+    cat > "$HOME/.ssh/config" <<EOF
+# Written by arch-bootstrap. ~/.ssh is deliberately NOT tracked in the dotfiles
+# repo, so this is recreated on a new machine rather than restored.
+
+Host *
+    # How long the agent holds a decrypted key. Shorter means more passphrase
+    # prompts and a smaller window in which an unattended unlocked session is
+    # also an unlocked key. Set SSH_ADD_KEYS_TO_AGENT in bootstrap.conf.
+    AddKeysToAgent $SSH_ADD_KEYS_TO_AGENT
+
+# No IdentityFile line on purpose: naming one REPLACES the default search list,
+# so a key added later would be silently ignored.
+EOF
+    chmod 600 "$HOME/.ssh/config"
+    did "wrote ~/.ssh/config (AddKeysToAgent $SSH_ADD_KEYS_TO_AGENT)"
+  fi
+
+  if systemctl --user is-enabled ssh-agent.socket >/dev/null 2>&1; then
+    ok "ssh-agent.socket enabled"
+  elif [[ -f /usr/lib/systemd/user/ssh-agent.socket ]]; then
+    run systemctl --user enable --now ssh-agent.socket
+    did "ssh-agent.socket enabled"
+  else
+    info "no ssh-agent.socket user unit shipped -- the agent starts some other way here"
   fi
 
   # X session entry point.
@@ -809,8 +1108,22 @@ stage_xmonad() {
     && ok "stack.yaml.lock present (build is reproducible)" \
     || warn "no stack.yaml.lock -- the build may resolve different package versions"
 
-  ( cd "$XMONAD_DIR" && stack build )
-  ok "xmonad config project compiled"
+  # A cold `stack build` is 20-40 minutes, which is enough on its own to stop
+  # anyone re-running this script routinely. It is incremental, so a warm re-run
+  # is cheap -- but skip it outright when nothing that feeds the build is newer
+  # than the binary it produced. -newer is the right test here: the question is
+  # "has a source file changed since the last build", not "what did stack decide".
+  local built="$XMONAD_DIR/xmonad-$(uname -m)-linux"
+  if [[ -x $built ]] && \
+     [[ -z "$(find "$XMONAD_DIR" -maxdepth 1 \
+                -name '*.hs' -newer "$built" -o \
+                -name '*.yaml' -newer "$built" -o \
+                -name '*.cabal' -newer "$built" 2>/dev/null)" ]]; then
+    ok "xmonad binary is newer than its sources -- nothing to rebuild"
+  else
+    ( cd "$XMONAD_DIR" && stack build )
+    did "xmonad config project compiled"
+  fi
 
   if have xmonad; then
     if ( cd "$XMONAD_DIR" && xmonad --recompile ); then
@@ -894,10 +1207,18 @@ stage_obsidian() {
   run_interactive "$ob" sync-status --path "$OBSIDIAN_VAULT" || \
     warn "sync-status reported a problem -- the daemon may not start cleanly"
 
-  pause_for "Check the desktop app is not also syncing this vault." \
-    "If $OBSIDIAN_VAULT/.obsidian/core-plugins.json has \"sync\": true AND you" \
-    "ever log the desktop app into Sync, you would have two sync clients on one" \
-    "device -- which the docs explicitly forbid. Set it to false." || true
+  # Only stop the run if the condition it warns about is actually present. The
+  # prompt used to fire unconditionally, so every re-run blocked on a question
+  # that the file on disk already answers.
+  local core_plugins="$OBSIDIAN_VAULT/.obsidian/core-plugins.json"
+  if [[ -f $core_plugins ]] && grep -q '"sync"[[:space:]]*:[[:space:]]*true' "$core_plugins"; then
+    pause_for "Check the desktop app is not also syncing this vault." \
+      "$core_plugins has \"sync\": true. If you ever log the desktop app into" \
+      "Sync you would have two sync clients on one device -- which the docs" \
+      "explicitly forbid. Set it to false." || true
+  else
+    ok "desktop app's sync plugin is not enabled for this vault"
+  fi
 }
 
 # --------------------------------------------------------------------------- 60
@@ -939,12 +1260,16 @@ stage_services() {
   local cli="$node_root/lib/node_modules/obsidian-headless/cli.js"
   [[ -f $cli ]] || warn "obsidian-headless not at $cli -- the unit will fail until it is"
 
-  if (( DRY_RUN )); then
-    printf '%s  would write:%s %s (ExecStart -> %s/bin/node)\n' \
-      "$C_DIM" "$C_RESET" "$unit" "$node_root"
-  else
-    [[ -f $unit ]] && cp -a "$unit" "$unit.bak-$(date +%Y%m%d-%H%M%S)"
-    cat > "$unit" <<EOF
+  # Render to a temp file and compare. Writing unconditionally meant every re-run
+  # dropped another .bak-<timestamp> beside the unit and reloaded systemd for a
+  # file whose contents had not changed.
+  #
+  # The render happens under --dry-run too. Rendering is harmless -- it touches
+  # only a temp file -- and doing it means the dry run can compare and report
+  # truthfully whether the unit would change, instead of always claiming it would.
+  local unit_changed=0 staged
+  staged="$(mktemp)"
+  cat > "$staged" <<EOF
 [Unit]
 Description=Obsidian Sync (headless, continuous)
 Documentation=https://obsidian.md/help/sync/headless
@@ -978,16 +1303,42 @@ RestartSec=30
 [Install]
 WantedBy=default.target
 EOF
-    ok "wrote $unit"
+  if [[ -f $unit ]] && cmp -s "$staged" "$unit"; then
+    rm -f "$staged"
+    ok "$unit already matches what this machine resolves to"
+  elif (( DRY_RUN )); then
+    printf '%s  would write:%s %s (ExecStart -> %s/bin/node)\n' \
+      "$C_DIM" "$C_RESET" "$unit" "$node_root"
+    [[ -f $unit ]] && diff -u "$unit" "$staged" | sed 's/^/        /' || true
+    rm -f "$staged"
+    did "wrote $unit"
+    unit_changed=1
+  else
+    [[ -f $unit ]] && cp -a "$unit" "$unit.bak-$(date +%Y%m%d-%H%M%S)"
+    mv "$staged" "$unit"
+    chmod 644 "$unit"
+    did "wrote $unit"
+    unit_changed=1
   fi
 
-  run systemctl --user daemon-reload
+  # Only reload when the unit actually changed. daemon-reload is cheap but not
+  # free, and an unconditional one hides whether anything happened.
+  if (( unit_changed )); then
+    run systemctl --user daemon-reload
+  else
+    ok "no unit change -- systemd reload not needed"
+  fi
 
   # Starting before `ob login` has run just crash-loops the unit, so gate on the
   # credential store rather than optimistically enabling.
   if [[ -f $XDG_CONFIG_HOME/obsidian-headless/auth_token ]]; then
-    run systemctl --user enable --now obsidian-sync.service
-    did "obsidian-sync enabled and started"
+    if systemctl --user is-enabled --quiet obsidian-sync.service 2>/dev/null \
+       && systemctl --user is-active --quiet obsidian-sync.service 2>/dev/null; then
+      ok "obsidian-sync already enabled and running"
+    else
+      run systemctl --user enable --now obsidian-sync.service
+      did "obsidian-sync enabled and started"
+    fi
     info "the unit is session-scoped: it starts at login and stops with your last"
     info "session. To keep syncing while logged out: sudo loginctl enable-linger \$USER"
   else
@@ -1074,7 +1425,12 @@ EOF
 
 # --------------------------------------------------------------------------- driver
 
-usage() { sed -n '3,38p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+# Print the header comment block. Derived from the file rather than a hardcoded
+# line range, which silently truncated the help text every time the header grew.
+usage() {
+  sed -n '3,/^$/p' "${BASH_SOURCE[0]}" | sed -n '/^#/p' | sed 's/^# \{0,1\}//'
+  exit "${1:-0}"
+}
 
 list_stages() {
   local s
@@ -1149,6 +1505,25 @@ main() {
 
   printf '\n%sbootstrap complete.%s Work through the stage-90 checklist before trusting the box.\n' \
     "$C_BOLD$C_GRN" "$C_RESET"
+
+  # The idempotency report. On an already-provisioned machine a full run must
+  # reach here with nothing counted; anything else names a stage that still acts
+  # unconditionally. This is the whole test, and it needs no extra tooling.
+  if (( DRY_RUN )); then
+    if (( DID_COUNT == 0 )); then
+      printf '%sIDEMPOTENT:%s a real run would change nothing on this machine.\n' \
+        "$C_BOLD$C_GRN" "$C_RESET"
+    else
+      printf '%sa real run would make %d change(s).%s\n' \
+        "$C_BOLD$C_YEL" "$DID_COUNT" "$C_RESET"
+    fi
+  elif (( DID_COUNT == 0 )); then
+    printf '%sIDEMPOTENT:%s nothing changed -- every stage found the machine already correct.\n' \
+      "$C_BOLD$C_GRN" "$C_RESET"
+  else
+    printf '%s%d change(s) applied.%s Re-run to confirm it now settles at zero.\n' \
+      "$C_BOLD$C_YEL" "$DID_COUNT" "$C_RESET"
+  fi
 }
 
 main "$@"
