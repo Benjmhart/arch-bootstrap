@@ -1227,17 +1227,77 @@ stage_obsidian() {
   run_interactive "$ob" sync-status --path "$OBSIDIAN_VAULT" || \
     warn "sync-status reported a problem -- the daemon may not start cleanly"
 
-  # Only stop the run if the condition it warns about is actually present. The
-  # prompt used to fire unconditionally, so every re-run blocked on a question
-  # that the file on disk already answers.
+  # This used to be an unconditional manual prompt, which meant every re-run
+  # blocked on a question the file on disk already answers. Now it reads the file,
+  # and offers to fix it rather than only warning about it.
   local core_plugins="$OBSIDIAN_VAULT/.obsidian/core-plugins.json"
-  if [[ -f $core_plugins ]] && grep -q '"sync"[[:space:]]*:[[:space:]]*true' "$core_plugins"; then
-    pause_for "Check the desktop app is not also syncing this vault." \
-      "$core_plugins has \"sync\": true. If you ever log the desktop app into" \
-      "Sync you would have two sync clients on one device -- which the docs" \
-      "explicitly forbid. Set it to false." || true
+  if [[ ! -f $core_plugins ]]; then
+    info "no core-plugins.json yet -- the desktop app has not opened this vault"
+  elif grep -q '"sync"[[:space:]]*:[[:space:]]*true' "$core_plugins"; then
+    obsidian_disable_desktop_sync "$core_plugins"
   else
-    ok "desktop app's sync plugin is not enabled for this vault"
+    ok "desktop app's Sync plugin is disabled for this vault"
+  fi
+}
+
+# Two sync clients on one device is explicitly unsupported by Obsidian, and the
+# headless daemon this script installs is meant to be the only one. So when the
+# desktop app's Sync plugin is enabled, offer to turn it off rather than printing
+# a warning the operator has to remember to act on.
+#
+# This is a PER-MACHINE setting. `ob sync-status` reports "Configs: none (config
+# syncing disabled)", so `.obsidian/` does not travel between machines -- setting
+# it on one box does nothing for the next one. That is exactly why it belongs in
+# the bootstrap instead of in a checklist.
+obsidian_disable_desktop_sync() {
+  local f="$1"
+
+  warn "the desktop app's Sync plugin is ENABLED for this vault:"
+  warn "  $f"
+  warn "combined with the headless daemon that is two sync clients on one device."
+
+  # Do not edit a file the desktop app has open: it holds this config in memory
+  # and rewrites it on exit, so the edit would look like it worked and then be
+  # silently reverted. Match on the process, and exclude the headless daemon --
+  # its own command line contains "obsidian-headless".
+  local desktop
+  desktop="$(pgrep -af -i obsidian 2>/dev/null | grep -vi 'obsidian-headless\|cli\.js' || true)"
+  if [[ -n $desktop ]]; then
+    warn "the desktop app appears to be running:"
+    printf '%s\n' "$desktop" | sed 's/^/        /'
+    warn "it would overwrite this change when it exits, so not touching it."
+    todo "quit the desktop app, then: $0 --redo obsidian"
+    return 0
+  fi
+
+  if (( DRY_RUN )); then
+    printf '%s  would set:%s "sync": false in %s\n' "$C_DIM" "$C_RESET" "$f"
+    did "desktop Sync plugin disabled"
+    return 0
+  fi
+
+  confirm "set \"sync\": false so the headless daemon is the only sync client?" || {
+    warn "left enabled -- do NOT open this vault in the desktop app while it is"
+    warn "logged into Sync, or you will have two clients writing to one remote"
+    return 0
+  }
+
+  cp -a "$f" "$f.bak-$(date +%Y%m%d-%H%M%S)"
+  if have jq; then
+    jq '.sync = false' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+  else
+    # core-plugins.json is a flat "plugin-id": bool object in current Obsidian, so
+    # a targeted substitution is safe. jq is preferred and is in the package list;
+    # this only matters if stage 10 has not run yet.
+    sed -i 's/\("sync"[[:space:]]*:[[:space:]]*\)true/\1false/' "$f"
+  fi
+
+  # Confirm the edit landed instead of assuming it did.
+  if grep -q '"sync"[[:space:]]*:[[:space:]]*false' "$f"; then
+    did "desktop Sync plugin disabled in $f"
+  else
+    warn "tried to disable it but the file still does not say false -- fix by hand"
+    return 1
   fi
 }
 
