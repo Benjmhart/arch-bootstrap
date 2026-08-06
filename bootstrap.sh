@@ -485,21 +485,49 @@ stage_hardware() {
     local n_gpu; n_gpu="$(grep -c . <<<"$gpu")"
     if (( n_gpu > 1 )); then
       warn "MULTIPLE display devices -- hybrid graphics. Deferred to stage 90, not guessing."
-    elif grep -qi 'nvidia' <<<"$gpu"; then
-      warn "NVIDIA detected. Never guessed here -- open vs proprietary vs nouveau is a"
-      warn "real decision with real tradeoffs. Deferred to stage 90."
-    elif grep -Eqi 'amd|ati|radeon' <<<"$gpu"; then
-      info "GPU: AMD -> mesa vulkan-radeon xf86-video-amdgpu (or plain modesetting)"
-      detected+=(mesa vulkan-radeon xf86-video-amdgpu)
-      if pacman -Qq ollama >/dev/null 2>&1; then
-        info "ollama installed and GPU is AMD -> ollama-vulkan is the accelerated variant"
-        detected+=(ollama-vulkan)
-      fi
-    elif grep -qi 'intel' <<<"$gpu"; then
-      info "GPU: Intel -> mesa vulkan-intel (modesetting; xf86-video-intel is usually worse)"
-      detected+=(mesa vulkan-intel)
     else
-      warn "unrecognised GPU -- deferred to stage 90"
+      # Match on the PCI VENDOR ID, never on the description text.
+      #
+      # The previous test was `grep -Eqi 'amd|ati|radeon'` against the whole
+      # lspci line. "ati" is a substring of "compATIble" and of "CorporATIon",
+      # both of which appear in essentially every line lspci prints -- so that
+      # branch matched everything that was not NVIDIA, and the `intel` branch
+      # below it was UNREACHABLE. Carbon (Intel UHD 620) was classified AMD and
+      # offered vulkan-radeon + xf86-video-amdgpu, with vulkan-intel left out.
+      # Beast-arch only ever looked correct because it genuinely is AMD.
+      #
+      # Vendor IDs are stable, locale-independent, and not substrings of English:
+      #   8086 Intel    1002 AMD/ATI    10de NVIDIA
+      # `lspci -nn` always emits them as [vendor:device], distinct from the
+      # [0300] class code by having a colon.
+      local vendor_id
+      vendor_id="$(grep -oE '\[[0-9a-fA-F]{4}:[0-9a-fA-F]{4}\]' <<<"$gpu" \
+                   | head -1 | tr -d '[]' | cut -d: -f1 | tr 'A-F' 'a-f')"
+
+      case "$vendor_id" in
+        10de)
+          warn "NVIDIA detected [10de]. Never guessed here -- open vs proprietary vs"
+          warn "nouveau is a real decision with real tradeoffs. Deferred to stage 90."
+          ;;
+        1002)
+          info "GPU: AMD/ATI [1002] -> mesa vulkan-radeon xf86-video-amdgpu (or modesetting)"
+          detected+=(mesa vulkan-radeon xf86-video-amdgpu)
+          if pacman -Qq ollama >/dev/null 2>&1; then
+            info "ollama installed and GPU is AMD -> ollama-vulkan is the accelerated variant"
+            detected+=(ollama-vulkan)
+          fi
+          ;;
+        8086)
+          info "GPU: Intel [8086] -> mesa vulkan-intel (modesetting; xf86-video-intel is worse)"
+          detected+=(mesa vulkan-intel)
+          ;;
+        "")
+          warn "could not read a PCI vendor ID from lspci -- deferred to stage 90"
+          ;;
+        *)
+          warn "unrecognised GPU vendor [$vendor_id] -- deferred to stage 90"
+          ;;
+      esac
     fi
   fi
 
@@ -661,8 +689,22 @@ stage_toolchains() {
     did "nvm installed"
   fi
 
-  if (( DRY_RUN )); then
+  if (( DRY_RUN )) && [[ -s $NVM_DIR/nvm.sh ]]; then
+    # Sourcing nvm and asking `nvm ls` is read-only, so the dry run can answer
+    # this properly instead of always claiming it would install. It used to print
+    # "would run: nvm install 24" on a machine that already had v24.
+    set +u; # shellcheck disable=SC1091
+    . "$NVM_DIR/nvm.sh"
+    if nvm ls --no-colors "$NODE_MAJOR" >/dev/null 2>&1; then
+      ok "node v$NODE_MAJOR already installed"
+    else
+      printf '%s  would run:%s nvm install %s\n' "$C_DIM" "$C_RESET" "$NODE_MAJOR"
+      did "node v$NODE_MAJOR installed"
+    fi
+    set -u
+  elif (( DRY_RUN )); then
     printf '%s  would run:%s nvm install %s\n' "$C_DIM" "$C_RESET" "$NODE_MAJOR"
+    did "node v$NODE_MAJOR installed"
   elif [[ -s $NVM_DIR/nvm.sh ]]; then
     # nvm is a function, not a binary -- must be sourced, and it trips `set -u`.
     set +u; # shellcheck disable=SC1091
@@ -1107,12 +1149,6 @@ stage_xmonad() {
   warn "this stage is SLOW. The resolver pins a specific GHC, which stack downloads"
   warn "and builds against from scratch -- budget 20-40 minutes on a cold cache."
 
-  if (( DRY_RUN )); then
-    printf '%s  would run:%s stack build && xmonad --recompile in %s\n' \
-      "$C_DIM" "$C_RESET" "$XMONAD_DIR"
-    return 0
-  fi
-
   [[ -f $XMONAD_DIR/stack.yaml.lock ]] \
     && ok "stack.yaml.lock present (build is reproducible)" \
     || warn "no stack.yaml.lock -- the build may resolve different package versions"
@@ -1139,6 +1175,19 @@ stage_xmonad() {
     # There is nothing to validate when no input has changed. Force it with
     # `--redo xmonad`, or touch the config.
     ok "xmonad binary is newer than its sources -- nothing to build or recompile"
+    return 0
+  fi
+
+  # The freshness check above runs under --dry-run too, deliberately. It only
+  # stats files, and it answers the one question worth knowing before you commit
+  # to this stage: whether you are in for 40 minutes or for nothing. The dry run
+  # used to return before reaching it and always printed "would run: stack build",
+  # which is exactly the case where a prediction has to be right.
+  if (( DRY_RUN )); then
+    printf '%s  would run:%s stack build && xmonad --recompile in %s\n' \
+      "$C_DIM" "$C_RESET" "$XMONAD_DIR"
+    warn "sources are newer than the binary -- this WILL rebuild. Budget the time."
+    did "xmonad rebuilt"
     return 0
   fi
 
@@ -1453,6 +1502,15 @@ stage_verify() {
 
   if (( fails )); then
     warn "$fails check(s) failed -- see the stage they belong to, then re-run that stage"
+    # Under --dry-run these checks interrogate a machine the dry run deliberately
+    # did NOT change, so on any incompletely-provisioned box they fail by
+    # construction: nothing was installed, so nothing verifies. Failing the stage
+    # then aborted the whole run at 80 and swallowed the summary -- which is the
+    # one line a dry run exists to produce. Report and carry on.
+    (( DRY_RUN )) && {
+      info "(dry run -- these describe the machine as it is NOW, before any change)"
+      return 0
+    }
     return 1
   fi
   ok "all checks passed"
