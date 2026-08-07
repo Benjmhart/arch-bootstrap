@@ -528,6 +528,15 @@ list_private_keys() {
   return 0
 }
 
+# An agent this script started, so it can be cleaned up rather than orphaned for
+# the rest of the login session holding an unlocked key.
+BOOTSTRAP_AGENT_PID=""
+bootstrap_agent_cleanup() {
+  [[ -n $BOOTSTRAP_AGENT_PID ]] || return 0
+  kill "$BOOTSTRAP_AGENT_PID" 2>/dev/null || true
+  BOOTSTRAP_AGENT_PID=""
+}
+
 # A locked key and an unregistered key are indistinguishable to the silent probe,
 # because the probe is forbidden from prompting. Offer to load the key instead of
 # concluding the key is not registered.
@@ -537,9 +546,12 @@ ssh_try_unlock() {
   local -a keys=("$@")
   (( ${#keys[@]} )) || return 1
 
+  ssh-add -l >/dev/null 2>&1
+  local rc=$?      # 0 = agent holds keys, 1 = agent but empty, 2 = no agent
+
   # If the agent already holds an identity, a locked key is not the problem and
   # unlocking again would not change the answer.
-  ssh-add -l >/dev/null 2>&1 && return 1
+  (( rc == 0 )) && return 1
 
   if ! have_tty; then
     warn "a key exists but is not loaded, and there is no terminal to unlock it on"
@@ -551,6 +563,30 @@ ssh_try_unlock() {
   info "which looks identical to the key not being registered. It may well be."
   confirm "unlock a key now with ssh-add? (you will be asked for its passphrase)" \
     || return 1
+
+  # There may be no agent to add a key TO. Stage 40 is what enables the systemd
+  # user agent, and it runs AFTER this gate -- so on a machine that has never been
+  # bootstrapped, `ssh-add` here has nothing to talk to and fails with "Could not
+  # open a connection to your authentication agent".
+  #
+  # Adopt the socket if it already exists, otherwise start an agent for the rest
+  # of this run. It is exported, so the later stages that clone over SSH reuse the
+  # same unlocked key instead of prompting again.
+  if (( rc == 2 )); then
+    local sock="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/ssh-agent.socket"
+    if [[ -S $sock ]]; then
+      info "adopting the systemd user agent at $sock"
+      export SSH_AUTH_SOCK="$sock"
+      ssh-add -l >/dev/null 2>&1; rc=$?
+    fi
+    if (( rc == 2 )); then
+      info "no ssh-agent running -- starting one for the rest of this run"
+      eval "$(ssh-agent -s)" >/dev/null 2>&1 || {
+        warn "could not start an ssh-agent"; return 1; }
+      BOOTSTRAP_AGENT_PID="${SSH_AGENT_PID:-}"
+      trap bootstrap_agent_cleanup EXIT
+    fi
+  fi
 
   # Match the configured retention so this does not become the long-lived
   # unlocked key that SSH_ADD_KEYS_TO_AGENT exists to prevent. `yes`/`ask`/etc.
