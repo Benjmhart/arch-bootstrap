@@ -194,6 +194,13 @@ load_exclusions() {
     line="${line//[[:space:]]/}"
     [[ -n $line ]] && PKG_EXCLUDED["$line"]=1
   done < "$f"
+
+  # NOT decoration. A `while` loop returns the status of the last command its
+  # body ran, and for a comment or blank line that is a FALSE `[[ -n $line ]]`.
+  # The loop then returns 1, so does this function, and `set -e` kills the script
+  # in main() -- before the first printf, so with exit status 1 and NO OUTPUT AT
+  # ALL. Carbon hit this because its exclusion file ends in comment lines.
+  return 0
 }
 
 # Split a package list into what this machine wants and what it has excluded.
@@ -216,6 +223,10 @@ partition_by_exclusion() {
       EX_WANT+=("$p")
     fi
   done
+  # Same trap as load_exclusions: the loop body's last command can be a failing
+  # `pacman -Qq ... && ...`, which would make this function return 1 and take the
+  # whole script down silently under `set -e`.
+  return 0
 }
 
 report_exclusions() {
