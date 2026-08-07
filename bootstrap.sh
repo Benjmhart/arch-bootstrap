@@ -444,18 +444,21 @@ stage_ssh() {
     fi
   fi
 
-  local found=0 k
-  for k in "$HOME"/.ssh/id_*; do
-    [[ -e $k ]] || continue
-    [[ -f $k && $k != *.pub ]] && { found=1; ok "private key present: $(basename "$k")"; }
-  done
+  local -a keys=()
+  mapfile -t keys < <(list_private_keys)
+  local k
+  for k in "${keys[@]}"; do ok "private key present: $(basename "$k")"; done
 
   # No key at all: offer to make one, then walk the user through registering it.
-  if ! (( found )) && ! (( DRY_RUN )); then
+  #
+  # Getting this wrong is expensive in a specific way -- offering to generate a
+  # key on a machine that already has one, which then also gets presented for
+  # registration while the real key sits unused.
+  if (( ${#keys[@]} == 0 )) && ! (( DRY_RUN )); then
     warn "no SSH private key found in ~/.ssh"
     if confirm "generate a new ed25519 keypair now?"; then
       run_interactive ssh-keygen -t ed25519 -C "$(whoami)@$(hostname)"
-      found=1
+      mapfile -t keys < <(list_private_keys)
     fi
   fi
 
@@ -464,17 +467,30 @@ stage_ssh() {
     (( DRY_RUN )) && { info "(dry run -- skipping the auth gate)"; return 0; }
     (( ++tries > 3 )) && break
 
-    printf '\n'
-    if [[ -f $HOME/.ssh/id_ed25519.pub ]]; then
-      printf '%s  your public key:%s\n' "$C_BOLD" "$C_RESET"
-      sed 's/^/        /' "$HOME/.ssh/id_ed25519.pub"
-    elif [[ -f $HOME/.ssh/id_rsa.pub ]]; then
-      printf '%s  your public key:%s\n' "$C_BOLD" "$C_RESET"
-      sed 's/^/        /' "$HOME/.ssh/id_rsa.pub"
+    # BEFORE blaming registration: a locked key looks exactly like an
+    # unregistered one to the probe, because the probe cannot prompt. Try to
+    # unlock first, and only fall through to "register it" if that fails or is
+    # declined. Getting this order wrong tells the user to re-register a key that
+    # is already registered, repeatedly, and never asks for the passphrase.
+    if ssh_try_unlock "${keys[@]}"; then
+      continue
     fi
+
+    printf '\n'
+    local pub
+    for k in "${keys[@]}"; do
+      pub="$k.pub"
+      [[ -f $pub ]] || continue
+      printf '%s  public key (%s):%s\n' "$C_BOLD" "$(basename "$pub")" "$C_RESET"
+      sed 's/^/        /' "$pub"
+    done
 
     pause_for "Register that public key with your git host." \
       "GitHub: https://github.com/settings/keys -> New SSH key" \
+      "" \
+      "If it is ALREADY registered, the problem is not registration -- it is that" \
+      "the key is passphrase-protected and not loaded. Answer 'y' to the unlock" \
+      "prompt above, or in another terminal run:  ssh-add" \
       "" \
       "If you have no account access because the password is in a vault you" \
       "cannot clone yet, use your account recovery codes. They must be stored" \
@@ -496,8 +512,69 @@ EOF
   die "SSH authentication to the git host failed"
 }
 
+# Every private key in ~/.ssh, found by pairing with its .pub.
+#
+# NOT a glob of id_*. That misses any key with a project-specific name
+# (github_rsa, work_ed25519, …), and the stage then reports "no SSH private key
+# found" on a machine that has one -- offering to generate a second key, and
+# afterwards presenting THAT key for registration while the real one sits unused.
+list_private_keys() {
+  local pub priv
+  for pub in "$HOME"/.ssh/*.pub; do
+    [[ -e $pub ]] || continue
+    priv="${pub%.pub}"
+    [[ -f $priv ]] && printf '%s\n' "$priv"
+  done
+  return 0
+}
+
+# A locked key and an unregistered key are indistinguishable to the silent probe,
+# because the probe is forbidden from prompting. Offer to load the key instead of
+# concluding the key is not registered.
+#
+# Returns 0 only if something was actually added, so the caller can re-probe.
+ssh_try_unlock() {
+  local -a keys=("$@")
+  (( ${#keys[@]} )) || return 1
+
+  # If the agent already holds an identity, a locked key is not the problem and
+  # unlocking again would not change the answer.
+  ssh-add -l >/dev/null 2>&1 && return 1
+
+  if ! have_tty; then
+    warn "a key exists but is not loaded, and there is no terminal to unlock it on"
+    todo "run this from a real terminal, or: ssh-add"
+    return 1
+  fi
+
+  info "a key exists but the agent is empty -- the silent probe cannot use it,"
+  info "which looks identical to the key not being registered. It may well be."
+  confirm "unlock a key now with ssh-add? (you will be asked for its passphrase)" \
+    || return 1
+
+  # Match the configured retention so this does not become the long-lived
+  # unlocked key that SSH_ADD_KEYS_TO_AGENT exists to prevent. `yes`/`ask`/etc.
+  # are not durations and cannot be passed to -t.
+  local -a add=(ssh-add)
+  [[ $SSH_ADD_KEYS_TO_AGENT =~ ^(yes|no|ask|confirm)$ ]] \
+    || add+=(-t "$SSH_ADD_KEYS_TO_AGENT")
+
+  local k
+  for k in "${keys[@]}"; do
+    run_interactive "${add[@]}" "$k" && { did "loaded $(basename "$k") into the agent"; return 0; }
+    warn "could not load $(basename "$k")"
+  done
+  return 1
+}
+
 # Derive the host from the configured remote so this works for any git host,
 # not just GitHub. ssh -T exits non-zero even on success, hence the tolerance.
+#
+# BatchMode=yes is deliberate and is ONLY safe because ssh_try_unlock exists.
+# It makes this a silent probe -- without it, every iteration of the gate loop
+# would prompt for a passphrase. But it also means this can NEVER succeed with a
+# passphrase-protected key that is not in the agent, so a caller that treats a
+# false return as "not registered" is wrong. See stage_ssh.
 ssh_auth_works() {
   local remote="${DOTFILES_REMOTE:-}" host out
   [[ -z $remote ]] && return 1
