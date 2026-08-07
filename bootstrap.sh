@@ -64,6 +64,11 @@ KEYXFER_URL="${KEYXFER_URL:-}"                  # optional SSH key-transfer help
 CONFIG_HOME_OVERRIDE="${CONFIG_HOME_OVERRIDE:-}" # set if you use a non-standard XDG dir
 LOGIN_SHELL="${LOGIN_SHELL:-zsh}"
 
+# Used as the Obsidian sync device name, so the version history says which
+# machine a change came from. `hostname` is not installed everywhere (it is in
+# inetutils, which is not in the package list); `uname -n` always is.
+HOSTNAME_SHORT="${HOSTNAME:-$(uname -n)}"
+
 # ~/.ssh is deliberately NOT tracked in a dotfiles repo, so nothing restores it on
 # a rebuild. Stage 05 writes a minimal config instead. How long the agent should
 # hold a decrypted key is a judgement call about your own threat model, not a
@@ -1519,15 +1524,8 @@ stage_obsidian() {
   if "$ob" sync-list-local 2>/dev/null | grep -qF "$OBSIDIAN_VAULT"; then
     ok "vault already configured for sync"
   else
-    info "remote vaults available to bind to:"
-    run_interactive "$ob" sync-list-remote || warn "could not list remote vaults"
-
-    pause_for "Bind the local vault to a remote." \
-      "About to run:  ob sync-setup --path $OBSIDIAN_VAULT" \
-      "It will ask which remote vault to connect to. If you have none yet," \
-      "skip this and run 'ob sync-create-remote' first." \
-      && run_interactive "$ob" sync-setup --path "$OBSIDIAN_VAULT" \
-      || warn "sync-setup skipped or failed"
+    obsidian_sync_setup "$ob" \
+      || warn "vault NOT bound -- the daemon has nothing to sync on this machine"
   fi
 
   run_interactive "$ob" sync-status --path "$OBSIDIAN_VAULT" || \
@@ -1544,6 +1542,84 @@ stage_obsidian() {
   else
     ok "desktop app's Sync plugin is disabled for this vault"
   fi
+}
+
+# Bind the local vault path to a remote vault.
+#
+# `ob sync-setup` REQUIRES --vault and does NOT prompt for it. The previous code
+# ran `sync-setup --path <p>` and told the operator "it will ask which remote
+# vault to connect to", which is not what the command does:
+#
+#     error: required option '--vault <vault>' not specified
+#
+# Found on carbon 2026-08-07. The consequences were quiet and bad: the bind
+# failed, `sync-status` reported "No sync configuration found", the daemon had
+# nothing to sync, and because `sync-list-local` never listed the vault the stage
+# stopped for a manual step on EVERY subsequent run. The stage reported a warning
+# and carried on, so the run still ended looking broadly successful.
+#
+# Resolve the vault id from sync-list-remote and pass it explicitly.
+obsidian_sync_setup() {
+  local ob="$1"
+  local -a ids=() names=()
+  local id name
+
+  info "remote vaults available to bind to:"
+  while IFS=$'\t' read -r id name; do
+    [[ -n $id ]] && { ids+=("$id"); names+=("$name"); }
+  done < <("$ob" sync-list-remote 2>/dev/null |
+           sed -nE 's/^[[:space:]]+([0-9a-fA-F]{16,})[[:space:]]+"([^"]*)".*/\1\t\2/p')
+
+  if (( ${#ids[@]} == 0 )); then
+    warn "no remote vaults found to bind to"
+    todo "create one first:  ob sync-create-remote"
+    return 1
+  fi
+
+  local vault="" vname=""
+  if (( ${#ids[@]} == 1 )); then
+    vault="${ids[0]}"; vname="${names[0]}"
+    info "one remote vault: \"$vname\" ($vault)"
+  else
+    printf '\n%s  remote vaults:%s\n' "$C_BOLD" "$C_RESET"
+    local i
+    for i in "${!ids[@]}"; do
+      printf '        %d) %-34s "%s"\n' "$((i+1))" "${ids[i]}" "${names[i]}"
+    done
+    have_tty || { warn "several remote vaults and no terminal to choose on"; return 1; }
+    local choice=""
+    read -r -p "$(printf '%s  ?   %s bind to which vault? [1-%d] ' \
+      "$C_YEL" "$C_RESET" "${#ids[@]}")" choice </dev/tty || true
+    if ! [[ $choice =~ ^[0-9]+$ ]] || (( choice < 1 || choice > ${#ids[@]} )); then
+      warn "no valid choice made -- not binding"
+      return 1
+    fi
+    vault="${ids[$((choice-1))]}"; vname="${names[$((choice-1))]}"
+  fi
+
+  pause_for "Bind $OBSIDIAN_VAULT to remote vault \"$vname\"." \
+    "About to run:" \
+    "  ob sync-setup --vault $vault --path $OBSIDIAN_VAULT --device-name $HOSTNAME_SHORT" \
+    "" \
+    "You will be asked for the END-TO-END ENCRYPTION PASSWORD. That is NOT your" \
+    "Obsidian account password. It must match what the vault was created with," \
+    "and it is not recoverable -- getting it wrong means the sync cannot decrypt." \
+    || return 1
+
+  run_interactive "$ob" sync-setup \
+      --vault "$vault" \
+      --path "$OBSIDIAN_VAULT" \
+      --device-name "$HOSTNAME_SHORT" \
+    || { warn "sync-setup failed"; return 1; }
+
+  # Confirm the bind landed rather than trusting an exit status. This is the
+  # check whose absence let the original bug pass as a mere warning.
+  if "$ob" sync-list-local 2>/dev/null | grep -qF "$OBSIDIAN_VAULT"; then
+    did "vault bound to \"$vname\" ($vault)"
+    return 0
+  fi
+  warn "sync-setup reported success but the vault is still not listed locally"
+  return 1
 }
 
 # Two sync clients on one device is explicitly unsupported by Obsidian, and the
