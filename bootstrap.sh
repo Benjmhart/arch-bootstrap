@@ -1791,9 +1791,25 @@ EOF
     ok "no unit change -- systemd reload not needed"
   fi
 
-  # Starting before `ob login` has run just crash-loops the unit, so gate on the
-  # credential store rather than optimistically enabling.
-  if [[ -f $XDG_CONFIG_HOME/obsidian-headless/auth_token ]]; then
+  # Starting before the vault is USABLE just crash-loops the unit. That needs two
+  # preconditions, not one:
+  #
+  #   auth token  -- `ob login` has run
+  #   vault bound -- `ob sync-setup` has run AND took
+  #
+  # Only the first was checked. On carbon 2026-08-07 that meant this stage
+  # enabled a daemon that could not work: `ob sync --continuous` found no sync
+  # configuration, exited, and systemd restarted it every RestartSec=30 forever.
+  # `systemctl is-active` reported "activating" rather than "failed", because a
+  # unit in restart backoff is not failed -- so nothing looked obviously wrong.
+  local have_token=0 vault_bound=0
+  [[ -f $XDG_CONFIG_HOME/obsidian-headless/auth_token ]] && have_token=1
+  local ob_bin="$node_root/bin/ob"
+  if [[ -x $ob_bin ]] && "$ob_bin" sync-list-local 2>/dev/null | grep -qF "$OBSIDIAN_VAULT"; then
+    vault_bound=1
+  fi
+
+  if (( have_token && vault_bound )); then
     if systemctl --user is-enabled --quiet obsidian-sync.service 2>/dev/null \
        && systemctl --user is-active --quiet obsidian-sync.service 2>/dev/null; then
       ok "obsidian-sync already enabled and running"
@@ -1803,9 +1819,28 @@ EOF
     fi
     info "the unit is session-scoped: it starts at login and stops with your last"
     info "session. To keep syncing while logged out: sudo loginctl enable-linger \$USER"
-  else
+    return 0
+  fi
+
+  if ! (( have_token )); then
     warn "no obsidian-headless auth token -- NOT starting the daemon"
-    todo "run the obsidian stage first, then: ./bootstrap.sh --redo services"
+    todo "run the obsidian stage first, then: $0 --redo services"
+  else
+    warn "logged in, but $OBSIDIAN_VAULT is not bound to a remote vault."
+    warn "Starting the daemon now would restart it every 30s indefinitely."
+    todo "bind it first:  $0 --redo obsidian    then:  $0 --redo services"
+  fi
+
+  # If a previous run already enabled it, it is crash-looping right now. Say so
+  # and offer to stop it -- leaving a unit to wake up every 30s forever is worse
+  # than a stopped one, especially on a laptop.
+  if systemctl --user is-enabled --quiet obsidian-sync.service 2>/dev/null; then
+    local st; st="$(systemctl --user is-active obsidian-sync.service 2>/dev/null || true)"
+    warn "obsidian-sync is already enabled and currently '$st' -- it cannot succeed yet"
+    if confirm "stop and disable it until the vault is bound?"; then
+      run systemctl --user disable --now obsidian-sync.service
+      did "obsidian-sync stopped and disabled (re-enable with --redo services once bound)"
+    fi
   fi
 }
 
