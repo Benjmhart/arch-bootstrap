@@ -72,6 +72,17 @@ LOGIN_SHELL="${LOGIN_SHELL:-zsh}"
 # it sooner.
 SSH_ADD_KEYS_TO_AGENT="${SSH_ADD_KEYS_TO_AGENT:-yes}"
 
+# Packages from the shared lists that this MACHINE should not get. One name per
+# line, '#' comments allowed. Defaults to pkglist-exclude.txt beside the script;
+# point it anywhere (e.g. a private per-host list in another repo).
+#
+# The package lists describe one reference environment. A second machine usually
+# wants most of it and not all of it -- a laptop replicating a command-line
+# environment has no use for a video-editing suite. Without this the only options
+# are installing everything or maintaining a divergent copy of the lists, and the
+# second one rots.
+PKG_EXCLUDE_FILE="${PKG_EXCLUDE_FILE:-}"
+
 BOOTSTRAP_CONFIG="${BOOTSTRAP_CONFIG:-$SCRIPT_DIR/bootstrap.conf}"
 # shellcheck disable=SC1090
 [[ -f $BOOTSTRAP_CONFIG ]] && . "$BOOTSTRAP_CONFIG"
@@ -167,6 +178,54 @@ have() { command -v "$1" >/dev/null 2>&1; }
 # readable even in a session with no controlling terminal, so it returns true and
 # the redirect then fails with ENXIO. Opening it is the only honest check.
 have_tty() { { : </dev/tty; } 2>/dev/null; }
+
+# ------------------------------------------------------------------- exclusions
+
+declare -A PKG_EXCLUDED=()
+EXCLUDE_SOURCE=""
+
+load_exclusions() {
+  local f="${PKG_EXCLUDE_FILE:-$SCRIPT_DIR/pkglist-exclude.txt}"
+  [[ -f $f ]] || return 0
+  EXCLUDE_SOURCE="$f"
+  local line
+  while IFS= read -r line || [[ -n $line ]]; do
+    line="${line%%#*}"                    # trailing comments
+    line="${line//[[:space:]]/}"
+    [[ -n $line ]] && PKG_EXCLUDED["$line"]=1
+  done < "$f"
+}
+
+# Split a package list into what this machine wants and what it has excluded.
+#
+# Excluding means "do not install here". It does NOT mean "uninstall": removing
+# software because a list changed is a far larger action than declining to add
+# it, and not one a bootstrap should take on its own initiative. A machine that
+# already has an excluded package keeps it, and the fact is reported so the drift
+# is visible rather than silent.
+#
+# Sets EX_WANT, EX_SKIPPED and EX_SKIPPED_PRESENT in the caller.
+partition_by_exclusion() {
+  EX_WANT=(); EX_SKIPPED=(); EX_SKIPPED_PRESENT=()
+  local p
+  for p in "$@"; do
+    if [[ -n ${PKG_EXCLUDED[$p]:-} ]]; then
+      EX_SKIPPED+=("$p")
+      pacman -Qq "$p" >/dev/null 2>&1 && EX_SKIPPED_PRESENT+=("$p")
+    else
+      EX_WANT+=("$p")
+    fi
+  done
+}
+
+report_exclusions() {
+  (( ${#EX_SKIPPED[@]} )) || return 0
+  info "${#EX_SKIPPED[@]} excluded for this machine: ${EX_SKIPPED[*]}"
+  if (( ${#EX_SKIPPED_PRESENT[@]} )); then
+    warn "excluded but ALREADY INSTALLED here -- left alone, not removed:"
+    warn "  ${EX_SKIPPED_PRESENT[*]}"
+  fi
+}
 
 # Set a git config key only if it does not already hold the wanted value, so a
 # re-run reports `ok` instead of claiming it configured something.
@@ -333,6 +392,26 @@ $(wc -l < "$SCRIPT_DIR/pkglist-aur.txt") AUR)"
     && ok "secrets remote configured" \
     || info "SECRETS_REMOTE unset -- stage 35 will be skipped"
   ok "XDG_CONFIG_HOME=$XDG_CONFIG_HOME"
+
+  if [[ -n $EXCLUDE_SOURCE ]]; then
+    ok "${#PKG_EXCLUDED[@]} package(s) excluded for this machine ($EXCLUDE_SOURCE)"
+    # A typo in the exclusion file is silent in the worst way: the package you
+    # meant to skip gets installed and the line that was supposed to stop it
+    # matches nothing. Check every name against the lists it is meant to filter.
+    local -a unknown=() e
+    for e in "${!PKG_EXCLUDED[@]}"; do
+      grep -qxF "$e" "$SCRIPT_DIR/pkglist-userspace.txt" "$SCRIPT_DIR/pkglist-aur.txt" \
+        2>/dev/null || unknown+=("$e")
+    done
+    if (( ${#unknown[@]} )); then
+      warn "${#unknown[@]} excluded name(s) match nothing in the package lists:"
+      warn "  ${unknown[*]}"
+      warn "a typo here silently installs the thing you meant to skip"
+    fi
+  else
+    info "no exclusion file -- this machine gets the full package lists"
+  fi
+
   info "stage completion is recorded in $STATE_FILE"
 }
 
@@ -424,8 +503,11 @@ stage_packages() {
 
   info "installing from pkglist-userspace.txt -- no kernel, microcode, GPU or firmware"
 
-  local -a want=() missing=()
-  mapfile -t want < <(grep -vE '^[[:space:]]*(#|$)' "$SCRIPT_DIR/pkglist-userspace.txt")
+  local -a all=() want=() missing=()
+  mapfile -t all < <(grep -vE '^[[:space:]]*(#|$)' "$SCRIPT_DIR/pkglist-userspace.txt")
+  partition_by_exclusion "${all[@]}"
+  want=("${EX_WANT[@]}")
+  report_exclusions
 
   # `pacman -T` prints only what is genuinely unsatisfied and understands provides
   # and virtual packages, which a loop over `pacman -Qq <name>` does not: `sh` is
@@ -633,8 +715,11 @@ stage_aur() {
     did "yay built"
   fi
 
-  local -a want=() missing=()
-  mapfile -t want < <(grep -vE '^[[:space:]]*(#|$)' "$SCRIPT_DIR/pkglist-aur.txt" | grep -vx 'yay')
+  local -a all=() want=() missing=()
+  mapfile -t all < <(grep -vE '^[[:space:]]*(#|$)' "$SCRIPT_DIR/pkglist-aur.txt" | grep -vx 'yay')
+  partition_by_exclusion "${all[@]}"
+  want=("${EX_WANT[@]}")
+  report_exclusions
 
   # Same reasoning as stage 10. An AUR package is an ordinary pacman package once
   # built, so -T answers for these too -- and asking pacman rather than yay avoids
@@ -1620,6 +1705,9 @@ main() {
     info "cleared completion mark for '$s'"
     ONLY="${ONLY:+$ONLY,}$s"
   done
+
+  # Before the stage loop, so `--only packages` gets them too.
+  load_exclusions
 
   (( DRY_RUN )) && warn "DRY RUN -- nothing will be changed"
 

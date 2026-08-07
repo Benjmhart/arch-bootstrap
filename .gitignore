@@ -16,3 +16,8 @@ id_ed25519*
 *.bak
 *.bak-*
 .dotfiles-backup-*/
+
+# Per-machine package exclusions (see PKG_EXCLUDE_FILE in bootstrap.conf).
+# Machine-specific, like bootstrap.conf -- the authoritative copies live in the
+# private station-maintenance repo.
+pkglist-exclude*.txt
