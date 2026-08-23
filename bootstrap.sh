@@ -502,6 +502,86 @@ stage_ssh() {
       "somewhere that is NOT the vault." || break
   done
 
+  # ---- unattended agent key (added 2026-08-23) --------------------------------
+  #
+  # A SECOND key, deliberately WITHOUT a passphrase, pinned to github.com. It is
+  # what lets a non-interactive session -- an agent, cron, anything with no
+  # controlling terminal -- push at all. The primary key above stays
+  # passphrase-protected and remains the fallback.
+  #
+  # Why not simply strip the passphrase off the primary key: this one can be
+  # revoked on its own without disturbing interactive use, and GitHub records a
+  # last-used timestamp per key, so unattended pushes stay distinguishable from
+  # the human's in the audit trail.
+  #
+  # Scope, stated plainly: a GitHub *user* key reaches every repo the account can,
+  # the secrets repo included. Accepted deliberately -- that vault is a KeePassXC
+  # database with no keyfile stored beside it, so a clone of it yields an encrypted
+  # blob rather than usable credentials. If that ever stops being true, this is the
+  # decision to revisit.
+  local agent_key="$HOME/.ssh/id_ed25519_agent"
+  if [[ -f $agent_key ]]; then
+    ok "agent key present: $(basename "$agent_key")"
+  elif (( DRY_RUN )); then
+    info "(dry run) would generate $agent_key"
+  else
+    run ssh-keygen -t ed25519 -N "" -f "$agent_key" \
+      -C "$(whoami)@$(cat /etc/hostname 2>/dev/null || echo unknown) agent key (no passphrase)"
+    did "generated passphrase-less agent key"
+    mapfile -t keys < <(list_private_keys)
+  fi
+
+  # Pin it for github.com.
+  #
+  # IdentitiesOnly yes is load-bearing: without it ssh ALSO offers the default key
+  # list, the passphrase-protected key can be tried first, and the prompt this key
+  # exists to remove comes straight back.
+  #
+  # The stanza is PREPENDED, not appended. ssh takes the FIRST value it obtains for
+  # each keyword, so a specific block placed after a `Host *` wildcard cannot
+  # override it. Prepending is correct whatever the file already contains.
+  local sshcfg="$HOME/.ssh/config"
+  if [[ -f $sshcfg ]] && grep -q 'id_ed25519_agent' "$sshcfg"; then
+    ok "github.com pinned to the agent key in ~/.ssh/config"
+  elif (( DRY_RUN )); then
+    info "(dry run) would prepend a Host github.com stanza to $sshcfg"
+  else
+    # Name the human's key explicitly as the fallback rather than hardcoding
+    # id_rsa -- on a fresh machine stage 05 generates an ed25519 key, and a
+    # hardcoded id_rsa line would point at a file that does not exist.
+    local primary="" k2
+    for k2 in "${keys[@]}"; do
+      [[ $k2 == "$agent_key" ]] && continue
+      primary="$k2"; break
+    done
+
+    local tmpcfg; tmpcfg="$(mktemp)"
+    {
+      printf '# Added by bootstrap.sh (stage 05). Keep ABOVE any `Host *` block: ssh takes\n'
+      printf '# the FIRST value it obtains for each keyword, so a wildcard placed earlier\n'
+      printf '# would win and this stanza would silently do nothing.\n'
+      printf 'Host github.com\n'
+      printf '    IdentityFile ~/.ssh/id_ed25519_agent\n'
+      [[ -n $primary ]] && printf '    IdentityFile %s\n' "${primary/#$HOME/\~}"
+      printf '    IdentitiesOnly yes\n\n'
+    } > "$tmpcfg"
+    [[ -f $sshcfg ]] && cat "$sshcfg" >> "$tmpcfg"
+    run install -m 600 "$tmpcfg" "$sshcfg"
+    rm -f "$tmpcfg"
+    did "pinned github.com to the agent key in ~/.ssh/config"
+  fi
+
+  if [[ -f "$agent_key.pub" ]] && ! (( DRY_RUN )); then
+    pause_for "Register the AGENT public key with GitHub as well." \
+      "https://github.com/settings/keys -> New SSH key" \
+      "" \
+      "$(cat "$agent_key.pub")" \
+      "" \
+      "This is a SECOND registration -- the primary key above is separate." \
+      "Skip it and unattended pushes fall back to the passphrase-protected key," \
+      "then block on a prompt that has nowhere to appear." || true
+  fi
+
   if ssh_auth_works; then
     ok "git host SSH authentication working"
     return 0
@@ -1687,6 +1767,56 @@ obsidian_disable_desktop_sync() {
 
 stage_services() {
   stage_banner "60 services -- systemd user units"
+
+  # ---- login keyring auto-unlock (added 2026-08-23) ---------------------------
+  #
+  # Without this the login keyring stays LOCKED for the whole session: git's
+  # libsecret credential helper cannot store anything, and Emacs/Forge cannot read
+  # a token back out. This box logs in on a TTY and then runs startx, so
+  # /etc/pam.d/login is the stack that actually runs. A display-manager setup would
+  # need that DM's own PAM file instead -- do not assume this one covers it.
+  #
+  # `auth` captures the login password. When the keyring daemon is not up yet,
+  # gkr-pam stashes it and unlocks at `session` open, so that race resolves itself
+  # -- "unable to locate daemon control file" in the journal is normal, not a fault.
+  # `password` keeps the keyring password in step when the login password changes.
+  #
+  # The keyring password must EQUAL the login password or the unlock fails silently.
+  # This does NOT repair a keyring created earlier under a different password: for
+  # that, delete ~/.local/share/keyrings/login.keyring and let the next login make a
+  # new one. Be aware that deleting it leaves NO collection until that next login,
+  # during which clients report "object does not exist" rather than "locked".
+  local pamfile=/etc/pam.d/login
+  if [[ ! -f $pamfile ]]; then
+    warn "$pamfile missing -- skipping keyring auto-unlock"
+  elif grep -q 'pam_gnome_keyring' "$pamfile"; then
+    ok "pam_gnome_keyring already wired into $pamfile"
+  elif (( DRY_RUN )); then
+    info "(dry run) would add pam_gnome_keyring lines to $pamfile"
+  else
+    local tmppam; tmppam="$(mktemp)"
+    awk '
+      { print }
+      /^auth[[:space:]]+include[[:space:]]+system-local-login/ && !a {
+        print "auth       optional     pam_gnome_keyring.so"; a=1 }
+      /^session[[:space:]]+include[[:space:]]+system-local-login/ && !s {
+        print "session    optional     pam_gnome_keyring.so auto_start"; s=1 }
+      /^password[[:space:]]+include[[:space:]]+system-local-login/ && !p {
+        print "password   optional     pam_gnome_keyring.so"; p=1 }
+    ' "$pamfile" > "$tmppam"
+
+    # Refuse to install anything that did not gain all three lines. A PAM file
+    # written from a partial match can lock you out of the console, and that is a
+    # far worse failure than a locked keyring.
+    if [[ $(grep -c 'pam_gnome_keyring' "$tmppam") -eq 3 ]]; then
+      run sudo install -m 644 "$tmppam" "$pamfile"
+      did "wired pam_gnome_keyring into $pamfile"
+    else
+      warn "could not place all three pam_gnome_keyring lines -- $pamfile left untouched"
+      warn "add them by hand: auth/session(auto_start)/password optional pam_gnome_keyring.so"
+    fi
+    rm -f "$tmppam"
+  fi
 
   # NOTE: user units live in ~/.config/systemd/user. systemd does NOT honour
   # XDG_CONFIG_HOME for unit lookup, so this path stays .config even on a box

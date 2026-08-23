@@ -14,8 +14,10 @@ firefox
 flameshot
 flowblade
 fzf
+gcr
 git
 github-cli
+gnome-keyring
 go
 gst-plugin-pipewire
 jq
@@ -23,6 +25,7 @@ kdenlive
 keepassxc
 less
 libpulse
+libsecret
 luarocks
 mise
 neovim
@@ -71,6 +74,7 @@ vlc-plugin-ffmpeg
 volumeicon
 wget
 wireplumber
+x11-ssh-askpass
 xclip
 xdotool
 xmobar
