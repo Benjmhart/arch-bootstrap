@@ -955,12 +955,31 @@ stage_toolchains() {
   # rustup / stack / go / ruby / python-pip / luarocks / mise arrive from pacman in
   # stage 10. What they still need is per-user initialisation.
 
+  # stable AND nightly (Ben, 2026-08-24). beast-arch also carries pinned 1.97.1 and
+  # 1.98.0; those are deliberately NOT reproduced -- a pin belongs to whatever
+  # project needed it, and baking someone's old pin into every future machine is
+  # how a toolchain list rots.
   if have rustup; then
-    if rustup show 2>/dev/null | grep -q 'no active toolchain'; then
-      run rustup default stable
-      did "rust: stable toolchain installed"
+    local rust_have tc
+    rust_have="$(rustup toolchain list 2>/dev/null || true)"
+    for tc in stable nightly; do
+      if printf '%s' "$rust_have" | grep -q "^$tc-"; then
+        ok "rust: $tc already installed"
+      else
+        run rustup toolchain install "$tc"
+        did "rust: $tc installed"
+      fi
+    done
+    # Set a default ONLY when there is none. An earlier draft forced it to stable
+    # and the dry run caught what that costs: beast-arch's default is a pinned
+    # 1.98.0, so a re-run would have silently moved it and broken whatever wanted
+    # the pin. Installing a toolchain is additive; repointing the default is not,
+    # and nobody asked for it.
+    if rustup default 2>/dev/null | grep -q '.'; then
+      ok "rust: default is already set ($(rustup default 2>/dev/null | head -1))"
     else
-      ok "rust: toolchain already set"
+      run rustup default stable
+      did "rust: default set to stable"
     fi
   else
     warn "rustup missing -- did stage 10 run?"
@@ -1035,6 +1054,11 @@ stage_toolchains() {
 
   install_npm_globals
 
+  # NOTE: no gems are installed by default (Ben, 2026-08-24). `ruby` is in the
+  # package list and `gem` is only checked for presence. beast-arch carries a
+  # large jekyll/github-pages-looking set installed by hand; it belongs to
+  # whatever built it, not to every machine, so there is no pkglist-gem.txt and
+  # adding one should be a decision rather than a reflex.
   local t
   for t in mise luarocks gem starship; do
     have "$t" && ok "$t present" || warn "$t missing"
@@ -1068,7 +1092,48 @@ stage_toolchains() {
   fi
 
   install_self_distributed_binaries
+  install_claude
   report_unmanaged_binaries
+}
+
+# Claude Code. Ben's call 2026-08-24 to install it, unlike nono and zed which are
+# reported only.
+#
+# It is a NATIVE build, not the npm package: installs land in
+# ~/.local/share/claude/versions/<version> with ~/.local/bin/claude symlinked at
+# the current one, which is what this box has. Once present it manages itself --
+# `claude update` -- so this only has to solve the fresh-machine case.
+#
+# The endpoint was VERIFIED rather than remembered (2026-08-24): it returns 200
+# and serves a bash script taking [stable|latest|VERSION]. Overridable, because a
+# hardcoded vendor URL is exactly the line that rots quietly.
+install_claude() {
+  [[ -n ${CLAUDE_INSTALL_URL:-} ]] || CLAUDE_INSTALL_URL="https://claude.ai/install.sh"
+
+  if have claude; then
+    ok "claude present ($(claude --version 2>/dev/null | head -1))"
+    info "it self-updates: run 'claude update' when you want a newer build"
+    return 0
+  fi
+
+  if (( DRY_RUN )); then
+    printf '%s  would run:%s curl -fsSL %s | bash\n' "$C_DIM" "$C_RESET" "$CLAUDE_INSTALL_URL"
+    did "claude installed"
+    return 0
+  fi
+
+  if run bash -c "curl -fsSL '$CLAUDE_INSTALL_URL' | bash"; then
+    did "claude installed"
+  else
+    warn "claude install failed from $CLAUDE_INSTALL_URL"
+    todo "install it by hand; see https://claude.com/claude-code"
+    return 0
+  fi
+
+  case ":$PATH:" in
+    *":$HOME/.local/bin:"*) : ;;
+    *) todo "~/.local/bin is not on PATH -- claude will not be found until it is" ;;
+  esac
 }
 
 # Binaries this machine relies on that NOTHING here installs, and honestly cannot.
@@ -1089,7 +1154,6 @@ stage_toolchains() {
 # Format: <binary>|<what it is, and why its absence matters>
 UNMANAGED_BINARIES=(
   "nono|the agent sandbox. Its absence is a SECURITY regression, not a missing convenience -- see beast-arch task 45"
-  "claude|Claude Code itself. Self-updating; reinstall with Anthropic's own installer"
   "zed|editor, vendor installer, lives in ~/.local/zed.app"
 )
 

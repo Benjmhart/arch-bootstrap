@@ -13,16 +13,19 @@
 #                     gated on OBSIDIAN_VAULT being set -- a machine with no
 #                     vault has no use for it. Do not add it here as well.
 #
-#   @earendil-works/pi-coding-agent   HELD, 2026-08-24. Not a judgement on the
-#   @ollama/pi-web-search             tool: pi moved npm scope from @mariozechner
-#                     to @earendil-works, which is a supply-chain event on the
-#                     package that holds Ben's provider API keys in plaintext
-#                     auth.json, and beast-arch task 39 records it as unvetted.
-#                     Installing it on a second machine widens the blast radius
-#                     before anyone has looked. Uncomment BOTH once task 39
-#                     clears it -- the web-search plugin is useless without pi.
-#
-##@earendil-works/pi-coding-agent
-##@ollama/pi-web-search
+#   @forge/cli        Atlassian Forge CLI. Installed on beast-arch; NOT wanted by
+#                     default (Ben, 2026-08-24). Add it per-machine rather than
+#                     here if a box turns out to need it.
+##@forge/cli
 
-@forge/cli
+# pi, and its web-search plugin which is useless without it. Ben's call
+# 2026-08-24, overriding this file's earlier hold.
+#
+# Read the hold before removing these, because the reason has not gone away: pi
+# moved npm SCOPE from @mariozechner to @earendil-works, which is a supply-chain
+# event on the package that holds provider API keys in plaintext auth.json, and
+# beast-arch task 39 still records it as UNVETTED. Shipping it to a second
+# machine is a deliberate acceptance of that, not an oversight -- and the key
+# lands on carbon too, so task 39's verdict now applies to two boxes.
+@earendil-works/pi-coding-agent
+@ollama/pi-web-search
