@@ -1,3 +1,4 @@
+bemoji
 claude-desktop
 google-chrome
 handy-bin

@@ -6,6 +6,7 @@ bat
 cbatticon
 chromium
 clang
+clipmenu
 cmake
 dmenu
 dmidecode
@@ -100,6 +101,7 @@ xorg-server
 xorg-xev
 xorg-xinit
 xorg-xrandr
+xorg-xsetroot
 yazi
 z
 zip
