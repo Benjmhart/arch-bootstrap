@@ -24,6 +24,11 @@ SECRETS_REMOTE=""
 
 # ---------------------------------------------------------------- optional
 
+# Git remote holding desktop wallpapers. .xinitrc points nitrogen at
+# WALLPAPERS_DIR (default $HOME/projects/wallpapers); without this the desktop
+# comes up with no wallpaper and nothing says why. Leave empty to skip.
+WALLPAPERS_REMOTE=""
+
 # Absolute path to an Obsidian vault. Leave empty to skip the Obsidian sync
 # stages (55 and the unit generation in 60) completely.
 OBSIDIAN_VAULT=""
@@ -52,6 +57,7 @@ KEYXFER_URL=""
 
 #DOTFILES_DIR="$HOME/.dot"
 #SECRETS_DIR="$HOME/secrets"
+#WALLPAPERS_DIR="$HOME/projects/wallpapers"
 #XMONAD_DIR="$HOME/.xmonad"
 
 # Major node version to pin. Native modules (better-sqlite3 in obsidian-headless,

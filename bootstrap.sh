@@ -57,6 +57,8 @@ DOTFILES_REMOTE="${DOTFILES_REMOTE:-}"          # e.g. git@github.com:you/dotfil
 SECRETS_REMOTE="${SECRETS_REMOTE:-}"            # optional; leave empty to skip stage 35
 DOTFILES_DIR="${DOTFILES_DIR:-$HOME/.dot}"      # bare repo location
 SECRETS_DIR="${SECRETS_DIR:-$HOME/secrets}"
+WALLPAPERS_REMOTE="${WALLPAPERS_REMOTE:-}"      # optional; the .xinitrc wallpaper source
+WALLPAPERS_DIR="${WALLPAPERS_DIR:-$HOME/projects/wallpapers}"
 XMONAD_DIR="${XMONAD_DIR:-$HOME/.xmonad}"
 OBSIDIAN_VAULT="${OBSIDIAN_VAULT:-}"            # optional; leave empty to skip obsidian
 NODE_MAJOR="${NODE_MAJOR:-24}"
@@ -1317,6 +1319,40 @@ stage_secrets() {
   else
     ok "secrets repo was already present -- not prompting for the vault"
   fi
+
+  clone_wallpapers
+}
+
+# The wallpapers moved out of the dotfiles into their own repo on 2026-08-15, and
+# .xinitrc now points `nitrogen --set-zoom-fill --random` at that path. Nothing
+# cloned it, so a machine provisioned before the split -- or a fresh one -- comes
+# up with no wallpaper at all and no error that explains why.
+#
+# It lives here rather than in stage 30 because it is an ordinary (non-bare) clone
+# over SSH, same as the secrets repo, and wants the same already-working key.
+# Optional: an unset WALLPAPERS_REMOTE just skips it.
+clone_wallpapers() {
+  if [[ -z $WALLPAPERS_REMOTE ]]; then
+    info "WALLPAPERS_REMOTE not set -- skipping (the desktop will have no wallpaper)"
+    return 0
+  fi
+
+  if [[ -d $WALLPAPERS_DIR/.git ]]; then
+    ok "$WALLPAPERS_DIR already cloned"
+    return 0
+  fi
+
+  # A non-empty directory that is not a checkout is somebody's loose images, not
+  # a failed clone. Refuse rather than clone over them.
+  if [[ -d $WALLPAPERS_DIR ]]; then
+    warn "$WALLPAPERS_DIR exists but is not a git checkout -- leaving it alone"
+    todo "move it aside and re-run, or clone $WALLPAPERS_REMOTE by hand"
+    return 0
+  fi
+
+  run mkdir -p "$(dirname "$WALLPAPERS_DIR")"
+  run git clone "$WALLPAPERS_REMOTE" "$WALLPAPERS_DIR"
+  did "cloned wallpapers repo"
 }
 
 # --------------------------------------------------------------------------- 40
@@ -1765,8 +1801,108 @@ obsidian_disable_desktop_sync() {
 
 # --------------------------------------------------------------------------- 60
 
+# System-level daemons whose PACKAGE is in the shared lists but whose UNIT nothing
+# here ever enabled. Added 2026-08-24 after the weekly catalogue found four of
+# them installed by hand on beast-arch and enabled by hand afterwards -- which is
+# the same "the command works, the feature does not" gap this script keeps hitting:
+# a package list alone reproduces the binary and not the behaviour.
+#
+# NetworkManager is deliberately NOT here. Stage 45 already enables it, because
+# the session stage needs the network up before it, not after.
+#
+# Format: <package>|<unit>|<what it is for>
+SYSTEM_UNITS=(
+  "bluez|bluetooth.service|bluetooth radio -- matters most on a laptop"
+  "docker|docker.service|container runtime"
+  "earlyoom|earlyoom.service|kills a memory hog before the box livelocks"
+  "tailscale|tailscaled.service|mesh VPN; joining a tailnet is a separate manual step"
+)
+
+enable_system_units() {
+  local entry pkg unit why
+
+  for entry in "${SYSTEM_UNITS[@]}"; do
+    IFS='|' read -r pkg unit why <<< "$entry"
+
+    # An excluded package must not have its unit enabled either. Without this the
+    # exclusion file would decline to INSTALL something and then this loop would
+    # try to start it, which is worse than either behaviour on its own.
+    if [[ -n ${PKG_EXCLUDED[$pkg]:-} ]]; then
+      info "$unit: $pkg is excluded on this machine -- not enabling"
+      continue
+    fi
+
+    # Installed-but-not-enabled is the case worth acting on. Not-installed means
+    # stage 10 declined or has not run; say so rather than failing on `enable`.
+    if ! pacman -Qq "$pkg" >/dev/null 2>&1; then
+      info "$unit: $pkg not installed -- skipping"
+      continue
+    fi
+
+    # ENABLEMENT is what this script controls; RUNNING is not. Conflating them
+    # was the first version of this loop and it was wrong: beast-arch has bluez
+    # installed and bluetooth.service enabled, but no bluetooth hardware, so
+    # systemd skips the unit on ConditionPathIsDirectory=/sys/class/bluetooth and
+    # it is `inactive` forever. An "enabled AND active" test would have reported a
+    # change on every single run of this box, which is exactly the idempotency
+    # property the whole script is built around.
+    #
+    # So: decide on is-enabled, then REPORT on is-active separately, because an
+    # enabled daemon that is not running is still worth saying out loud.
+    if systemctl is-enabled --quiet "$unit" 2>/dev/null; then
+      ok "$unit already enabled"
+    else
+      info "enabling $unit -- $why"
+      run sudo systemctl enable --now "$unit"
+      did "$unit enabled and started"
+      continue
+    fi
+
+    systemctl is-active --quiet "$unit" 2>/dev/null && continue
+
+    # Not running. Distinguish "systemd deliberately skipped it" from "it died",
+    # because only the second one is a fault. ConditionResult=no means the unit's
+    # own Condition* checks failed -- absent hardware, usually -- and nothing here
+    # can or should fix that.
+    if [[ "$(systemctl show -p ConditionResult --value "$unit" 2>/dev/null)" == "no" ]]; then
+      info "$unit is enabled but skipped -- its Condition* checks do not hold here"
+      info "  (usually the hardware is absent; harmless)"
+    else
+      warn "$unit is enabled but NOT running -- check: systemctl status $unit"
+    fi
+  done
+
+  # Two things the unit alone does NOT give you, both deliberately left manual.
+
+  # tailscaled running is not the same as being ON the tailnet. `tailscale up`
+  # opens a browser for interactive auth, once per machine, exactly like
+  # `ob login` in stage 55. Checked on beast-arch 2026-08-24: the tailnet had
+  # beast-arch and one tablet on it and nothing else, so a second workstation
+  # does NOT arrive by itself.
+  if pacman -Qq tailscale >/dev/null 2>&1 && [[ -z ${PKG_EXCLUDED[tailscale]:-} ]]; then
+    if tailscale status >/dev/null 2>&1; then
+      ok "tailscale: this machine is on a tailnet"
+    else
+      todo "tailscale is installed but this machine has not joined a tailnet:"
+      todo "    sudo tailscale up        # interactive, once per machine"
+    fi
+  fi
+
+  # This script does NOT add $USER to the `docker` group, and that omission is a
+  # decision, not an oversight. Membership is root-equivalent: `docker run -v
+  # ~/.ssh:/m` reads files a Landlock sandbox denies, which is a demonstrated
+  # escape from the agent sandboxing on beast-arch. Enabling the daemon is
+  # reversible; handing every process running as you a root-equivalent socket is
+  # not. Use `sudo docker`, or add the group by hand knowing what it costs.
+  if pacman -Qq docker >/dev/null 2>&1 && id -nG "$USER" 2>/dev/null | grep -qw docker; then
+    warn "$USER is in the 'docker' group -- that is root-equivalent access to this box"
+  fi
+}
+
 stage_services() {
-  stage_banner "60 services -- systemd user units"
+  stage_banner "60 services -- system and user units"
+
+  enable_system_units
 
   # ---- login keyring auto-unlock (added 2026-08-23) ---------------------------
   #

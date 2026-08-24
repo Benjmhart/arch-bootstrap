@@ -94,11 +94,12 @@ Each pause accepts Enter to continue or `s` to skip that step.
 20-aur         build yay from source first, then the rest of the AUR list
 25-toolchains  rustup, stack, go, nvm+node (pinned), mise, luarocks, gem, herdr
 30-dotfiles    bare clone, collision-safe checkout into $HOME, fix repo config
-35-secrets     clone the secrets repo; prompt to unlock the vault
+35-secrets     clone the secrets repo; prompt to unlock the vault; clone wallpapers
 40-session     login shell, NetworkManager, font cache, .xinitrc check
 50-xmonad      stack build + xmonad --recompile  (slow: GHC from scratch)
 55-obsidian    interactive: ob login, sync-setup, sync-status
-60-services    GENERATE systemd user units against resolved paths, then enable
+60-services    enable system daemons (bluetooth/docker/earlyoom/tailscaled);
+               GENERATE systemd user units against resolved paths, then enable
 80-verify      self-check every stage's observable result
 90-manual      printed checklist of what a script must not automate
 ```
