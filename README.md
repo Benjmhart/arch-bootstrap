@@ -92,7 +92,9 @@ Each pause accepts Enter to continue or `s` to skip that step.
 10-packages    pacman -S --needed from pkglist-userspace.txt
 15-hardware    DETECT and report: microcode, GPU, boot mode, audio, bluetooth, RAM
 20-aur         build yay from source first, then the rest of the AUR list
-25-toolchains  rustup, stack, go, nvm+node (pinned), mise, luarocks, gem, herdr
+25-toolchains  rustup, stack, go, nvm+node (pinned), mise + its declared tools,
+               luarocks, gem, global npm packages, herdr; reports binaries it
+               cannot install
 30-dotfiles    bare clone, collision-safe checkout into $HOME, fix repo config
 35-secrets     clone the secrets repo; prompt to unlock the vault; clone wallpapers
 40-session     login shell, NetworkManager, font cache, .xinitrc check

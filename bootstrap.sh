@@ -1033,6 +1033,8 @@ stage_toolchains() {
     set -u
   fi
 
+  install_npm_globals
+
   local t
   for t in mise luarocks gem starship; do
     have "$t" && ok "$t present" || warn "$t missing"
@@ -1066,6 +1068,104 @@ stage_toolchains() {
   fi
 
   install_self_distributed_binaries
+  report_unmanaged_binaries
+}
+
+# Binaries this machine relies on that NOTHING here installs, and honestly cannot.
+# Added 2026-08-24 after a sweep found five of them in ~/.local/bin against one
+# (herdr) that the script actually manages.
+#
+# This function deliberately does NOT install anything. Each of these arrives
+# through its vendor's own installer, and none of those endpoints is recorded
+# anywhere on this box -- `nono --help` offers pack management, not self-install,
+# and its embedded URLs are sandbox-policy examples, not a download host. Writing
+# a plausible-looking curl line for any of them would be exactly the confidently
+# wrong line this project cannot afford: it would appear to work until the day
+# someone rebuilds under pressure.
+#
+# So it REPORTS. A rebuild that is missing these now says so, instead of coming up
+# quietly incomplete, which is the failure this whole sweep was chasing.
+#
+# Format: <binary>|<what it is, and why its absence matters>
+UNMANAGED_BINARIES=(
+  "nono|the agent sandbox. Its absence is a SECURITY regression, not a missing convenience -- see beast-arch task 45"
+  "claude|Claude Code itself. Self-updating; reinstall with Anthropic's own installer"
+  "zed|editor, vendor installer, lives in ~/.local/zed.app"
+)
+
+report_unmanaged_binaries() {
+  local entry name why present=0 absent=0
+
+  for entry in "${UNMANAGED_BINARIES[@]}"; do
+    IFS='|' read -r name why <<< "$entry"
+    if have "$name"; then
+      ok "$name present (not managed by this script -- it updates itself)"
+      present=$(( present + 1 ))
+    else
+      warn "$name is NOT installed, and this script cannot install it"
+      todo "  $why"
+      absent=$(( absent + 1 ))
+    fi
+  done
+
+  # meetily is deliberately absent from the list above. It was built from source
+  # into ~/build for beast-arch task 50, which is closed and whose audio Ben tore
+  # down; .xinitrc still autostarts it but guards on the path, so a machine
+  # without it is correct rather than broken. Reproducing a retired tool is worse
+  # than not reproducing it.
+
+  (( absent )) && info "$absent binary/binaries above need a manual install on a fresh machine"
+  return 0
+}
+
+# Global npm packages from pkglist-npm.txt. Added 2026-08-24: a sweep found six
+# globals on beast-arch and exactly one -- obsidian-headless -- installed by this
+# script, so a rebuild silently dropped the rest.
+#
+# Must run INSIDE the nvm-sourced part of stage 25, against the pinned node.
+# Installing globals against a system node puts them somewhere the pinned node
+# will not look, which fails in the confusing direction: `npm ls -g` shows them
+# and the command is still not found.
+install_npm_globals() {
+  local list="$SCRIPT_DIR/pkglist-npm.txt"
+  [[ -f $list ]] || return 0
+
+  local -a all=() want=() missing=()
+  mapfile -t all < <(grep -vE '^[[:space:]]*(#|$)' "$list")
+  (( ${#all[@]} )) || { info "npm: nothing listed"; return 0; }
+
+  partition_by_exclusion "${all[@]}"
+  want=("${EX_WANT[@]}")
+  report_exclusions
+  (( ${#want[@]} )) || return 0
+
+  if ! have npm; then
+    warn "npm not on PATH -- skipping ${#want[@]} global(s). Did the nvm block run?"
+    return 0
+  fi
+
+  # Ask npm ONCE and match locally. `npm ls -g <name>` per package is a process
+  # spawn each, and on a scoped name it is easy to get a false negative.
+  local installed
+  installed="$(npm ls -g --depth 0 --parseable 2>/dev/null | sed 's|.*/node_modules/||')"
+
+  local pkg
+  for pkg in "${want[@]}"; do
+    if printf '%s\n' "$installed" | grep -qxF "$pkg"; then
+      ok "npm: $pkg already installed"
+    else
+      missing+=("$pkg")
+    fi
+  done
+
+  if (( ${#missing[@]} == 0 )); then
+    ok "npm: all ${#want[@]} global(s) already installed"
+    return 0
+  fi
+
+  info "npm: ${#missing[@]} missing: ${missing[*]}"
+  run npm install -g "${missing[@]}"
+  did "${#missing[@]} npm global(s) installed"
 }
 
 # Tools that are neither pacman, AUR, cargo nor npm: single binaries published by

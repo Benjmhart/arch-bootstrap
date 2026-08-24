@@ -1,0 +1,28 @@
+# Global npm packages, installed by stage 25 against the nvm-pinned node.
+#
+# One name per line, '#' comments allowed, same exclusion mechanism as the pacman
+# lists (PKG_EXCLUDE_FILE). Created 2026-08-24, when a sweep found six globals
+# installed on beast-arch and exactly one of them installed by this script.
+#
+# NOT listed, and deliberately:
+#
+#   npm, corepack     bundled with the nvm node. They show up in `npm ls -g`
+#                     without anyone having installed them.
+#
+#   obsidian-headless installed further down stage 25 instead, because it is
+#                     gated on OBSIDIAN_VAULT being set -- a machine with no
+#                     vault has no use for it. Do not add it here as well.
+#
+#   @earendil-works/pi-coding-agent   HELD, 2026-08-24. Not a judgement on the
+#   @ollama/pi-web-search             tool: pi moved npm scope from @mariozechner
+#                     to @earendil-works, which is a supply-chain event on the
+#                     package that holds Ben's provider API keys in plaintext
+#                     auth.json, and beast-arch task 39 records it as unvetted.
+#                     Installing it on a second machine widens the blast radius
+#                     before anyone has looked. Uncomment BOTH once task 39
+#                     clears it -- the web-search plugin is useless without pi.
+#
+##@earendil-works/pi-coding-agent
+##@ollama/pi-web-search
+
+@forge/cli
