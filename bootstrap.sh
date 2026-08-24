@@ -1038,6 +1038,33 @@ stage_toolchains() {
     have "$t" && ok "$t present" || warn "$t missing"
   done
 
+  # mise arrives from pacman in stage 10, but nothing ever asked it to install the
+  # tools its config DECLARES -- so a rebuild got the manager and none of the
+  # toolchains. Added 2026-08-24.
+  #
+  # It installs what the CONFIG asks for, which is deliberately not the same as
+  # what the reference machine happens to have. beast-arch also carries elixir,
+  # erlang and postgres under mise, installed by hand and declared in no config
+  # file at all; they belong to a project Ben has left (his call, 2026-08-24) and
+  # are NOT reproduced. If they are ever wanted, declaring them is the fix --
+  # putting them in a package list is not, because mise owns their versions.
+  #
+  # XDG_CONFIG_HOME is passed explicitly. mise resolves its config through it, and
+  # the systemd/PATH notes elsewhere in this script exist because this box's is
+  # non-standard; a stage that assumed ~/.config would silently find no tools and
+  # report success.
+  if have mise; then
+    local mise_missing
+    mise_missing="$(XDG_CONFIG_HOME="$XDG_CONFIG_HOME" mise ls --missing 2>/dev/null || true)"
+    if [[ -z $mise_missing ]]; then
+      ok "mise: every declared tool is already installed"
+    else
+      info "mise: installing declared tools -- $(printf '%s' "$mise_missing" | tr '\n' ' ')"
+      run env XDG_CONFIG_HOME="$XDG_CONFIG_HOME" mise install
+      did "mise tools installed"
+    fi
+  fi
+
   install_self_distributed_binaries
 }
 
