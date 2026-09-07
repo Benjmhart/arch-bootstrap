@@ -66,6 +66,21 @@ KEYXFER_URL="${KEYXFER_URL:-}"                  # optional SSH key-transfer help
 CONFIG_HOME_OVERRIDE="${CONFIG_HOME_OVERRIDE:-}" # set if you use a non-standard XDG dir
 LOGIN_SHELL="${LOGIN_SHELL:-zsh}"
 
+# sshd. Enabling the daemon is not the same as configuring it, and the config is
+# the part that is machine-specific -- so it is parameterised here rather than
+# baked in. Both are optional and both default to something safe.
+#
+# SSHD_LISTEN_ADDRESS defaults to EMPTY, meaning "listen on every interface",
+# which is sshd's own default. Do NOT put an address here as a convenience: a
+# ListenAddress that does not exist on the machine makes sshd fail to bind, and
+# on a headless box that is unrecoverable without console access. Set it only
+# when you mean it -- typically to a VPN address, so the host is reachable over
+# the tailnet and nowhere else. If you do, stage 60 also writes a systemd drop-in
+# ordering sshd after tailscaled, because the address does not exist until the
+# interface is up.
+SSHD_LISTEN_ADDRESS="${SSHD_LISTEN_ADDRESS:-}"   # e.g. a tailnet address; empty = all interfaces
+SSHD_ALLOW_USERS="${SSHD_ALLOW_USERS:-$USER}"    # empty disables the AllowUsers restriction
+
 # Used as the Obsidian sync device name, so the version history says which
 # machine a change came from. `hostname` is not installed everywhere (it is in
 # inetutils, which is not in the package list); `uname -n` always is.
@@ -2007,7 +2022,99 @@ SYSTEM_UNITS=(
   "docker|docker.service|container runtime"
   "earlyoom|earlyoom.service|kills a memory hog before the box livelocks"
   "tailscale|tailscaled.service|mesh VPN; joining a tailnet is a separate manual step"
+  "openssh|sshd.service|remote shell; harden_sshd() writes the config it needs"
 )
+
+# Write sshd's configuration, and the boot ordering it needs if it binds a VPN
+# address. Called from stage 60 AFTER enable_system_units, so the unit exists.
+#
+# WHY A DROP-IN AND NOT /etc/ssh/sshd_config
+# `Include /etc/ssh/sshd_config.d/*.conf` is line 2 of the shipped Arch config, and
+# sshd uses the FIRST value it obtains for each keyword -- so a drop-in wins over
+# anything later in the main file, and editing the main file by hand produces a
+# config where the effective value is not the one you edited. It also survives
+# `pacman -Syu` writing an sshd_config.pacnew.
+harden_sshd() {
+  pacman -Qq openssh >/dev/null 2>&1 || return 0
+  [[ -z ${PKG_EXCLUDED[openssh]:-} ]] || return 0
+
+  local dropin=/etc/ssh/sshd_config.d/10-hardening.conf
+  local want="# Written by arch-bootstrap. Edit bootstrap.conf, not this file.
+PasswordAuthentication no
+PermitRootLogin no"
+  [[ -n $SSHD_ALLOW_USERS ]] && want+="
+AllowUsers $SSHD_ALLOW_USERS"
+
+  # A ListenAddress the machine does not have is the one setting here that can
+  # lock you out, so it is checked against reality before being written rather
+  # than trusted from config. Warn and write anyway -- a tailnet address is
+  # legitimately absent when tailscaled has not started yet -- but say so, because
+  # a typo and a not-yet-up interface look identical at this point.
+  if [[ -n $SSHD_LISTEN_ADDRESS ]]; then
+    if ! ip -o addr show 2>/dev/null | grep -qw "$SSHD_LISTEN_ADDRESS"; then
+      warn "SSHD_LISTEN_ADDRESS=$SSHD_LISTEN_ADDRESS is not currently assigned to any interface"
+      warn "  if that is a typo, sshd will fail to bind and this box becomes unreachable"
+    fi
+    want+="
+ListenAddress $SSHD_LISTEN_ADDRESS"
+  fi
+
+  if [[ -f $dropin ]] && [[ "$(cat "$dropin")" == "$want" ]]; then
+    ok "sshd hardening already in place ($dropin)"
+  elif (( DRY_RUN )); then
+    info "(dry run) would write $dropin"
+    did "wrote $dropin"          # counts only; did() prints nothing under DRY_RUN
+  else
+    local tmp; tmp="$(mktemp)"
+    printf '%s\n' "$want" > "$tmp"
+    # Install, THEN validate, then reload -- in that order, and it is safe.
+    # `sshd -t` tests the whole effective config including drop-ins, so the
+    # candidate has to be on disk to be testable. A running sshd keeps serving the
+    # config it already loaded, so a bad file that is removed before any reload
+    # never reaches the daemon. What must not happen is reloading first and
+    # discovering the problem afterwards.
+    run sudo install -m 600 "$tmp" "$dropin"
+    rm -f "$tmp"
+    if sudo sshd -t 2>/dev/null; then
+      did "wrote $dropin"
+      systemctl is-active --quiet sshd && run sudo systemctl reload sshd
+    else
+      warn "sshd -t REJECTED the new config -- removing it and leaving sshd as it was"
+      run sudo rm -f "$dropin"
+    fi
+  fi
+
+  # The boot-order dependency. Only meaningful when sshd binds an address that
+  # another service brings up; without it sshd starts first, fails to bind, and
+  # the box is unreachable in exactly the situation remote access is for.
+  # RestartSec is here because the shipped unit already sets Restart=always --
+  # what it lacks is a sane retry interval, not the restart itself.
+  local unitdir=/etc/systemd/system/sshd.service.d
+  local unitfile="$unitdir/10-tailnet.conf"
+  if [[ -z $SSHD_LISTEN_ADDRESS ]]; then
+    return 0
+  fi
+  local wantunit="[Unit]
+After=tailscaled.service
+Wants=tailscaled.service
+
+[Service]
+RestartSec=5s"
+  if [[ -f $unitfile ]] && [[ "$(cat "$unitfile")" == "$wantunit" ]]; then
+    ok "sshd boot ordering already in place ($unitfile)"
+  elif (( DRY_RUN )); then
+    info "(dry run) would write $unitfile"
+    did "wrote $unitfile"        # counts only; did() prints nothing under DRY_RUN
+  else
+    local tmp2; tmp2="$(mktemp)"
+    printf '%s\n' "$wantunit" > "$tmp2"
+    run sudo mkdir -p "$unitdir"
+    run sudo install -m 644 "$tmp2" "$unitfile"
+    rm -f "$tmp2"
+    run sudo systemctl daemon-reload
+    did "wrote $unitfile (sshd ordered after tailscaled)"
+  fi
+}
 
 enable_system_units() {
   local entry pkg unit why
@@ -2094,6 +2201,7 @@ stage_services() {
   stage_banner "60 services -- system and user units"
 
   enable_system_units
+  harden_sshd
 
   # ---- login keyring auto-unlock (added 2026-08-23) ---------------------------
   #
