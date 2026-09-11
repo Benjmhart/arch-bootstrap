@@ -81,6 +81,27 @@ LOGIN_SHELL="${LOGIN_SHELL:-zsh}"
 SSHD_LISTEN_ADDRESS="${SSHD_LISTEN_ADDRESS:-}"   # e.g. a tailnet address; empty = all interfaces
 SSHD_ALLOW_USERS="${SSHD_ALLOW_USERS:-$USER}"    # empty disables the AllowUsers restriction
 
+# /tmp: RAM or disk. systemd's static tmp.mount makes /tmp a tmpfs at size=50% of
+# RAM, which is an UNBOUNDED claim on memory that no quota limits -- on a 32 GiB
+# box that is a 16 GiB ceiling one runaway `dd` can reach. Setting this to `true`
+# masks the unit so /tmp is a plain directory on the root filesystem.
+#
+# `false` leaves systemd's default alone, and that is the right answer more often
+# than it looks: a tmpfs /tmp is faster, it self-cleans at every boot, and on a
+# machine with plenty of RAM relative to its workload the ceiling never matters.
+# Decide per machine -- a memory-tight desktop and a headless server want
+# different answers.
+#
+# TWO THINGS THIS DOES NOT DO, both learned the expensive way on beast-arch:
+#   - It does NOT take effect until the next boot. The tmpfs that is mounted now
+#     stays mounted; masking only stops it coming back. Anything verifying this
+#     before a reboot is verifying nothing.
+#   - It does NOT touch /dev/shm, which is also tmpfs and must stay that way --
+#     POSIX shared memory is what it is for. If you use nix, its
+#     `sandbox-dev-shm-size` is a separate 50%-of-RAM claim per build sandbox and
+#     this setting does not bound it.
+TMP_ON_DISK="${TMP_ON_DISK:-false}"              # true = mask tmp.mount so /tmp is on disk
+
 # Used as the Obsidian sync device name, so the version history says which
 # machine a change came from. `hostname` is not installed everywhere (it is in
 # inetutils, which is not in the package list); `uname -n` always is.
@@ -2197,11 +2218,60 @@ enable_system_units() {
   fi
 }
 
+# Move /tmp off tmpfs, or leave it alone. Called from stage 60.
+#
+# WHY MASK AND NOT A DROP-IN. /tmp is not in /etc/fstab on Arch -- it is mounted
+# by the static unit /usr/lib/systemd/system/tmp.mount. An fstab entry would be a
+# SECOND mechanism racing that unit, so the change has to go through systemd.
+# A tmp.mount.d drop-in can only resize the tmpfs; it cannot make it not exist.
+# Masking is the supported way to say "do not mount this", and basic.target's own
+# comment says so.
+#
+# WHAT YOU GIVE UP, stated because it is a real trade and not a free win: a tmpfs
+# /tmp is emptied by the kernel at every boot. On disk, /tmp persists across
+# reboots and cleanup falls to systemd-tmpfiles, which ages files out rather than
+# truncating the tree. Expect stale files to accumulate where none did before.
+manage_tmp_storage() {
+  local unit=tmp.mount
+  local state
+  state="$(systemctl is-enabled "$unit" 2>/dev/null || true)"
+
+  if [[ $TMP_ON_DISK != true ]]; then
+    # Not our business -- but say what is true, because "I did not configure it"
+    # and "it is not a tmpfs" are different facts and only one of them is safe to
+    # assume later.
+    if [[ $state == masked ]]; then
+      warn "$unit is masked but TMP_ON_DISK=false -- /tmp is on disk and this script did not do it"
+    else
+      info "$unit left alone (TMP_ON_DISK=false) -- /tmp is a tmpfs at systemd's default size=50%"
+    fi
+    return 0
+  fi
+
+  if [[ $state == masked ]]; then
+    ok "$unit already masked -- /tmp is on disk from the next boot onward"
+  else
+    info "masking $unit -- /tmp becomes a plain directory on the root filesystem"
+    run sudo systemctl mask "$unit"
+    did "$unit masked"
+  fi
+
+  # The gap that matters. Masking is a boot-time change; reporting it as done
+  # while a 16 GiB tmpfs is still mounted underneath you is exactly the
+  # "the command works, the feature does not" failure this script keeps hitting.
+  if findmnt -no FSTYPE /tmp 2>/dev/null | grep -qx tmpfs; then
+    warn "/tmp is STILL a tmpfs right now -- masking only applies at the next boot"
+    warn "  reboot, then check: findmnt /tmp (expect no output) and stat -c '%a %U %G' /tmp (expect 1777 root root)"
+  fi
+}
+
+
 stage_services() {
   stage_banner "60 services -- system and user units"
 
   enable_system_units
   harden_sshd
+  manage_tmp_storage
 
   # ---- login keyring auto-unlock (added 2026-08-23) ---------------------------
   #
