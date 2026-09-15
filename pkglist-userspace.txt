@@ -61,6 +61,8 @@ pipewire-alsa
 pipewire-jack
 pipewire-pulse
 pnpm
+poppler
+poppler-data
 python-pip
 ripgrep
 ruby
