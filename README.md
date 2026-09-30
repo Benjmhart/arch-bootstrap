@@ -64,7 +64,14 @@ This matters more than it sounds. Bootstrapping a machine involves dropping to
 another TTY to check something, or discovering you need to fix a remote before the
 clone will work. Ctrl-C out, do what you need, and run `./bootstrap.sh --resume` —
 finished stages will not repeat. If a stage fails it is *not* marked done, so a
-resume picks up exactly where it broke.
+resume picks up exactly where it broke. "Fails" means any command in it fails:
+stages run under `set -e`. (Until 2026-09-30 they did not — each was called as an
+`if` condition, which disables `set -e` in bash — so a stage whose last line
+succeeded was marked done however much of it had failed.)
+
+A `sudo` step with no terminal to prompt on is refused rather than attempted:
+each password-less attempt counts toward `pam_faillock`, and three lock the
+account for ten minutes.
 
 `--redo services` is the intended way to regenerate a unit after an upgrade changes
 the paths underneath it.
@@ -91,7 +98,9 @@ Each pause accepts Enter to continue or `s` to skip that step.
 05-ssh         HARD GATE. Everything below needs SSH auth to your git host.
 10-packages    pacman -S --needed from pkglist-userspace.txt
 15-hardware    DETECT and report: microcode, GPU, boot mode, audio, bluetooth, RAM
-20-aur         build yay from source first, then the rest of the AUR list
+20-aur         build yay from source first (needs base-devel, from stage 10),
+               then the rest of the AUR list, checked with pacman afterwards;
+               pacman hook for rambox-pro-bin's 0700 /opt/rambox
 25-toolchains  rustup (stable+nightly), stack, go, nvm+node (pinned), mise + its
                declared tools, luarocks, gem, global npm packages, herdr, claude;
                reports binaries it cannot install

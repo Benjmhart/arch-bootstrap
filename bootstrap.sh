@@ -127,15 +127,39 @@ SSH_ADD_KEYS_TO_AGENT="${SSH_ADD_KEYS_TO_AGENT:-yes}"
 PKG_EXCLUDE_FILE="${PKG_EXCLUDE_FILE:-}"
 
 BOOTSTRAP_CONFIG="${BOOTSTRAP_CONFIG:-$SCRIPT_DIR/bootstrap.conf}"
-# shellcheck disable=SC1090
-[[ -f $BOOTSTRAP_CONFIG ]] && . "$BOOTSTRAP_CONFIG"
 
-# ---------------------------------------------------------------------------
-# A non-standard XDG_CONFIG_HOME must be exported BEFORE anything else runs, or
-# applications scatter their config into ~/.config and the dotfiles never take
-# effect. This is the single easiest thing to get wrong.
-# ---------------------------------------------------------------------------
-[[ -n $CONFIG_HOME_OVERRIDE ]] && export XDG_CONFIG_HOME="$CONFIG_HOME_OVERRIDE"
+# A path written as "~/BRAIN" -- which is what anyone types at a prompt -- keeps
+# its tilde LITERALLY: bash expands a tilde only when it is unquoted in the
+# script's own text, never one that arrives inside a quoted value. On 2026-09-30
+# that sent OBSIDIAN_VAULT and XDG_CONFIG_HOME to a directory actually named `~`
+# under whatever the cwd was (the arch-bootstrap checkout), leaving ~/BRAIN
+# missing, the obsidian-sync unit failing on `--path ~/BRAIN` (systemd does not
+# expand it either), and an auth token and vault key untracked inside a repo
+# meant to be publishable. Expand once, at load, for every path setting.
+expand_tilde() {
+  local v=$1
+  case $v in
+    "~")   v=$HOME ;;
+    "~/"*) v="$HOME/${v#\~/}" ;;
+  esac
+  printf '%s' "$v"
+}
+
+load_config() {
+  # shellcheck disable=SC1090
+  if [[ -f $BOOTSTRAP_CONFIG ]]; then . "$BOOTSTRAP_CONFIG"; fi
+  local v
+  for v in DOTFILES_DIR SECRETS_DIR WALLPAPERS_DIR XMONAD_DIR OBSIDIAN_VAULT \
+           CONFIG_HOME_OVERRIDE PKG_EXCLUDE_FILE; do
+    printf -v "$v" '%s' "$(expand_tilde "${!v}")"
+  done
+  # A non-standard XDG_CONFIG_HOME must be exported BEFORE anything else runs, or
+  # applications scatter their config into ~/.config and the dotfiles never take
+  # effect. This is the single easiest thing to get wrong.
+  if [[ -n $CONFIG_HOME_OVERRIDE ]]; then export XDG_CONFIG_HOME="$CONFIG_HOME_OVERRIDE"; fi
+}
+
+load_config
 export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/arch-bootstrap"
@@ -173,9 +197,19 @@ todo()  { printf '%s  >>  %s %s\n' "$C_BOLD$C_YEL" "$C_RESET" "$*"; }
 run() {
   if (( DRY_RUN )); then
     printf '%s  would run:%s %s\n' "$C_DIM" "$C_RESET" "$*"
-  else
-    "$@"
+    return 0
   fi
+  # sudo with no terminal cannot ask for a password, and every such attempt still
+  # counts as a failure to pam_faillock: three of them lock the account for ten
+  # minutes. A non-interactive `--only services` did exactly that on 2026-09-30.
+  # Refuse up front unless credentials are already cached (`sudo -n` does not
+  # count as an attempt).
+  if [[ ${1:-} == sudo ]] && ! have_tty && ! sudo -n true 2>/dev/null; then
+    warn "needs sudo and there is no terminal to ask on -- not attempted: $*"
+    warn "(each password-less attempt counts toward the faillock lockout)"
+    return 1
+  fi
+  "$@"
 }
 
 # Confirmation of something that ACTUALLY happened. Silent under --dry-run, where
@@ -366,15 +400,26 @@ write_config_interactively() {
     "$C_BOLD" "$(basename "$BOOTSTRAP_CONFIG")" "$C_RESET"
   printf 'needs to know where your dotfiles and secrets live.\n\n'
 
-  local dotfiles secrets vault confighome shell_pref
+  local dotfiles secrets wallpapers vault confighome shell_pref
   read -r -p "  Dotfiles git remote (bare repo, e.g. git@github.com:you/dotfiles.git): " \
     dotfiles </dev/tty
   read -r -p "  Secrets git remote (blank to skip that stage): " secrets </dev/tty
-  read -r -p "  Obsidian vault path (blank to skip Obsidian stages) [$HOME/vault]: " \
+  # Asked for because it was NOT, until 2026-09-30: the generated file had no
+  # WALLPAPERS_REMOTE line at all, so stage 35 skipped the clone and the desktop
+  # came up blank on a machine whose RUNBOOK said to set it.
+  read -r -p "  Wallpapers git remote (blank to skip; the desktop gets no wallpaper): " \
+    wallpapers </dev/tty
+  read -r -p "  Obsidian vault path, e.g. ~/vault (blank to skip Obsidian stages): " \
     vault </dev/tty
   read -r -p "  Non-standard XDG_CONFIG_HOME (blank for the default ~/.config): " \
     confighome </dev/tty
   read -r -p "  Preferred login shell [zsh]: " shell_pref </dev/tty
+
+  # Written out absolute, so the file says what it means. load_config expands a
+  # tilde as well, but a file that holds the literal is a trap for anything else
+  # that reads it.
+  vault="$(expand_tilde "$vault")"
+  confighome="$(expand_tilde "$confighome")"
 
   cat > "$BOOTSTRAP_CONFIG" <<EOF
 # arch-bootstrap local configuration -- generated $(date -Iseconds)
@@ -383,6 +428,7 @@ write_config_interactively() {
 
 DOTFILES_REMOTE="${dotfiles}"
 SECRETS_REMOTE="${secrets}"
+WALLPAPERS_REMOTE="${wallpapers}"
 OBSIDIAN_VAULT="${vault}"
 CONFIG_HOME_OVERRIDE="${confighome}"
 LOGIN_SHELL="${shell_pref:-zsh}"
@@ -401,9 +447,11 @@ EOF
   chmod 600 "$BOOTSTRAP_CONFIG"
   ok "wrote $BOOTSTRAP_CONFIG (mode 600, gitignored)"
 
-  # shellcheck disable=SC1090
-  . "$BOOTSTRAP_CONFIG"
-  [[ -n ${CONFIG_HOME_OVERRIDE:-} ]] && export XDG_CONFIG_HOME="$CONFIG_HOME_OVERRIDE"
+  # Through load_config, not a bare `.`: that also expands the paths. And the old
+  # `[[ -n $CONFIG_HOME_OVERRIDE ]] && export ...` as this function's LAST line
+  # returned 1 whenever the answer was blank -- harmless while stages ran with
+  # errexit off, fatal to preflight now that they do not.
+  load_config
 }
 
 stage_preflight() {
@@ -660,6 +708,21 @@ bootstrap_agent_cleanup() {
   BOOTSTRAP_AGENT_PID=""
 }
 
+# The single EXIT trap. A second `trap ... EXIT` would replace the first, so agent
+# cleanup is called from here rather than trapped on its own.
+CURRENT_STAGE=""
+on_exit() {
+  local rc=$?
+  bootstrap_agent_cleanup
+  if [[ -n $CURRENT_STAGE ]] && (( rc != 0 )); then
+    warn "stage '$CURRENT_STAGE' did not complete cleanly (exit $rc) -- not marking it done"
+    printf '\n%sStopped at stage %s.%s Fix the problem above and re-run:\n\n' \
+      "$C_BOLD$C_YEL" "$CURRENT_STAGE" "$C_RESET" >&2
+    printf '    %s --resume\n\n' "$0" >&2
+    printf 'Completed stages will not repeat.\n' >&2
+  fi
+}
+
 # A locked key and an unregistered key are indistinguishable to the silent probe,
 # because the probe is forbidden from prompting. Offer to load the key instead of
 # concluding the key is not registered.
@@ -706,8 +769,7 @@ ssh_try_unlock() {
       info "no ssh-agent running -- starting one for the rest of this run"
       eval "$(ssh-agent -s)" >/dev/null 2>&1 || {
         warn "could not start an ssh-agent"; return 1; }
-      BOOTSTRAP_AGENT_PID="${SSH_AGENT_PID:-}"
-      trap bootstrap_agent_cleanup EXIT
+      BOOTSTRAP_AGENT_PID="${SSH_AGENT_PID:-}"   # on_exit kills it
     fi
   fi
 
@@ -831,7 +893,7 @@ stage_hardware() {
       # [0300] class code by having a colon.
       local vendor_id
       vendor_id="$(grep -oE '\[[0-9a-fA-F]{4}:[0-9a-fA-F]{4}\]' <<<"$gpu" \
-                   | head -1 | tr -d '[]' | cut -d: -f1 | tr 'A-F' 'a-f')"
+                   | head -1 | tr -d '[]' | cut -d: -f1 | tr 'A-F' 'a-f' || true)"
 
       case "$vendor_id" in
         10de)
@@ -946,6 +1008,22 @@ stage_hardware() {
 stage_aur() {
   stage_banner "20 aur"
 
+  # makepkg needs base-devel (fakeroot, debugedit). It is in pkglist-userspace.txt
+  # since 2026-09-30; before that the script assumed pacstrap had installed it, and
+  # on a rebuild where it had not, makepkg failed with "Cannot find the fakeroot
+  # binary" and -- with stage errors ignored at the time -- stage 20 was marked
+  # done with nothing from the AUR installed. Checked here too, so a run with
+  # `--only aur` or an excluded base-devel fails with the cause, not a symptom.
+  if ! pacman -Q base-devel >/dev/null 2>&1; then
+    if (( DRY_RUN )); then
+      info "(dry run) base-devel is not installed -- a real run would stop here"
+    else
+      warn "base-devel is not installed -- makepkg cannot build anything without it"
+      todo "sudo pacman -S --needed base-devel    (or re-run stage 10: --redo packages)"
+      return 1
+    fi
+  fi
+
   # yay is itself in the AUR list, so it has to be built from source first.
   if have yay; then
     ok "yay already installed"
@@ -977,9 +1055,65 @@ stage_aur() {
     ok "all ${#want[@]} AUR packages already installed"
   else
     info "${#missing[@]} missing from the AUR list: ${missing[*]}"
+    local n=${#missing[@]}
     # shellcheck disable=SC2086
     run yay -S --needed --noconfirm "${missing[@]}"
-    did "${#missing[@]} AUR package(s) installed"
+    if ! (( DRY_RUN )); then
+      # Ask pacman, not yay's exit status: this stage's "done" mark is what a
+      # later session trusts, so it is only earned by the packages being there.
+      mapfile -t missing < <(pacman -T "${want[@]}" 2>/dev/null || true)
+      if (( ${#missing[@]} )); then
+        warn "still missing after yay: ${missing[*]}"
+        return 1
+      fi
+    fi
+    did "$n AUR package(s) installed"
+  fi
+
+  if [[ " ${want[*]} " == *" rambox-pro-bin "* ]]; then
+    install_rambox_perms_hook
+  fi
+}
+
+# rambox-pro-bin installs /opt/rambox as drwx------ root, so `rambox` fails with
+# "permission denied" for every user and xmonad's spawnOnOnce silently opens
+# nothing. The cause is upstream: the Rambox .deb ships ./opt/Rambox/ as 0700
+# (its postinst chmods only chrome-sandbox), and the PKGBUILD's `cp -rp .../.`
+# carries that mode onto the package directory. Found 2026-09-30 on beast-arch,
+# pkgver 2.7.1-1. Every upgrade reinstalls the 0700, so a one-off chmod is not a
+# fix -- a pacman hook re-applies it after each install or upgrade. Retire this
+# when the AUR package sets the mode itself.
+RAMBOX_HOOK=/etc/pacman.d/hooks/rambox-perms.hook
+install_rambox_perms_hook() {
+  local want
+  want="$(cat <<'EOF'
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = rambox-pro-bin
+
+[Action]
+Description = Fixing /opt/rambox permissions (upstream deb ships it 0700)
+When = PostTransaction
+Exec = /usr/bin/chmod 755 /opt/rambox
+EOF
+)"
+  if [[ -f $RAMBOX_HOOK ]] && [[ "$(cat "$RAMBOX_HOOK")" == "$want" ]]; then
+    ok "rambox permissions hook in place"
+  else
+    local tmp; tmp="$(mktemp)"
+    printf '%s\n' "$want" > "$tmp"
+    run sudo install -D -m 644 "$tmp" "$RAMBOX_HOOK" || { rm -f "$tmp"; return 1; }
+    rm -f "$tmp"
+    did "installed $RAMBOX_HOOK"
+  fi
+
+  # The hook fires on the NEXT transaction; the package installed a moment ago is
+  # already 0700. `stat` needs only search permission on /opt, not on /opt/rambox.
+  if [[ -d /opt/rambox && "$(stat -c %a /opt/rambox)" != 755 ]]; then
+    run sudo chmod 755 /opt/rambox
+    did "chmod 755 /opt/rambox"
   fi
 }
 
@@ -1044,7 +1178,7 @@ stage_toolchains() {
     # Sourcing nvm and asking `nvm ls` is read-only, so the dry run can answer
     # this properly instead of always claiming it would install. It used to print
     # "would run: nvm install 24" on a machine that already had v24.
-    set +u; # shellcheck disable=SC1091
+    set +eu; # shellcheck disable=SC1091
     . "$NVM_DIR/nvm.sh"
     if nvm ls --no-colors "$NODE_MAJOR" >/dev/null 2>&1; then
       ok "node v$NODE_MAJOR already installed"
@@ -1052,40 +1186,60 @@ stage_toolchains() {
       printf '%s  would run:%s nvm install %s\n' "$C_DIM" "$C_RESET" "$NODE_MAJOR"
       did "node v$NODE_MAJOR installed"
     fi
-    set -u
+    set -eu
   elif (( DRY_RUN )); then
     printf '%s  would run:%s nvm install %s\n' "$C_DIM" "$C_RESET" "$NODE_MAJOR"
     did "node v$NODE_MAJOR installed"
   elif [[ -s $NVM_DIR/nvm.sh ]]; then
     # nvm is a function, not a binary -- must be sourced, and it trips `set -u`.
-    set +u; # shellcheck disable=SC1091
+    # It trips `set -e` too: its internal helpers return non-zero as ordinary
+    # control flow, so errexit is off for this block and each step that matters is
+    # checked by hand. Every exit from the block goes through the one `set -eu`
+    # below -- returning early with errexit still off would leave it off for the
+    # rest of the run, and the failure would be marked done like before.
+    set +eu; # shellcheck disable=SC1091
     . "$NVM_DIR/nvm.sh"
+    local nvm_fail=""
 
     # `nvm install` on an already-installed version is close to a no-op, but it
     # still resolves the version index over the network on every run. Ask locally.
     if nvm ls --no-colors "$NODE_MAJOR" >/dev/null 2>&1; then
       ok "node v$NODE_MAJOR already installed"
-    else
-      nvm install "$NODE_MAJOR"
+    elif nvm install "$NODE_MAJOR"; then
       did "node v$NODE_MAJOR installed"
-    fi
-
-    if [[ "$(nvm alias default --no-colors 2>/dev/null)" == *"v$NODE_MAJOR."* ]]; then
-      ok "nvm default alias already -> v$NODE_MAJOR"
     else
-      nvm alias default "$NODE_MAJOR" >/dev/null
+      nvm_fail="nvm install $NODE_MAJOR"
+    fi
+
+    if [[ -n $nvm_fail ]]; then
+      :
+    elif [[ "$(nvm alias default --no-colors 2>/dev/null)" == *"v$NODE_MAJOR."* ]]; then
+      ok "nvm default alias already -> v$NODE_MAJOR"
+    elif nvm alias default "$NODE_MAJOR" >/dev/null; then
       did "nvm default alias set to v$NODE_MAJOR"
+    else
+      nvm_fail="nvm alias default $NODE_MAJOR"
     fi
 
-    nvm use "$NODE_MAJOR" >/dev/null
-    ok "node $(node --version) active (pinned to v$NODE_MAJOR)"
-
-    if [[ -n $OBSIDIAN_VAULT ]]; then
-      npm ls -g --depth 0 2>/dev/null | grep -q obsidian-headless \
-        && ok "obsidian-headless already installed" \
-        || { npm install -g obsidian-headless && did "obsidian-headless installed"; }
+    if [[ -z $nvm_fail ]]; then
+      if nvm use "$NODE_MAJOR" >/dev/null; then
+        ok "node $(node --version) active (pinned to v$NODE_MAJOR)"
+      else
+        nvm_fail="nvm use $NODE_MAJOR"
+      fi
     fi
-    set -u
+
+    if [[ -z $nvm_fail && -n $OBSIDIAN_VAULT ]]; then
+      if npm ls -g --depth 0 2>/dev/null | grep -q obsidian-headless; then
+        ok "obsidian-headless already installed"
+      elif npm install -g obsidian-headless; then
+        did "obsidian-headless installed"
+      else
+        nvm_fail="npm install -g obsidian-headless"
+      fi
+    fi
+    set -eu
+    [[ -z $nvm_fail ]] || { warn "failed: $nvm_fail"; return 1; }
   fi
 
   install_npm_globals
@@ -1247,7 +1401,9 @@ install_npm_globals() {
   # Ask npm ONCE and match locally. `npm ls -g <name>` per package is a process
   # spawn each, and on a scoped name it is easy to get a false negative.
   local installed
-  installed="$(npm ls -g --depth 0 --parseable 2>/dev/null | sed 's|.*/node_modules/||')"
+  # npm ls exits non-zero over any extraneous/invalid dependency; the listing is
+  # still complete, and under pipefail + errexit that would kill the stage.
+  installed="$(npm ls -g --depth 0 --parseable 2>/dev/null | sed 's|.*/node_modules/||' || true)"
 
   local pkg
   for pkg in "${want[@]}"; do
@@ -1300,7 +1456,7 @@ install_self_distributed_binaries() {
   # Deliberately no jq dependency -- this runs before much is installed.
   asset="$(curl -fsSL "$HERDR_MANIFEST" 2>/dev/null \
            | grep -o "\"$arch\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" \
-           | head -1 | sed 's/.*"\(https[^"]*\)".*/\1/')"
+           | head -1 | sed 's/.*"\(https[^"]*\)".*/\1/' || true)"
 
   if [[ -z $asset ]]; then
     warn "could not resolve a herdr download URL -- install it by hand"
@@ -1528,7 +1684,7 @@ stage_secrets() {
 
   (( DRY_RUN )) || {
     local kdbx
-    kdbx="$(find "$SECRETS_DIR" -maxdepth 2 -name '*.kdbx' 2>/dev/null | head -1)"
+    kdbx="$(find "$SECRETS_DIR" -maxdepth 2 -name '*.kdbx' 2>/dev/null | head -1 || true)"
     [[ -n $kdbx ]] && ok "vault found: $(basename "$kdbx")" \
                    || info "no .kdbx found under $SECRETS_DIR"
   }
@@ -2629,18 +2785,21 @@ main() {
 
   (( DRY_RUN )) && warn "DRY RUN -- nothing will be changed"
 
+  # A stage is called as a plain command, NOT as `if "stage_$s"; then`. Bash turns
+  # `set -e` off for the whole body of a function called as an `if` condition, so
+  # that form ran every stage with errors ignored and marked it done as long as its
+  # LAST command succeeded -- which is always `did "..."`. On 2026-09-30 that marked
+  # stage 20 complete with yay never built (makepkg had no fakeroot) and none of the
+  # AUR list installed. Now a failing command stops the run inside its stage, and
+  # on_exit reports which stage it was. Not a subshell either: stage 05 exports
+  # SSH_AUTH_SOCK for the stages after it, and a subshell would drop that.
+  trap on_exit EXIT
   for s in "${STAGES[@]}"; do
     if selected "$s"; then
-      if "stage_$s"; then
-        state_mark "$s"
-      else
-        warn "stage '$s' did not complete cleanly -- not marking it done"
-        printf '\n%sStopped at stage %s.%s Fix the problem and re-run:\n\n' \
-          "$C_BOLD$C_YEL" "$s" "$C_RESET"
-        printf '    %s --resume\n\n' "$0"
-        printf 'Completed stages will not repeat.\n'
-        exit 1
-      fi
+      CURRENT_STAGE="$s"
+      "stage_$s"
+      CURRENT_STAGE=""
+      state_mark "$s"
     else
       state_done "$s" && info "stage $s already done -- skipping" \
                       || info "skipping stage $s"

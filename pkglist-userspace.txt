@@ -2,6 +2,7 @@ adsb_deku
 alacritty
 alsa-utils
 arandr
+base-devel
 bat
 cbatticon
 chromium
