@@ -20,8 +20,9 @@ bash install.sh <hostname> <username>
 It asks for the target drive, the disk-encryption password and the user password
 (Enter = same as the disk password), shows what it will erase, and wants `WIPE`
 typed before touching anything. It then runs archinstall unattended: archinstall's
-own default layout (1 GiB `/boot`, ext4 `/`, LUKS-encrypted ext4 `/home`; add
-`--encrypt-root` to encrypt `/` too), GRUB, NetworkManager, pipewire, zram, one sudo
+own default layout (1 GiB `/boot`, ext4 `/` and ext4 `/home`, **both LUKS-encrypted**
+behind one passphrase at boot; `--home-only-encryption` leaves `/` in the clear),
+GRUB, NetworkManager, pipewire, zram, one sudo
 user with root locked, plus `base-devel git zsh openssh github-cli` so that
 `bootstrap.sh` can start. It checks the installed system afterwards rather than
 trusting archinstall's exit status, which can be 0 on failure.

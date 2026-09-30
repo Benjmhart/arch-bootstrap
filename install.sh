@@ -14,9 +14,15 @@
 #
 # What it installs (mirrors how beast-arch was built by hand):
 #   GPT on UEFI / msdos on BIOS, archinstall's own default layout, reproduced here:
-#     1 GiB fat32 /boot
+#     1 GiB fat32 /boot   (unencrypted -- GRUB and the kernel have to be readable)
 #     ext4 /      32 GiB (disk < 320 GiB), disk/10 (320-500 GiB), 50 GiB (> 500 GiB)
-#     ext4 /home  the rest, LUKS-encrypted (add --encrypt-root to encrypt / too)
+#     ext4 /home  the rest
+#   BOTH / and /home LUKS-encrypted, one passphrase at boot: archinstall adds the
+#   `encrypt` hook and cryptdevice= for /, and unlocks /home with a keyfile kept
+#   on the encrypted root (/etc/cryptsetup-keys.d/home.key). Encrypting only
+#   /home -- how beast-arch was built before 2026-09-30 -- left /etc, /usr and
+#   /var readable and writable offline; after the phishing incident that
+#   prompted this script, root is encrypted by default.
 #   GRUB, linux kernel, NetworkManager, pipewire, zram swap, en_US.UTF-8, us keymap,
 #   America/Toronto with NTP, one sudo user, root locked (sudo only),
 #   plus base-devel git zsh openssh github-cli -- what bootstrap.sh needs to start.
@@ -34,7 +40,7 @@
 # real hardware -- first use should be a VM or a disk you can lose.
 #
 # Options:
-#   --encrypt-root          LUKS-encrypt / as well as /home (one passphrase at boot)
+#   --home-only-encryption  encrypt /home but NOT / (the pre-2026-09-30 layout)
 #   --render-only DIR       write the two JSON files to DIR and stop (testing)
 #   --disk PATH             skip the drive prompt
 #
@@ -53,11 +59,11 @@ die()  { printf 'FAIL  %s\n' "$*" >&2; exit 1; }
 info() { printf '  --  %s\n' "$*"; }
 ask()  { local __v=$1 prompt=$2 def=${3:-} ans; read -r -p "$prompt${def:+ [$def]}: " ans </dev/tty; printf -v "$__v" '%s' "${ans:-$def}"; }
 
-encrypt_root=0 render_dir="" disk_arg=""
+encrypt_root=1 render_dir="" disk_arg=""
 pos=()
 while (( $# )); do
   case $1 in
-    --encrypt-root) encrypt_root=1 ;;
+    --home-only-encryption) encrypt_root=0 ;;
     --render-only)  render_dir="${2:?--render-only needs a directory}"; shift ;;
     --disk)         disk_arg="${2:?--disk needs a path}"; shift ;;
     -h|--help)      sed -n '3,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
