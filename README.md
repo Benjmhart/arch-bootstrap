@@ -7,6 +7,29 @@ It is deliberately *not* a "reinstall my machine" script. It installs applicatio
 toolchains, dotfiles and user services. It **detects** hardware and tells you what it
 would install, rather than replaying one machine's driver set onto another.
 
+## Before it: `install.sh` (the base install)
+
+`bootstrap.sh` starts from an Arch install that boots. `install.sh` makes one, from
+the Arch ISO, without archinstall's menus:
+
+```
+curl -fsSLO https://raw.githubusercontent.com/Benjmhart/arch-bootstrap/main/install.sh
+bash install.sh <hostname> <username>
+```
+
+It asks for the target drive, the disk-encryption password and the user password
+(Enter = same as the disk password), shows what it will erase, and wants `WIPE`
+typed before touching anything. It then runs archinstall unattended: archinstall's
+own default layout (1 GiB `/boot`, ext4 `/`, LUKS-encrypted ext4 `/home`; add
+`--encrypt-root` to encrypt `/` too), GRUB, NetworkManager, pipewire, zram, one sudo
+user with root locked, plus `base-devel git zsh openssh github-cli` so that
+`bootstrap.sh` can start. It checks the installed system afterwards rather than
+trusting archinstall's exit status, which can be 0 on failure.
+
+The configuration was validated against archinstall 4.4 and 4.5's own parser and
+partitioner on disk images, and reproduces beast-arch's partition table sector for
+sector. It has **not yet run end to end on real hardware** — try it in a VM first.
+
 ## Why the split matters
 
 The obvious way to write this is `pacman -Qqe > pkglist.txt` on the old box and
