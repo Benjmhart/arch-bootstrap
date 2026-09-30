@@ -25,6 +25,8 @@ feh
 firefox
 flameshot
 flowblade
+fontconfig
+freetype2
 fzf
 gcr
 git
@@ -39,7 +41,14 @@ keepassxc
 less
 libpulse
 libsecret
+libx11
+libxext
+libxft
+libxinerama
+libxrandr
+libxss
 luarocks
+make
 mise
 neovim
 networkmanager
@@ -61,6 +70,7 @@ pipewire
 pipewire-alsa
 pipewire-jack
 pipewire-pulse
+pkgconf
 pnpm
 poppler
 poppler-data
@@ -86,6 +96,7 @@ ttf-fira-code
 ttf-monoid
 udiskie
 unzip
+uv
 vifm
 vim
 vivaldi

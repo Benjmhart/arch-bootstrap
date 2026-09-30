@@ -41,8 +41,17 @@ cd arch-bootstrap
 ./bootstrap.sh               # for real
 ```
 
-On first run it will ask for your dotfiles remote and a few paths, and write them to
-`bootstrap.conf` (gitignored, mode 600). Nothing personal lives in the script itself.
+On first run it asks one question: a private git repo holding
+`arch-bootstrap/bootstrap.conf` (your secrets repo is the natural home). Answer it,
+and stage 05 logs you in to GitHub, clones that repo and adopts the file — the
+rest of the configuration is never typed. Leave it blank to answer the individual
+questions instead. Either way the result is `bootstrap.conf` (gitignored, mode
+600). Nothing personal lives in the script itself.
+
+GitHub SSH setup needs no copy-pasting: stage 05 runs `gh auth login` with a
+one-time code (enter it at https://github.com/login/device from a phone — no
+browser is needed on the machine) and registers the machine's keys through the
+API.
 
 ```
 --list           show stages and which are already done
@@ -73,7 +82,7 @@ A `sudo` step with no terminal to prompt on is refused rather than attempted:
 each password-less attempt counts toward `pam_faillock`, and three lock the
 account for ten minutes.
 
-`--redo services` is the intended way to regenerate a unit after an upgrade changes
+`--redo obsidian` is the intended way to regenerate a unit after an upgrade changes
 the paths underneath it.
 
 ## Interactive steps
@@ -108,9 +117,11 @@ Each pause accepts Enter to continue or `s` to skip that step.
 35-secrets     clone the secrets repo; prompt to unlock the vault; clone wallpapers
 40-session     login shell, NetworkManager, font cache, .xinitrc check
 50-xmonad      stack build + xmonad --recompile  (slow: GHC from scratch)
-55-obsidian    interactive: ob login, sync-setup, sync-status
-60-services    enable system daemons (bluetooth/docker/earlyoom/tailscaled);
-               GENERATE systemd user units against resolved paths, then enable
+60-services    enable system daemons (bluetooth/docker/earlyoom/tailscaled),
+               sshd, /tmp, login-keyring PAM
+70-obsidian    NEEDS X -- deferred from a TTY, resume from a terminal in X:
+               ob login, sync-setup, sync-status, then GENERATE and enable the
+               obsidian-sync user unit against resolved paths
 80-verify      self-check every stage's observable result
 90-manual      printed checklist of what a script must not automate
 ```

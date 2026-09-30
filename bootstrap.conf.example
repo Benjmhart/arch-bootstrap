@@ -64,3 +64,8 @@ KEYXFER_URL=""
 # for one) are compiled against a specific NODE_MODULE_VERSION, so a floating
 # node breaks them with ERR_DLOPEN_FAILED.
 #NODE_MAJOR="24"
+
+# 1 = this file is a copy of arch-bootstrap/bootstrap.conf in the SECRETS repo,
+# re-adopted at every stage 05 (so edit it there, not here). Keep this line in
+# that copy. Answering only the first question on a fresh run sets it up.
+#CONFIG_FROM_SECRETS=1

@@ -65,6 +65,10 @@ NODE_MAJOR="${NODE_MAJOR:-24}"
 KEYXFER_URL="${KEYXFER_URL:-}"                  # optional SSH key-transfer helper binary
 CONFIG_HOME_OVERRIDE="${CONFIG_HOME_OVERRIDE:-}" # set if you use a non-standard XDG dir
 LOGIN_SHELL="${LOGIN_SHELL:-zsh}"
+# 1 = bootstrap.conf is a copy of $SECRETS_DIR/arch-bootstrap/bootstrap.conf,
+# adopted as soon as stage 05 can clone the secrets repo. Set by answering only
+# the first question on a fresh run. See adopt_config_from_secrets.
+CONFIG_FROM_SECRETS="${CONFIG_FROM_SECRETS:-0}"
 
 # sshd. Enabling the daemon is not the same as configuring it, and the config is
 # the part that is machine-specific -- so it is parameterised here rather than
@@ -172,8 +176,12 @@ ONLY=""
 SKIP=""
 REDO=""
 
+# obsidian runs AFTER services, and only under X: its login and vault binding are
+# interactive, and on a raw TTY there is no KeePassXC to copy a password from and
+# no second window to work in. From a TTY it is DEFERRED -- not failed, not
+# marked done -- and the run ends by saying to resume it from X.
 STAGES=(preflight ssh packages hardware aur toolchains dotfiles secrets
-        session xmonad obsidian services verify manual)
+        session xmonad services obsidian verify manual)
 
 # --------------------------------------------------------------------------- output
 
@@ -400,7 +408,27 @@ write_config_interactively() {
     "$C_BOLD" "$(basename "$BOOTSTRAP_CONFIG")" "$C_RESET"
   printf 'needs to know where your dotfiles and secrets live.\n\n'
 
-  local dotfiles secrets wallpapers vault confighome shell_pref
+  local dotfiles secrets wallpapers vault confighome shell_pref from_secrets=""
+  # One question instead of six, when the answers already live somewhere: the
+  # secrets repo carries arch-bootstrap/bootstrap.conf, and stage 05 adopts it the
+  # moment GitHub auth works. Nothing personal has to be typed, or remembered, on
+  # a machine being rebuilt under pressure. Added 2026-09-30.
+  read -r -p "  Secrets repo holding arch-bootstrap/bootstrap.conf (blank: answer the questions here): " \
+    from_secrets </dev/tty
+  if [[ -n $from_secrets ]]; then
+    cat > "$BOOTSTRAP_CONFIG" <<EOF
+# arch-bootstrap local configuration -- generated $(date -Iseconds)
+# PLACEHOLDER: stage 05 replaces this file with arch-bootstrap/bootstrap.conf
+# from the secrets repo below, as soon as it can clone it.
+SECRETS_REMOTE="${from_secrets}"
+CONFIG_FROM_SECRETS=1
+EOF
+    chmod 600 "$BOOTSTRAP_CONFIG"
+    ok "wrote $BOOTSTRAP_CONFIG -- the rest comes from the secrets repo after stage 05"
+    load_config
+    return 0
+  fi
+
   read -r -p "  Dotfiles git remote (bare repo, e.g. git@github.com:you/dotfiles.git): " \
     dotfiles </dev/tty
   read -r -p "  Secrets git remote (blank to skip that stage): " secrets </dev/tty
@@ -487,9 +515,13 @@ $(wc -l < "$SCRIPT_DIR/pkglist-aur.txt") AUR)"
     write_config_interactively
   fi
 
-  [[ -n $DOTFILES_REMOTE ]] \
-    && ok "dotfiles remote configured" \
-    || warn "DOTFILES_REMOTE unset -- stage 30 will be skipped"
+  if [[ -n $DOTFILES_REMOTE ]]; then
+    ok "dotfiles remote configured"
+  elif (( CONFIG_FROM_SECRETS )); then
+    info "the rest of the configuration arrives from the secrets repo at stage 05"
+  else
+    warn "DOTFILES_REMOTE unset -- stage 30 will be skipped"
+  fi
   [[ -n $SECRETS_REMOTE ]] \
     && ok "secrets remote configured" \
     || info "SECRETS_REMOTE unset -- stage 35 will be skipped"
@@ -553,41 +585,6 @@ stage_ssh() {
     fi
   fi
 
-  local tries=0
-  while ! ssh_auth_works; do
-    (( DRY_RUN )) && { info "(dry run -- skipping the auth gate)"; return 0; }
-    (( ++tries > 3 )) && break
-
-    # BEFORE blaming registration: a locked key looks exactly like an
-    # unregistered one to the probe, because the probe cannot prompt. Try to
-    # unlock first, and only fall through to "register it" if that fails or is
-    # declined. Getting this order wrong tells the user to re-register a key that
-    # is already registered, repeatedly, and never asks for the passphrase.
-    if ssh_try_unlock "${keys[@]}"; then
-      continue
-    fi
-
-    printf '\n'
-    local pub
-    for k in "${keys[@]}"; do
-      pub="$k.pub"
-      [[ -f $pub ]] || continue
-      printf '%s  public key (%s):%s\n' "$C_BOLD" "$(basename "$pub")" "$C_RESET"
-      sed 's/^/        /' "$pub"
-    done
-
-    pause_for "Register that public key with your git host." \
-      "GitHub: https://github.com/settings/keys -> New SSH key" \
-      "" \
-      "If it is ALREADY registered, the problem is not registration -- it is that" \
-      "the key is passphrase-protected and not loaded. Answer 'y' to the unlock" \
-      "prompt above, or in another terminal run:  ssh-add" \
-      "" \
-      "If you have no account access because the password is in a vault you" \
-      "cannot clone yet, use your account recovery codes. They must be stored" \
-      "somewhere that is NOT the vault." || break
-  done
-
   # ---- unattended agent key (added 2026-08-23) --------------------------------
   #
   # A SECOND key, deliberately WITHOUT a passphrase, pinned to github.com. It is
@@ -605,7 +602,7 @@ stage_ssh() {
   # database with no keyfile stored beside it, so a clone of it yields an encrypted
   # blob rather than usable credentials. If that ever stops being true, this is the
   # decision to revisit.
-  local agent_key="$HOME/.ssh/id_ed25519_agent"
+  local agent_key="$HOME/.ssh/id_ed25519_agent" agent_new=0
   if [[ -f $agent_key ]]; then
     ok "agent key present: $(basename "$agent_key")"
   elif (( DRY_RUN )); then
@@ -614,6 +611,7 @@ stage_ssh() {
     run ssh-keygen -t ed25519 -N "" -f "$agent_key" \
       -C "$(whoami)@$(cat /etc/hostname 2>/dev/null || echo unknown) agent key (no passphrase)"
     did "generated passphrase-less agent key"
+    agent_new=1
     mapfile -t keys < <(list_private_keys)
   fi
 
@@ -657,7 +655,59 @@ stage_ssh() {
     did "pinned github.com to the agent key in ~/.ssh/config"
   fi
 
-  if [[ -f "$agent_key.pub" ]] && ! (( DRY_RUN )); then
+  local tries=0 gh_tried=0
+  while ! ssh_auth_works; do
+    (( DRY_RUN )) && { info "(dry run -- skipping the auth gate)"; return 0; }
+    (( ++tries > 3 )) && break
+
+    # GitHub: log in with a one-time device code and register every key through
+    # the API, instead of hand-copying public keys from a raw TTY into a web form
+    # (which is what this stage asked for until 2026-09-30, twice per rebuild).
+    if (( ! gh_tried )) && [[ $(ssh_git_host) == github.com ]]; then
+      gh_tried=1
+      if github_register_keys "${keys[@]}"; then
+        continue
+      fi
+      warn "automatic GitHub key registration did not complete -- falling back to manual"
+    fi
+
+    # BEFORE blaming registration: a locked key looks exactly like an
+    # unregistered one to the probe, because the probe cannot prompt. Try to
+    # unlock first, and only fall through to "register it" if that fails or is
+    # declined. Getting this order wrong tells the user to re-register a key that
+    # is already registered, repeatedly, and never asks for the passphrase.
+    if ssh_try_unlock "${keys[@]}"; then
+      continue
+    fi
+
+    printf '\n'
+    local pub
+    for k in "${keys[@]}"; do
+      pub="$k.pub"
+      [[ -f $pub ]] || continue
+      printf '%s  public key (%s):%s\n' "$C_BOLD" "$(basename "$pub")" "$C_RESET"
+      sed 's/^/        /' "$pub"
+    done
+
+    pause_for "Register that public key with your git host." \
+      "GitHub: https://github.com/settings/keys -> New SSH key" \
+      "" \
+      "If it is ALREADY registered, the problem is not registration -- it is that" \
+      "the key is passphrase-protected and not loaded. Answer 'y' to the unlock" \
+      "prompt above, or in another terminal run:  ssh-add" \
+      "" \
+      "If you have no account access because the password is in a vault you" \
+      "cannot clone yet, use your account recovery codes. They must be stored" \
+      "somewhere that is NOT the vault." || break
+  done
+
+  # A new agent key needs registering even when the loop above never ran (the
+  # primary key already worked). Only a NEW one: asking on every run is how a
+  # routine re-run turns into a blocking manual step.
+  if (( agent_new )) && [[ $(ssh_git_host) == github.com ]] \
+     && github_register_keys "$agent_key"; then
+    :
+  elif (( agent_new )) && ! github_key_registered "$agent_key.pub"; then
     pause_for "Register the AGENT public key with GitHub as well." \
       "https://github.com/settings/keys -> New SSH key" \
       "" \
@@ -670,6 +720,7 @@ stage_ssh() {
 
   if ssh_auth_works; then
     ok "git host SSH authentication working"
+    adopt_config_from_secrets
     return 0
   fi
 
@@ -711,6 +762,10 @@ bootstrap_agent_cleanup() {
 # The single EXIT trap. A second `trap ... EXIT` would replace the first, so agent
 # cleanup is called from here rather than trapped on its own.
 CURRENT_STAGE=""
+# A stage that cannot run in this context (obsidian without X) sets this and
+# returns 0: the run carries on, but the stage is NOT marked done.
+STAGE_DEFERRED=0
+DEFERRED=()
 on_exit() {
   local rc=$?
   bootstrap_agent_cleanup
@@ -797,12 +852,82 @@ ssh_try_unlock() {
 # passphrase-protected key that is not in the agent, so a caller that treats a
 # false return as "not registered" is wrong. See stage_ssh.
 ssh_auth_works() {
-  local remote="${DOTFILES_REMOTE:-}" host out
-  [[ -z $remote ]] && return 1
-  host="${remote#*@}"; host="${host%%:*}"
+  local host out
+  host="$(ssh_git_host)"
   [[ -z $host ]] && return 1
   out="$(ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -T "git@$host" 2>&1 || true)"
   grep -qiE 'successfully authenticated|You.ve successfully|logged in as' <<<"$out"
+}
+
+# The git host to authenticate against, from whichever remote is known. The
+# secrets remote counts: when bootstrap.conf comes from the secrets repo, it is
+# the ONLY remote known at stage 05.
+ssh_git_host() {
+  local remote="${DOTFILES_REMOTE:-${SECRETS_REMOTE:-}}" host
+  [[ -z $remote ]] && return 0
+  host="${remote#*@}"; host="${host%%:*}"
+  printf '%s' "$host"
+}
+
+# Is gh logged in to github.com with a scope that can manage SSH keys?
+github_cli_ready() {
+  have gh || return 1
+  local st; st="$(gh auth status --hostname github.com 2>&1 || true)"
+  [[ $st == *"Logged in to github.com"* && $st == *"admin:public_key"* ]]
+}
+
+# Is this public key already on the GitHub account? Unknown (gh not ready)
+# answers no, so callers fall back to asking the human -- the pre-gh behaviour.
+github_key_registered() {
+  local pub=$1 body
+  github_cli_ready || return 1
+  body="$(awk '{print $1" "$2}' "$pub")"
+  gh api user/keys --jq '.[].key' 2>/dev/null | grep -qxF "$body"
+}
+
+# Log in to GitHub with the device flow and register every local public key.
+#
+# `gh auth login --web` prints a one-time code and a URL. On a raw TTY no browser
+# opens -- enter the code at https://github.com/login/device from a phone or any
+# other machine. That is the whole of the manual work.
+#
+# The token gh stores (~/.config/gh/hosts.yml, or the keyring) can manage SSH keys
+# on the account. It stays after this stage because gh is used day to day; to drop
+# it once the keys are registered:  gh auth logout --hostname github.com
+github_register_keys() {
+  local k pub title
+  if ! have gh; then
+    info "installing github-cli (stage 10 has not run yet; this stage needs it now)"
+    run sudo pacman -S --needed --noconfirm github-cli || return 1
+  fi
+  if ! github_cli_ready; then
+    if gh auth status --hostname github.com >/dev/null 2>&1; then
+      info "gh is logged in without admin:public_key -- asking for that scope"
+      run_interactive gh auth refresh --hostname github.com --scopes admin:public_key \
+        || return 1
+    else
+      pause_for "Log in to GitHub with a one-time code." \
+        "gh will print a code and a URL. No browser opens on a TTY: enter the code" \
+        "at https://github.com/login/device from your phone or another machine." \
+        || return 1
+      run_interactive gh auth login --hostname github.com --git-protocol ssh \
+        --skip-ssh-key --web --scopes admin:public_key || return 1
+    fi
+    github_cli_ready || { warn "gh login did not take"; return 1; }
+  fi
+  ok "gh logged in to github.com (can manage SSH keys)"
+
+  for k in "$@"; do
+    pub="$k.pub"
+    [[ -f $pub ]] || continue
+    if github_key_registered "$pub"; then
+      ok "$(basename "$pub") already registered on GitHub"
+      continue
+    fi
+    title="$(uname -n) $(basename "$k") $(date +%F)"
+    run gh ssh-key add "$pub" --title "$title" || return 1
+    did "registered $(basename "$pub") on GitHub as \"$title\""
+  done
 }
 
 # --------------------------------------------------------------------------- 10
@@ -1170,6 +1295,11 @@ stage_toolchains() {
     ok "nvm present at $NVM_DIR"
   else
     info "installing nvm"
+    # The installer REFUSES to run when NVM_DIR is set but the directory does not
+    # exist ("You have $NVM_DIR set to ..., but that directory does not exist"),
+    # and NVM_DIR is exported just above. On 2026-09-30 that had to be fixed by
+    # hand with mkdir; make it here instead.
+    run mkdir -p "$NVM_DIR"
     run bash -c 'curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash'
     did "nvm installed"
   fi
@@ -1665,6 +1795,49 @@ dotfiles_checkout() {
 
 # --------------------------------------------------------------------------- 35
 
+# Clone the secrets repo if it is not here yet. Shared by stage 05 (which needs
+# bootstrap.conf out of it) and stage 35 (which needs the vault). Remembers that
+# THIS run cloned it, so stage 35 still asks for the vault unlock.
+SECRETS_CLONED_THIS_RUN=0
+clone_secrets() {
+  if [[ -d $SECRETS_DIR ]]; then
+    ok "$SECRETS_DIR already cloned"
+    return 0
+  fi
+  run git clone "$SECRETS_REMOTE" "$SECRETS_DIR"
+  did "cloned secrets repo"
+  SECRETS_CLONED_THIS_RUN=1
+}
+
+# Replace bootstrap.conf with the copy kept in the secrets repo. The secrets copy
+# is the source of truth while CONFIG_FROM_SECRETS=1: edit it there, commit, and
+# the next run picks the change up. It is plain bash, so a value that differs per
+# machine can switch on the host:  case "$(uname -n)" in carbon) ... ;; esac
+adopt_config_from_secrets() {
+  (( CONFIG_FROM_SECRETS )) || return 0
+  [[ -n $SECRETS_REMOTE ]] || die "CONFIG_FROM_SECRETS=1 but SECRETS_REMOTE is empty"
+  if (( DRY_RUN )) && [[ ! -d $SECRETS_DIR ]]; then
+    info "(dry run) would clone $SECRETS_REMOTE and adopt its bootstrap.conf"
+    return 0
+  fi
+  clone_secrets
+  local src="$SECRETS_DIR/arch-bootstrap/bootstrap.conf"
+  if [[ ! -f $src ]]; then
+    warn "$src not found in the secrets repo"
+    todo "add it there, or delete $BOOTSTRAP_CONFIG and answer the questions instead"
+    return 1
+  fi
+  grep -q '^CONFIG_FROM_SECRETS=1' "$src" \
+    || warn "$src lacks CONFIG_FROM_SECRETS=1 -- later runs will stop following it"
+  if cmp -s "$src" "$BOOTSTRAP_CONFIG"; then
+    ok "bootstrap.conf matches the secrets repo's copy"
+  else
+    run install -m 600 "$src" "$BOOTSTRAP_CONFIG"
+    did "adopted bootstrap.conf from the secrets repo"
+  fi
+  load_config
+}
+
 stage_secrets() {
   stage_banner "35 secrets"
 
@@ -1673,14 +1846,8 @@ stage_secrets() {
     return 0
   fi
 
-  local fresh_clone=0
-  if [[ -d $SECRETS_DIR ]]; then
-    ok "$SECRETS_DIR already cloned"
-  else
-    run git clone "$SECRETS_REMOTE" "$SECRETS_DIR"
-    did "cloned secrets repo"
-    fresh_clone=1
-  fi
+  clone_secrets
+  local fresh_clone=$SECRETS_CLONED_THIS_RUN
 
   (( DRY_RUN )) || {
     local kdbx
@@ -1740,6 +1907,49 @@ clone_wallpapers() {
 
 # --------------------------------------------------------------------------- 40
 
+# oh-my-zsh, and the third-party plugins the dotfiles' .zshrc asks for.
+#
+# Nothing installed it before 2026-09-30, so a rebuilt machine opened every
+# terminal with
+#     .zshrc:source:176: no such file or directory: ~/.oh-my-zsh/oh-my-zsh.sh
+# and, with none of its lib loaded, no AUTO_CD: typing a directory name or `..`
+# answered "permission denied" (zsh tried to EXECUTE the directory).
+#
+# Cloned, NOT installed with the upstream install.sh: that script replaces
+# ~/.zshrc with its template, which would clobber the dotfiles' copy. Plugins are
+# cloned only if .zshrc actually names them in its plugins=(...) line.
+OMZ_REMOTE="https://github.com/ohmyzsh/ohmyzsh.git"
+declare -A OMZ_EXTERNAL_PLUGINS=(
+  [zsh-autosuggestions]="https://github.com/zsh-users/zsh-autosuggestions.git"
+  [zsh-syntax-highlighting]="https://github.com/zsh-users/zsh-syntax-highlighting.git"
+)
+install_oh_my_zsh() {
+  local zdir="${ZSH:-$HOME/.oh-my-zsh}"
+  if [[ -f $zdir/oh-my-zsh.sh ]]; then
+    ok "oh-my-zsh present at $zdir"
+  elif [[ -e $zdir ]]; then
+    warn "$zdir exists but has no oh-my-zsh.sh -- leaving it alone"
+    todo "move it aside and re-run:  $0 --redo session"
+    return 1
+  else
+    run git clone --depth 1 "$OMZ_REMOTE" "$zdir"
+    did "cloned oh-my-zsh into $zdir"
+  fi
+
+  local zshrc="$HOME/.zshrc" plugins_line="" name
+  [[ -f $zshrc ]] && plugins_line="$(grep -E '^[[:space:]]*plugins=\(' "$zshrc" || true)"
+  for name in "${!OMZ_EXTERNAL_PLUGINS[@]}"; do
+    [[ " ${plugins_line//[()=]/ } " == *" $name "* ]] || continue
+    local pdir="${ZSH_CUSTOM:-$zdir/custom}/plugins/$name"
+    if [[ -d $pdir ]]; then
+      ok "oh-my-zsh plugin $name present"
+    else
+      run git clone --depth 1 "${OMZ_EXTERNAL_PLUGINS[$name]}" "$pdir"
+      did "cloned oh-my-zsh plugin $name"
+    fi
+  done
+}
+
 stage_session() {
   stage_banner "40 session -- things a fresh Arch install leaves undone"
 
@@ -1758,6 +1968,8 @@ stage_session() {
   else
     warn "$LOGIN_SHELL not installed"
   fi
+
+  install_oh_my_zsh
 
   # NetworkManager. Not hardware -- the general network stack, and easy to
   # forget because the live ISO's networking is not what the installed system uses.
@@ -1970,10 +2182,16 @@ stage_xmonad() {
 # --------------------------------------------------------------------------- 55
 
 stage_obsidian() {
-  stage_banner "55 obsidian -- interactive sync setup"
+  stage_banner "70 obsidian -- interactive sync setup (needs X)"
 
   if [[ -z $OBSIDIAN_VAULT ]]; then
     info "OBSIDIAN_VAULT not set -- skipping"
+    return 0
+  fi
+
+  if [[ -z ${DISPLAY:-} ]] && ! (( DRY_RUN )); then
+    info "no X display -- deferring: this stage wants KeePassXC and a second window"
+    STAGE_DEFERRED=1
     return 0
   fi
 
@@ -2017,6 +2235,7 @@ stage_obsidian() {
   # 2. bind the local path to a remote vault
   if (( DRY_RUN )); then
     info "(dry run -- would run ob sync-list-remote / sync-setup / sync-status)"
+    obsidian_sync_unit      # dry-run safe: reports whether the unit would change
     return 0
   fi
 
@@ -2041,6 +2260,8 @@ stage_obsidian() {
   else
     ok "desktop app's Sync plugin is disabled for this vault"
   fi
+
+  obsidian_sync_unit
 }
 
 # Bind the local vault path to a remote vault.
@@ -2472,6 +2693,12 @@ stage_services() {
     if [[ $(grep -c 'pam_gnome_keyring' "$tmppam") -eq 3 ]]; then
       run sudo install -m 644 "$tmppam" "$pamfile"
       did "wired pam_gnome_keyring into $pamfile"
+      # PAM runs at LOGIN. The session this bootstrap runs in logged in before
+      # these lines existed, so it has no login keyring -- and the first app that
+      # asks for one under X gets a "create a new keyring" prompt instead. On
+      # 2026-09-30 that made a second keyring, `Default_Keyring`, the default, and
+      # it stayed locked at every later login.
+      todo "log out and back in BEFORE startx, so PAM creates the login keyring"
     else
       warn "could not place all three pam_gnome_keyring lines -- $pamfile left untouched"
       warn "add them by hand: auth/session(auto_start)/password optional pam_gnome_keyring.so"
@@ -2479,9 +2706,35 @@ stage_services() {
     rm -f "$tmppam"
   fi
 
+  # Only the keyring named `login` is unlocked by PAM. If the default alias names
+  # any other, apps store their secrets where nothing unlocks them and prompt at
+  # every login. Not fixed automatically: moving the items needs both keyrings
+  # unlocked, and the backing files are the only copy of browser Safe Storage keys.
+  local kdefault="${XDG_DATA_HOME:-$HOME/.local/share}/keyrings/default"
+  if [[ -f $kdefault ]] && [[ "$(cat "$kdefault")" != login ]]; then
+    warn "default keyring is '$(cat "$kdefault")', not 'login' -- it will not unlock at login"
+    todo "move its items into 'login' (seahorse, or the Secret Service API), then:"
+    todo "  printf login > $kdefault      and log out and back in"
+  elif [[ -f $kdefault ]]; then
+    ok "default keyring is 'login'"
+  fi
+
   # NOTE: user units live in ~/.config/systemd/user. systemd does NOT honour
   # XDG_CONFIG_HOME for unit lookup, so this path stays .config even on a box
   # with a non-standard config root. This bites people constantly.
+  local unit_dir="$HOME/.config/systemd/user"
+  run mkdir -p "$unit_dir"
+
+  # The obsidian-sync unit is generated by the obsidian stage (obsidian_sync_unit),
+  # which runs AFTER this one and only under X -- a unit for a vault that is not
+  # bound yet would just crash-loop.
+}
+
+# Generate and (once the vault is usable) enable the obsidian-sync user unit.
+# Called at the end of stage_obsidian. It lived in stage 60 until 2026-09-30, when
+# the obsidian stage moved after services and under X -- in services it ran
+# before any vault could be bound, and only a later `--redo services` enabled it.
+obsidian_sync_unit() {
   local unit_dir="$HOME/.config/systemd/user"
   run mkdir -p "$unit_dir"
 
@@ -2505,7 +2758,7 @@ stage_services() {
 
   if [[ -z $node_root ]]; then
     warn "no nvm node v${NODE_MAJOR}.x found -- skipping unit generation."
-    warn "run the toolchains stage first, then: ./bootstrap.sh --redo services"
+    warn "run the toolchains stage first, then: ./bootstrap.sh --redo obsidian"
     return 0
   fi
   info "generating unit against $node_root"
@@ -2538,7 +2791,7 @@ Type=simple
 # NODE_MODULE_VERSION; a mismatched node aborts with ERR_DLOPEN_FAILED and crash-loops.
 #
 # GENERATED by bootstrap.sh against the node this machine resolved.
-# Re-run \`./bootstrap.sh --redo services\` after any nvm upgrade.
+# Re-run \`./bootstrap.sh --redo obsidian\` after any nvm upgrade.
 ExecStart=$node_root/bin/node \\
     $cli \\
     sync --path $OBSIDIAN_VAULT --continuous
@@ -2615,11 +2868,11 @@ EOF
 
   if ! (( have_token )); then
     warn "no obsidian-headless auth token -- NOT starting the daemon"
-    todo "run the obsidian stage first, then: $0 --redo services"
+    todo "log into X and run:  $0 --redo obsidian"
   else
     warn "logged in, but $OBSIDIAN_VAULT is not bound to a remote vault."
     warn "Starting the daemon now would restart it every 30s indefinitely."
-    todo "bind it first:  $0 --redo obsidian    then:  $0 --redo services"
+    todo "bind it:  $0 --redo obsidian"
   fi
 
   # If a previous run already enabled it, it is crash-looping right now. Say so
@@ -2630,7 +2883,7 @@ EOF
     warn "obsidian-sync is already enabled and currently '$st' -- it cannot succeed yet"
     if confirm "stop and disable it until the vault is bound?"; then
       run systemctl --user disable --now obsidian-sync.service
-      did "obsidian-sync stopped and disabled (re-enable with --redo services once bound)"
+      did "obsidian-sync stopped and disabled (re-enable with --redo obsidian once bound)"
     fi
   fi
 }
@@ -2654,9 +2907,13 @@ stage_verify() {
   check "nvm present"                   "[ -s \"\${NVM_DIR:-\$HOME/.nvm}/nvm.sh\" ]"
   check "herdr installed"               "command -v herdr"
 
-  if [[ -n $OBSIDIAN_VAULT ]]; then
+  # Only once the obsidian stage has run: from a TTY it is deferred to X, and
+  # failing verify for a stage that deliberately has not happened would stop the run.
+  if [[ -n $OBSIDIAN_VAULT ]] && state_done obsidian; then
     check "obsidian auth token"         "[ -f '$XDG_CONFIG_HOME/obsidian-headless/auth_token' ]"
     check "obsidian-sync unit active"   "systemctl --user is-active obsidian-sync.service"
+  elif [[ -n $OBSIDIAN_VAULT ]]; then
+    info "obsidian stage not done yet (deferred to X) -- its checks are skipped"
   fi
 
   if (( fails )); then
@@ -2796,15 +3053,26 @@ main() {
   trap on_exit EXIT
   for s in "${STAGES[@]}"; do
     if selected "$s"; then
-      CURRENT_STAGE="$s"
+      CURRENT_STAGE="$s"; STAGE_DEFERRED=0
       "stage_$s"
       CURRENT_STAGE=""
-      state_mark "$s"
+      if (( STAGE_DEFERRED )); then
+        DEFERRED+=("$s")
+      else
+        state_mark "$s"
+      fi
     else
       state_done "$s" && info "stage $s already done -- skipping" \
                       || info "skipping stage $s"
     fi
   done
+
+  if (( ${#DEFERRED[@]} )); then
+    printf '\n%sDeferred until X:%s %s\n' "$C_BOLD$C_YEL" "$C_RESET" "${DEFERRED[*]}"
+    printf '  Log out and back in once first (so PAM creates and unlocks the login\n'
+    printf '  keyring), then startx, open a terminal and run:\n\n'
+    printf '    %s --resume\n' "$0"
+  fi
 
   printf '\n%sbootstrap complete.%s Work through the stage-90 checklist before trusting the box.\n' \
     "$C_BOLD$C_GRN" "$C_RESET"
