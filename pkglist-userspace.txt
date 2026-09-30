@@ -96,6 +96,7 @@ wget
 wireplumber
 x11-ssh-askpass
 xclip
+xdg-desktop-portal-gtk
 xdotool
 xmobar
 xmonad
