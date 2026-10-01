@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# vm-boot-test ISO -- boot an Arch ISO in a throwaway KVM guest and pass if it reaches
+# `archiso login:` on the serial console. No disk, no network, the ISO read-only, no root.
+#
+# The ISO's own boot entries have no serial console, so this boots ITS kernel and
+# initramfs directly with ITS own command line plus console=ttyS0. That covers the
+# kernel, the initramfs finding the medium by UUID, the squashfs root and systemd up
+# to a login prompt. It does NOT cover the ISO's bootloader or Ventoy: QEMU cannot
+# read the stick as a raw device without root (/dev/sdX is root:disk 0660).
+#
+# Exit: 0 booted; 1 did not boot; 75 cannot test here (no qemu, no /dev/kvm).
+set -euo pipefail
+iso=${1:?usage: vm-boot-test ISO}
+limit=${VM_BOOT_TIMEOUT:-180}   # seconds; a good boot takes ~25s under KVM
+
+command -v qemu-system-x86_64 >/dev/null || { echo "qemu-system-x86_64 not installed -- cannot boot-test"; exit 75; }
+[[ -r /dev/kvm && -w /dev/kvm ]] || { echo "/dev/kvm not usable -- cannot boot-test"; exit 75; }
+
+tmp=$(mktemp -d); pid=
+trap '[[ -n $pid ]] && kill "$pid" 2>/dev/null; rm -rf "$tmp"' EXIT
+
+opts=$(bsdtar -xOf "$iso" loader/entries/01-archiso-linux.conf | sed -n 's/^options *//p')
+[[ $opts == *archisosearchuuid=* ]] || { echo "no archiso boot entry in $iso"; exit 1; }
+bsdtar -xOf "$iso" arch/boot/x86_64/vmlinuz-linux > "$tmp/vmlinuz"
+bsdtar -xOf "$iso" arch/boot/x86_64/initramfs-linux.img > "$tmp/initrd"
+: > "$tmp/serial"
+
+qemu-system-x86_64 -enable-kvm -cpu host -m 2048 -smp 2 -nic none \
+  -display none -monitor none -serial "file:$tmp/serial" -no-reboot \
+  -drive "file=$iso,media=cdrom,readonly=on" \
+  -kernel "$tmp/vmlinuz" -initrd "$tmp/initrd" -append "$opts console=ttyS0" &
+pid=$!
+
+for (( t = 0; t < limit; t++ )); do
+  if grep -q 'archiso login:' "$tmp/serial"; then
+    echo "boot test: $(basename "$iso") reached a login prompt in ${t}s"; exit 0
+  fi
+  # The archiso initramfs drops to this emergency shell when it cannot find its root.
+  grep -q '^\[rootfs ' "$tmp/serial" && break
+  kill -0 "$pid" 2>/dev/null || break          # kernel panic + -no-reboot ends qemu
+  sleep 1
+done
+echo "boot test FAILED: $(basename "$iso") did not reach a login prompt (${t}s). Last console lines:"
+tr -d '\r' < "$tmp/serial" | grep -av '^\s*$' | tail -n 5 | sed 's/^/  | /'
+exit 1

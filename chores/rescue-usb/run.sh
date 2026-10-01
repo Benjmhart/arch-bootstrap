@@ -83,6 +83,14 @@ if [[ ! -f $mnt/$iso ]]; then
     || { rm -f "$mnt/.$iso.part"; echo "copy on the stick does not match -- removed"; exit 1; }
   mv "$mnt/.$iso.part" "$mnt/$iso"
 fi
+
+# ---- boot the copy ON THE STICK in a throwaway VM. Older ISOs are pruned only after it
+# passes, so a new ISO that does not boot leaves the last known-good one in place.
+boot=0; "$(dirname "$(readlink -f "$0")")/vm-boot-test" "$mnt/$iso" || boot=$?
+if (( boot == 1 )); then
+  echo "$iso is on the stick but did NOT boot in the VM -- older ISOs kept"; exit 1
+fi
+(( boot == 0 )) || keep=99      # could not test: prune nothing
 # Newest $keep ISOs stay (names sort by date); anything else of ours goes.
 { ls -1 "$mnt"/archlinux-*-x86_64.iso 2>/dev/null || true; } | sort -r | tail -n +$((keep + 1)) | xargs -r -d '\n' rm -f --
 
@@ -102,4 +110,7 @@ if [[ -z $want ]]; then
 elif [[ $have != "$want" ]]; then
   echo "ISOs: $on_stick| Ventoy $have on stick, $want available: sudo ventoy -u $disk"; exit 75
 fi
-echo "ISOs: $on_stick| Ventoy $have (current)"
+if (( boot )); then
+  echo "ISOs: $on_stick| Ventoy $have (current) | NOT boot-tested (no qemu or /dev/kvm -- see the log)"; exit 75
+fi
+echo "ISOs: $on_stick| Ventoy $have (current) | VM boot ok"
