@@ -12,13 +12,29 @@ have no console=ttyS0, so its kernel and initramfs are booted directly with its
 own options plus that. The installed system gets console=ttyS0 added to GRUB so its
 LUKS prompt is reachable; that is the one change made to what install.sh produced.
 
+FIRMWARE=uefi|bios (default uefi) and DISK_BUS=virtio|nvme|sata (default virtio)
+pick the machine shape. Older hardware is BIOS and SATA; NVMe changes the device and
+partition names (nvme0n1p1). Each combination has its own work directory, so
+variants can run side by side.
+
+SHAPE=beast-arch, with INSTALL_ARGS=--home-only-encryption: after installing, reshape
+the result into beast-arch's layout (plain root, LUKS /home by passphrase, GRUB's
+`uki` command booting a UKI whose command line is /etc/kernel/cmdline, its HOOKS).
+Then `convert` boots the live ISO against that disk and runs
+tools/encrypt-root-in-place from the WORKING TREE (served to the guest over local
+HTTP), answering its prompts. Task 68's rehearsal:
+  SHAPE=beast-arch INSTALL_ARGS=--home-only-encryption tests/rehearse-install install
+  ... boot   (as shaped: / plain, so "/ is on dm-crypt" FAILS -- expected)
+  ... convert
+  ... boot   (all ok, and one passphrase only)
+
 ISO: $ISO, default the newest verified one in the rescue-usb chore's cache.
 INSTALL_URL: default main on GitHub, i.e. what is pushed, not the working tree.
-Work files (a sparse 70 GiB disk) live in ~/.cache/vm-rehearsal, on disk, because
+Work files (a sparse 70 GiB disk) live in ~/.cache/vm-rehearsal/<fw>-<bus>, on disk, because
 /tmp can be RAM. Passwords are throwaway; the disk is never used for anything real.
 
 First run, 2026-10-01: found the 0700 /etc that killed dbus (install.sh eeb2714)."""
-import glob, os, re, shutil, socket, subprocess, sys, time
+import functools, glob, http.server, os, re, shutil, socket, subprocess, sys, tempfile, threading, time
 
 if len(sys.argv) < 2:
     rc = subprocess.call([sys.argv[0], "install"]) or subprocess.call([sys.argv[0], "boot"])
@@ -30,9 +46,19 @@ ISO = os.environ.get("ISO") or (sorted(glob.glob(os.path.expanduser(
     "~/.cache/rescue-usb/archlinux-*-x86_64.iso"))) or [""])[-1]
 URL = os.environ.get("INSTALL_URL",
                      "https://raw.githubusercontent.com/Benjmhart/arch-bootstrap/main/install.sh")
-WORK = os.path.expanduser("~/.cache/vm-rehearsal")
+FW = os.environ.get("FIRMWARE", "uefi")
+BUS = os.environ.get("DISK_BUS", "virtio")
+GUEST_DISK = {"virtio": "/dev/vda", "nvme": "/dev/nvme0n1", "sata": "/dev/sda"}.get(BUS)
+if FW not in ("uefi", "bios") or not GUEST_DISK:
+    sys.exit("FIRMWARE must be uefi|bios, DISK_BUS virtio|nvme|sata")
+SHAPE = os.environ.get("SHAPE", "")
+INSTALL_ARGS = os.environ.get("INSTALL_ARGS", "")
+WORK = os.path.expanduser(f"~/.cache/vm-rehearsal/{FW}-{BUS}" + (f"-{SHAPE}" if SHAPE else ""))
+REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+def part(n): return f"{GUEST_DISK}{'p' if BUS == 'nvme' else ''}{n}"
 FAILS = 0
 os.makedirs(WORK, exist_ok=True)
+print(f"[{FW}, {BUS} disk {GUEST_DISK}]", flush=True)
 if PHASE == "install":
     if not os.path.isfile(ISO):
         sys.exit("no ISO: set ISO=..., or run the rescue-usb chore to fill its cache")
@@ -53,11 +79,16 @@ ANSI = re.compile(rb"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)|\x1b
 qemu = ["qemu-system-x86_64", "-machine", "q35", "-enable-kvm", "-cpu", "host", "-m", "4096", "-smp", "4",
         "-display", "none", "-monitor", "none", "-no-reboot",
         "-serial", f"unix:{SOCK},server=on,wait=off",
-        "-drive", "if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.4m.fd",
-        "-drive", f"if=pflash,format=raw,file={VARS}",
-        "-drive", f"file={DISK},format=raw,if=virtio",
         "-nic", "user,model=virtio-net-pci"]
-if PHASE == "install":
+if FW == "uefi":   # BIOS = no pflash: QEMU's default SeaBIOS, and the ISO sees no /sys/firmware/efi
+    qemu += ["-drive", "if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.4m.fd",
+             "-drive", f"if=pflash,format=raw,file={VARS}"]
+if BUS == "virtio":
+    qemu += ["-drive", f"file={DISK},format=raw,if=virtio"]
+else:              # sata: an AHCI port clear of the CD's; the guest still names it sda
+    qemu += ["-drive", f"file={DISK},format=raw,if=none,id=d0",
+             "-device", "nvme,drive=d0,serial=rehearsal" if BUS == "nvme" else "ide-hd,drive=d0,bus=ide.2"]
+if PHASE in ("install", "convert"):
     k = f"{WORK}/vmlinuz"; i = f"{WORK}/initrd"
     opts = subprocess.run(["bsdtar", "-xOf", ISO, "loader/entries/01-archiso-linux.conf"],
                           capture_output=True, text=True, check=True).stdout
@@ -65,8 +96,49 @@ if PHASE == "install":
     qemu += ["-drive", f"file={ISO},media=cdrom,readonly=on",
              "-kernel", k, "-initrd", i, "-append", f"{opts} console=ttyS0"]
 
+# beast-arch's layout, applied to a fresh --home-only-encryption install at /mnt.
+# Values are beast-arch's own, read 2026-10-01 (task 68): cmdline, preset, HOOKS,
+# /etc/grub.d/15_uki, and 10_linux made non-executable so GRUB lists only the UKI.
+SHAPE_SH = r"""set -eu
+rp=$(findmnt -no SOURCE /mnt)
+echo "root=PARTUUID=$(blkid -o value -s PARTUUID "$rp") zswap.enabled=0 rw rootfstype=ext4 console=ttyS0" > /mnt/etc/kernel/cmdline
+printf '%s\n' 'ALL_kver="/boot/vmlinuz-linux"' "PRESETS=('default')" 'default_uki="/boot/EFI/Linux/arch-linux.efi"' > /mnt/etc/mkinitcpio.d/linux.preset
+sed -i 's/^HOOKS=.*/HOOKS=(base udev autodetect microcode modconf kms keyboard keymap consolefont block encrypt filesystems fsck)/' /mnt/etc/mkinitcpio.conf
+cat > /mnt/etc/grub.d/15_uki <<'X'
+#! /bin/sh
+set -e
+
+cat << EOF
+if [ "\$grub_platform" = "efi" ]; then
+  uki
+fi
+EOF
+X
+chmod 755 /mnt/etc/grub.d/15_uki; chmod 644 /mnt/etc/grub.d/10_linux
+# /home by passphrase, as on beast-arch: no keyfile anywhere systemd would look.
+sed -i -E 's#^(home[[:space:]]+[^[:space:]]+[[:space:]]+)[^[:space:]]+#\1none#' /mnt/etc/crypttab
+rm -rf /mnt/etc/cryptsetup-keys.d
+mkdir -p /mnt/boot/EFI/Linux
+arch-chroot /mnt mkinitcpio -P
+arch-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg
+cat /mnt/etc/kernel/cmdline /mnt/etc/crypttab; ls -l /mnt/boot/EFI/Linux
+"""
+HOST = ""
+if PHASE in ("install", "convert") and SHAPE:
+    serve = tempfile.mkdtemp()
+    shutil.copy(f"{REPO}/tools/encrypt-root-in-place", serve)
+    open(f"{serve}/shape.sh", "w").write(SHAPE_SH)
+    class Quiet(http.server.SimpleHTTPRequestHandler):
+        def log_message(self, *a): pass
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(Quiet, directory=serve))
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    HOST = f"http://10.0.2.2:{srv.server_port}"   # QEMU user networking's view of the host
+
 if os.path.exists(SOCK): os.unlink(SOCK)
 vm = subprocess.Popen(qemu, stdout=LOG, stderr=LOG)
+# A crash here must not leave the guest running: it would hold the disk's write lock
+# and the next phase's QEMU would refuse to start ("Failed to get write lock").
+import atexit; atexit.register(lambda: vm.poll() is None and vm.kill())
 for _ in range(50):
     try:
         s = socket.socket(socket.AF_UNIX); s.connect(SOCK); break
@@ -126,14 +198,31 @@ if PHASE == "install":
     step("network up", run("until curl -fsI https://raw.githubusercontent.com >/dev/null; do sleep 2; done", 120))
     step("fetch install.sh",
          run(f"curl -fsSL -o install.sh {URL}"))
-    send(f"LUKS_PASSWORD={PW} USER_PASSWORD={PW} bash install.sh --disk /dev/vda rehearsal ben; echo __RC_$?__")
+    send(f"LUKS_PASSWORD={PW} USER_PASSWORD={PW} bash install.sh {INSTALL_ARGS} --disk {GUEST_DISK} rehearsal ben; echo __RC_$?__")
     expect(r"Type WIPE to continue", 300); send("WIPE")
     rc = step("install.sh", int(expect(r"__RC_(\d+)__", 3600).group(1)))
-    run("grep -E '^GRUB_CMDLINE_LINUX=' /mnt/etc/default/grub; cat /mnt/etc/crypttab; lsblk -f /dev/vda")
-    if rc == 0:
+    run(f"grep -E '^GRUB_CMDLINE_LINUX=' /mnt/etc/default/grub; cat /mnt/etc/crypttab; lsblk -f {GUEST_DISK}")
+    if rc == 0 and SHAPE == "beast-arch":
+        step("reshape into beast-arch's layout (UKI, cmdline, HOOKS, /home by passphrase)",
+             run(f"curl -fsS {HOST}/shape.sh | sh", 600))
+    elif rc == 0:
         step("console=ttyS0 into the installed GRUB (rehearsal-only change)",
              run("arch-chroot /mnt sh -c \"sed -i 's/^GRUB_CMDLINE_LINUX=\\\"/&console=ttyS0 /' "
                  "/etc/default/grub && grub-mkconfig -o /boot/grub/grub.cfg >/dev/null 2>&1\"", 120))
+    send("poweroff"); wait_exit()
+
+elif PHASE == "convert":
+    expect(r"archiso login:", 180); send("root"); expect(r"#\s*$", 30)
+    send("export TERM=dumb PS1='# '"); time.sleep(1)
+    step("fetch encrypt-root-in-place (working tree)", run(f"curl -fsS -o eri {HOST}/encrypt-root-in-place"))
+    send(f"bash eri {part(2)} {part(3)}; echo __RC_$?__")
+    while True:   # answer every prompt; the passphrase is the same everywhere
+        m = expect(r"(?:Type ENCRYPT to continue|Type 'yes' in capital letters|passphrase[^\n]*:)\s*$|__RC_(\d+)__", 3600)
+        if m.group(1) is not None:
+            rc = step("encrypt-root-in-place", int(m.group(1))); break
+        a = m.group(0).decode()
+        send("ENCRYPT" if "ENCRYPT" in a else "YES" if "capital" in a else PW)
+    run("cat /proc/mounts | grep -c eri; lsblk -f")
     send("poweroff"); wait_exit()
 
 else:  # boot

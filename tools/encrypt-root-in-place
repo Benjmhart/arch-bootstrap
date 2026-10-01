@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+# encrypt-root-in-place ROOT_PART HOME_PART
+#
+# Encrypt an existing, unencrypted ext4 root with LUKS2 in place, so the machine ends
+# up as install.sh builds one: `encrypt` hook, cryptdevice= for /, and /home unlocked
+# by a keyfile on the encrypted root. One passphrase at boot.
+#
+# Run as root FROM THE LIVE ISO (the rescue stick), never from the system itself.
+# Example (beast-arch, station-maintenance task 68):
+#   encrypt-root-in-place /dev/sda2 /dev/sda3
+#
+# Only this shape is handled, and anything else is refused before a byte is written:
+#   ROOT_PART  plain ext4, the installed system's /
+#   HOME_PART  LUKS, named in the system's /etc/crypttab
+#   boot       a UKI built by mkinitcpio, whose command line is /etc/kernel/cmdline
+#              (archinstall's GRUB+UKI layout). /etc/default/grub is NOT read by such
+#              a system, which is the trap this script exists to avoid.
+#
+# What it does, and where it can stop safely:
+#   1. unlock /home, back up / into it as a tar     -- nothing changed yet
+#   2. shrink the root filesystem by 64 MiB         -- reversible (resize2fs back)
+#   3. cryptsetup reencrypt --encrypt (LUKS2)       -- resumable if interrupted:
+#                                                      rerun `cryptsetup reencrypt ROOT_PART`
+#   4. grow the filesystem, rewrite /etc/kernel/cmdline, add the /home keyfile,
+#      rebuild the UKI, and check the new UKI carries the new command line
+# The backup is NOT deleted. Remove it yourself once the machine has booted.
+set -euo pipefail
+root_part=${1:?usage: encrypt-root-in-place ROOT_PART HOME_PART}
+home_part=${2:?usage: encrypt-root-in-place ROOT_PART HOME_PART}
+die()  { printf 'FAIL  %s\n' "$*" >&2; exit 1; }
+info() { printf '  --  %s\n' "$*"; }
+mnt=/mnt/eri
+(( EUID == 0 )) || die "run as root"
+[[ -d /run/archiso ]] || die "run this from the live ISO, not the installed system"
+
+# ---- preflight: refuse anything that is not the expected shape --------------
+[[ $(blkid -o value -s TYPE "$root_part") == ext4 ]] || die "$root_part is not ext4 (already encrypted?)"
+[[ $(blkid -o value -s TYPE "$home_part") == crypto_LUKS ]] || die "$home_part is not LUKS"
+findmnt -S "$root_part" >/dev/null && die "$root_part is mounted"
+mkdir -p "$mnt"
+mount -o ro "$root_part" "$mnt"
+trap 'umount -R "$mnt" 2>/dev/null || true' EXIT
+for f in etc/kernel/cmdline etc/mkinitcpio.conf etc/crypttab etc/fstab; do
+  [[ -f $mnt/$f ]] || die "/$f missing on $root_part -- not the expected UKI layout"
+done
+grep -q '_uki=' "$mnt"/etc/mkinitcpio.d/linux.preset || die "linux.preset builds no UKI"
+grep -Eq '^HOOKS=.*\<encrypt\>' "$mnt/etc/mkinitcpio.conf" \
+  || die "HOOKS has no 'encrypt' -- add it (before 'filesystems') first"
+home_uuid=$(blkid -o value -s UUID "$home_part")
+home_name=$(awk -v u="UUID=$home_uuid" '$2==u {print $1}' "$mnt/etc/crypttab")
+[[ -n $home_name ]] || die "$home_part (UUID=$home_uuid) is not in the system's /etc/crypttab"
+cmdline=$(<"$mnt/etc/kernel/cmdline")
+[[ $cmdline == *root=* && $cmdline != *cryptdevice=* ]] || die "unexpected /etc/kernel/cmdline: $cmdline"
+umount "$mnt"
+
+bytes=$(blockdev --getsize64 "$root_part")
+used_kib=$(( $(tune2fs -l "$root_part" | awk -F: '/^Block count/{c=$2} /^Free blocks/{f=$2} /^Block size/{b=$2} END{print (c-f)*b}') / 1024 ))
+cat <<EOF
+
+About to ENCRYPT $root_part in place ($(( bytes / 1024**3 )) GiB, ~$(( used_kib / 1024**2 )) GiB used).
+  /home: $home_part, crypttab name '$home_name' -- the backup of / goes there first
+  kernel command line now: $cmdline
+You will be asked for: the /home passphrase (twice), and the NEW root passphrase.
+Use the same passphrase for both and boot asks only once.
+EOF
+read -r -p "Type ENCRYPT to continue: " ok </dev/tty
+[[ $ok == ENCRYPT ]] || die "not confirmed -- nothing was changed"
+
+# ---- 1. backup ---------------------------------------------------------------
+cryptsetup open "$home_part" eri-home
+mkdir -p "$mnt"; mount /dev/mapper/eri-home "$mnt"
+trap 'umount -R "$mnt" 2>/dev/null || true; cryptsetup close eri-home 2>/dev/null || true' EXIT
+free_kib=$(df --output=avail -k "$mnt" | tail -1)
+(( free_kib > used_kib + 1024**2 )) || die "not enough room on /home for the backup"
+backup="root-backup-$(date +%F).tar"
+mkdir -p /mnt/eri-root; mount -o ro "$root_part" /mnt/eri-root
+info "backing up / to /home/$backup"
+tar --acls --xattrs --one-file-system -cpf "$mnt/$backup" -C /mnt/eri-root .
+umount /mnt/eri-root
+info "backup done: $(du -h "$mnt/$backup" | cut -f1)"
+umount "$mnt"
+
+# ---- 2. shrink, 3. encrypt, then grow back ------------------------------------
+e2fsck -fp "$root_part"
+resize2fs "$root_part" "$(( bytes / 1024 - 65536 ))K"
+info "encrypting $root_part (this rewrites the whole partition)"
+cryptsetup reencrypt --encrypt --type luks2 --reduce-device-size 32M "$root_part" </dev/tty
+cryptsetup open "$root_part" root </dev/tty
+resize2fs /dev/mapper/root
+luks_uuid=$(cryptsetup luksUUID "$root_part")
+
+# ---- 4. configure the encrypted system and rebuild its UKI --------------------
+mount /dev/mapper/root "$mnt"
+trap 'umount -R "$mnt" 2>/dev/null || true; cryptsetup close root 2>/dev/null || true; cryptsetup close eri-home 2>/dev/null || true' EXIT
+boot_dev=$(awk '$2=="/boot" {print $1}' "$mnt/etc/fstab")
+mount "$boot_dev" "$mnt/boot"
+
+# root=<anything> becomes the mapper; cryptdevice= goes first. Everything else is kept.
+new_cmdline="cryptdevice=UUID=$luks_uuid:root $(sed -E 's#(^| )root=[^ ]+#\1root=/dev/mapper/root#' <<<"$cmdline")"
+printf '%s\n' "$new_cmdline" > "$mnt/etc/kernel/cmdline"
+info "kernel command line: $new_cmdline"
+
+# /home's keyfile. systemd-cryptsetup looks in /etc/cryptsetup-keys.d/<name>.key by
+# itself when the crypttab key field is `none`, so crypttab stays as it is. The
+# existing /home passphrase slot is kept: it is the way in if root is ever lost.
+install -d -m 700 "$mnt/etc/cryptsetup-keys.d"
+key="$mnt/etc/cryptsetup-keys.d/$home_name.key"
+dd if=/dev/urandom of="$key" bs=512 count=8 status=none; chmod 600 "$key"
+info "adding a keyfile slot to $home_part (asks for the /home passphrase)"
+cryptsetup luksAddKey "$home_part" "$key" </dev/tty
+
+arch-chroot "$mnt" mkinitcpio -P
+uki=$(sed -n 's/^default_uki="\(.*\)"/\1/p' "$mnt/etc/mkinitcpio.d/linux.preset")
+grep -aq "cryptdevice=UUID=$luks_uuid:root" "$mnt$uki" \
+  || die "the rebuilt UKI $uki does not carry the new command line -- do NOT reboot"
+info "UKI $uki carries cryptdevice=UUID=$luks_uuid:root"
+cat <<EOF
+
+Done. Reboot: expect ONE passphrase prompt (for /), then /home unlocks by itself.
+The backup stays at /home/$backup until you delete it.
+If boot fails: boot this stick, cryptsetup open $root_part root, mount it, and check
+/etc/kernel/cmdline and the UKI in /boot (mount $boot_dev).
+EOF
