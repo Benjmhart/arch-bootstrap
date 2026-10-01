@@ -1,0 +1,158 @@
+#!/usr/bin/env python3
+"""tests/rehearse-install -- run install.sh end to end in a throwaway KVM guest.
+
+  tests/rehearse-install           both phases, from a blank disk; exit 1 on any FAIL
+  tests/rehearse-install install   live ISO -> curl install.sh from GitHub -> run it
+  tests/rehearse-install boot ['cmd' ...]   boot the result, unlock, log in, check;
+                                   extra args run as root in the guest (for digging)
+
+No root needed. UEFI (OVMF) on q35: on the default i440fx machine under OVMF the
+live ISO cannot find its own CD. Driven over the serial console. The ISO's entries
+have no console=ttyS0, so its kernel and initramfs are booted directly with its
+own options plus that. The installed system gets console=ttyS0 added to GRUB so its
+LUKS prompt is reachable; that is the one change made to what install.sh produced.
+
+ISO: $ISO, default the newest verified one in the rescue-usb chore's cache.
+INSTALL_URL: default main on GitHub, i.e. what is pushed, not the working tree.
+Work files (a sparse 70 GiB disk) live in ~/.cache/vm-rehearsal, on disk, because
+/tmp can be RAM. Passwords are throwaway; the disk is never used for anything real.
+
+First run, 2026-10-01: found the 0700 /etc that killed dbus (install.sh eeb2714)."""
+import glob, os, re, shutil, socket, subprocess, sys, time
+
+if len(sys.argv) < 2:
+    rc = subprocess.call([sys.argv[0], "install"]) or subprocess.call([sys.argv[0], "boot"])
+    print("REHEARSAL", "PASSED" if rc == 0 else "FAILED")
+    sys.exit(rc)
+
+PHASE = sys.argv[1]
+ISO = os.environ.get("ISO") or (sorted(glob.glob(os.path.expanduser(
+    "~/.cache/rescue-usb/archlinux-*-x86_64.iso"))) or [""])[-1]
+URL = os.environ.get("INSTALL_URL",
+                     "https://raw.githubusercontent.com/Benjmhart/arch-bootstrap/main/install.sh")
+WORK = os.path.expanduser("~/.cache/vm-rehearsal")
+FAILS = 0
+os.makedirs(WORK, exist_ok=True)
+if PHASE == "install":
+    if not os.path.isfile(ISO):
+        sys.exit("no ISO: set ISO=..., or run the rescue-usb chore to fill its cache")
+    for f in ("disk.raw", "install.log", "boot.log"):
+        if os.path.exists(f"{WORK}/{f}"): os.unlink(f"{WORK}/{f}")
+    with open(f"{WORK}/disk.raw", "wb") as f: f.truncate(70 * 1024**3)
+    shutil.copy("/usr/share/edk2/x64/OVMF_VARS.4m.fd", f"{WORK}/OVMF_VARS.fd")
+    for member, out in (("arch/boot/x86_64/vmlinuz-linux", "vmlinuz"),
+                        ("arch/boot/x86_64/initramfs-linux.img", "initrd")):
+        with open(f"{WORK}/{out}", "wb") as f:
+            subprocess.run(["bsdtar", "-xOf", ISO, member], stdout=f, check=True)
+    print(f"ISO {os.path.basename(ISO)}; install.sh from {URL}", flush=True)
+DISK, VARS, SOCK = f"{WORK}/disk.raw", f"{WORK}/OVMF_VARS.fd", f"{WORK}/serial.sock"
+LOG = open(f"{WORK}/{PHASE}.log", "ab", buffering=0)
+PW = "rehearsal-not-secret"
+ANSI = re.compile(rb"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)|\x1bP[^\x1b]*\x1b\\|\r")
+
+qemu = ["qemu-system-x86_64", "-machine", "q35", "-enable-kvm", "-cpu", "host", "-m", "4096", "-smp", "4",
+        "-display", "none", "-monitor", "none", "-no-reboot",
+        "-serial", f"unix:{SOCK},server=on,wait=off",
+        "-drive", "if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.4m.fd",
+        "-drive", f"if=pflash,format=raw,file={VARS}",
+        "-drive", f"file={DISK},format=raw,if=virtio",
+        "-nic", "user,model=virtio-net-pci"]
+if PHASE == "install":
+    k = f"{WORK}/vmlinuz"; i = f"{WORK}/initrd"
+    opts = subprocess.run(["bsdtar", "-xOf", ISO, "loader/entries/01-archiso-linux.conf"],
+                          capture_output=True, text=True, check=True).stdout
+    opts = re.search(r"^options\s+(.*)$", opts, re.M).group(1).strip()
+    qemu += ["-drive", f"file={ISO},media=cdrom,readonly=on",
+             "-kernel", k, "-initrd", i, "-append", f"{opts} console=ttyS0"]
+
+if os.path.exists(SOCK): os.unlink(SOCK)
+vm = subprocess.Popen(qemu, stdout=LOG, stderr=LOG)
+for _ in range(50):
+    try:
+        s = socket.socket(socket.AF_UNIX); s.connect(SOCK); break
+    except OSError: time.sleep(0.2)
+s.settimeout(1)
+buf = b""
+
+def expect(pat, timeout):
+    """Wait for regex pat in the (ANSI-stripped) console since the last match."""
+    global buf
+    end = time.time() + timeout
+    last = time.time()
+    while time.time() < end:
+        if time.time() - last > 900:
+            sys.exit(f"HUNG: no console output for 15 min waiting for {pat!r}; tail: {ANSI.sub(b'', buf)[-400:]!r}")
+        m = re.search(pat.encode(), ANSI.sub(b"", buf))
+        if m:
+            buf = b""
+            return m
+        if vm.poll() is not None:
+            sys.exit(f"VM exited while waiting for {pat!r}")
+        try:
+            d = s.recv(65536)
+            buf += d; LOG.write(d)
+            if d: last = time.time()
+        except socket.timeout:
+            pass
+    sys.exit(f"TIMEOUT ({timeout}s) waiting for {pat!r}; tail: {ANSI.sub(b'', buf)[-400:]!r}")
+
+def wait_exit(timeout=300):
+    """Keep reading the console while the guest shuts down: an unread serial
+    socket backs up and stalls the guest's own shutdown output."""
+    end = time.time() + timeout
+    while vm.poll() is None and time.time() < end:
+        try:
+            d = s.recv(65536); LOG.write(d)
+        except (socket.timeout, OSError):
+            pass
+    step("guest powered off", 0 if vm.poll() is not None else 1)
+
+def send(line): s.sendall(line.encode() + b"\r"); time.sleep(0.3)
+
+def run(cmd, timeout=120):
+    """Run cmd in the guest shell; return its exit status (marker can't match the echo)."""
+    send(f"{cmd}; echo __RC_$?__")
+    return int(expect(r"__RC_(\d+)__", timeout).group(1))
+
+def step(name, rc):
+    global FAILS
+    FAILS += rc != 0
+    print(f"{'ok  ' if rc == 0 else 'FAIL'} {name} (rc={rc})", flush=True)
+    return rc
+
+if PHASE == "install":
+    expect(r"archiso login:", 180); send("root"); expect(r"#\s*$", 30)
+    send("export TERM=dumb PS1='# '"); time.sleep(1)
+    step("network up", run("until curl -fsI https://raw.githubusercontent.com >/dev/null; do sleep 2; done", 120))
+    step("fetch install.sh",
+         run(f"curl -fsSL -o install.sh {URL}"))
+    send(f"LUKS_PASSWORD={PW} USER_PASSWORD={PW} bash install.sh --disk /dev/vda rehearsal ben; echo __RC_$?__")
+    expect(r"Type WIPE to continue", 300); send("WIPE")
+    rc = step("install.sh", int(expect(r"__RC_(\d+)__", 3600).group(1)))
+    run("grep -E '^GRUB_CMDLINE_LINUX=' /mnt/etc/default/grub; cat /mnt/etc/crypttab; lsblk -f /dev/vda")
+    if rc == 0:
+        step("console=ttyS0 into the installed GRUB (rehearsal-only change)",
+             run("arch-chroot /mnt sh -c \"sed -i 's/^GRUB_CMDLINE_LINUX=\\\"/&console=ttyS0 /' "
+                 "/etc/default/grub && grub-mkconfig -o /boot/grub/grub.cfg >/dev/null 2>&1\"", 120))
+    send("poweroff"); wait_exit()
+
+else:  # boot
+    expect(r"[Pp]assphrase|password is required", 240); time.sleep(1); send(PW)
+    t0 = time.time()
+    expect(r"rehearsal login:", 240)
+    print(f"ok   one passphrase, then login prompt after {time.time()-t0:.0f}s", flush=True)
+    send("ben"); expect(r"Password:", 30); send(PW); expect(r"\$\s*$", 60)
+    send("export TERM=dumb PS1='$ '"); time.sleep(1)
+    step("/ is on dm-crypt", run("findmnt -no SOURCE / | grep -q '^/dev/mapper/'"))
+    step("/home is on dm-crypt", run("findmnt -no SOURCE /home | grep -q '^/dev/mapper/'"))
+    step("sudo works", run(f"echo {PW} | sudo -S -p '' true"))
+    step("/etc is 755", run('[ "$(stat -c %a /etc)" = 755 ]'))
+    step("system bus up (systemctl as a user)", run("systemctl is-active --quiet dbus.socket"))
+    step("no failed units", run('[ -z "$(systemctl --failed --no-legend)" ]'))
+    for c in sys.argv[2:]:
+        send(f"echo {PW} | sudo -S -p '' sh -c '{c}' 2>&1; echo __RC_$?__"); expect(r"__RC_(\d+)__", 120)
+    run(f"lsblk -f; findmnt / /home; cat /etc/crypttab; echo {PW} | sudo -S -p '' ls -l /etc/cryptsetup-keys.d; "
+        f"cat /proc/cmdline; systemctl --failed --no-legend")
+    send(f"echo {PW} | sudo -S -p '' poweroff"); wait_exit()
+
+sys.exit(1 if FAILS else 0)
