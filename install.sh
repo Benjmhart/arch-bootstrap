@@ -198,6 +198,14 @@ export IS_DISK="$disk" IS_HOST="$host" IS_USER="$user" IS_FW="$fw" \
        IS_ENCRYPT_ROOT="$encrypt_root" IS_TZ="$TIMEZONE" IS_LOCALE="$LOCALE" \
        IS_KEYMAP="$KEYMAP" IS_PKGS="${EXTRA_PACKAGES[*]}" IS_OUT="$out" \
        IS_LUKS="$LUKS_PASSWORD" IS_UPW="$USER_PASSWORD"
+# The 077 umask is for the credentials file ONLY, and is restored straight after.
+# Left in force, archinstall inherited it: set_vconsole mkdir()s /mnt/etc before
+# pacstrap, so /etc was created 0700 and pacstrap never corrects an existing
+# directory. Every non-root daemon then failed on it. dbus-broker died with
+# "launcher_run_child: Permission denied", so there was no system bus, and
+# archinstall's own keymap container hung on that. Found in the 2026-10-01 VM
+# rehearsal.
+saved_umask=$(umask)
 umask 077
 "${PYTHON:-python3}" - <<'PY'
 import json, os, sys
@@ -236,9 +244,12 @@ cfg = {
   # non-empty value makes archinstall 4.5 boot the new system in a systemd-nspawn
   # container just to run `localectl set-keymap` (Installer.set_keyboard_language).
   # In the 2026-10-01 VM rehearsal that call failed ("Failed to connect to system
-  # scope bus via machine transport"). Boot.__exit__ then tried to stop the
-  # container the same way, failed, and waited on it with no timeout: a silent
-  # hang. Empty skips the container ("Keyboard language was not changed").
+  # scope bus via machine transport"). The cause was the 0700 /etc described at
+  # `saved_umask` below: there was no system bus. Boot.__exit__ then tried to stop
+  # the container the same way, failed, and waited on it with no timeout: a silent
+  # hang. Kept even with the cause fixed: one fewer container boot means one fewer
+  # place archinstall can wait forever. Empty skips the container ("Keyboard
+  # language was not changed").
   "locale_config": {"kb_layout": "", "sys_lang": e["IS_LOCALE"], "sys_enc": "UTF-8"},
   "timezone": e["IS_TZ"],
   "ntp": True,
@@ -267,6 +278,7 @@ with open(os.path.join(out, "user_configuration.json"), "w") as f: json.dump(cfg
 with open(os.path.join(out, "user_credentials.json"), "w") as f: json.dump(creds, f, indent=2)
 PY
 unset IS_LUKS IS_UPW
+umask "$saved_umask"
 
 if [[ -n $render_dir ]]; then
   info "rendered to $out (fw=$fw root=${root_mib}MiB home_start=${home_start_mib}MiB home=${home_mib}MiB)"
@@ -303,6 +315,7 @@ chk "fstab written"          "[ -s /mnt/etc/fstab ]"
 chk "grub.cfg generated"     "[ -s /mnt/boot/grub/grub.cfg ]"
 chk "user $user exists"      "grep -q '^$user:' /mnt/etc/passwd"
 chk "/home is LUKS"          "grep -q luks /mnt/etc/crypttab || grep -q cryptdevice /mnt/etc/default/grub"
+chk "/etc is 755"            "[ \"\$(stat -c %a /mnt/etc)\" = 755 ]"
 chk "console keymap $KEYMAP"  "grep -qx 'KEYMAP=$KEYMAP' /mnt/etc/vconsole.conf"
 chk "hostname set"           "[ \"\$(cat /mnt/etc/hostname 2>/dev/null)\" = '$host' ]"
 if (( fails )); then
