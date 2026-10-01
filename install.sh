@@ -75,7 +75,9 @@ done
 
 if [[ -z $render_dir ]]; then
   (( EUID == 0 )) || die "run as root on the Arch ISO"
-  have_ai="$(archinstall --version 2>/dev/null || true)"
+  # `archinstall --version` prints "archinstall 4.5": keep the last word, or the
+  # check below never matches and warns on every tested version.
+  have_ai="$(archinstall --version 2>/dev/null || true)"; have_ai="${have_ai##* }"
   [[ -n $have_ai ]] || die "archinstall not found -- is this the Arch ISO?"
   [[ " $TESTED_ARCHINSTALL " == *" ${have_ai%%-*} "* ]] \
     || printf 'warn  archinstall %s is untested with this script (tested: %s)\n' \
@@ -230,7 +232,14 @@ cfg = {
   "bootloader_config": {"bootloader": "Grub", "uki": False, "removable": True},
   "kernels": ["linux"],
   "hostname": e["IS_HOST"],
-  "locale_config": {"kb_layout": e["IS_KEYMAP"], "sys_lang": e["IS_LOCALE"], "sys_enc": "UTF-8"},
+  # kb_layout is EMPTY on purpose; the keymap is written after archinstall. Any
+  # non-empty value makes archinstall 4.5 boot the new system in a systemd-nspawn
+  # container just to run `localectl set-keymap` (Installer.set_keyboard_language).
+  # In the 2026-10-01 VM rehearsal that call failed ("Failed to connect to system
+  # scope bus via machine transport"). Boot.__exit__ then tried to stop the
+  # container the same way, failed, and waited on it with no timeout: a silent
+  # hang. Empty skips the container ("Keyboard language was not changed").
+  "locale_config": {"kb_layout": "", "sys_lang": e["IS_LOCALE"], "sys_enc": "UTF-8"},
   "timezone": e["IS_TZ"],
   "ntp": True,
   "network_config": {"type": "nm"},
@@ -272,6 +281,15 @@ archinstall --config "$out/user_configuration.json" --creds "$out/user_credentia
   --silent --skip-wifi-check
 rm -f "$out/user_credentials.json"
 
+# The console keymap, which archinstall was told not to set (see kb_layout above).
+# set_vconsole already wrote vconsole.conf with an empty KEYMAP=. The initramfs was
+# built from that, and its sd-vconsole hook is what lays out the LUKS passphrase
+# prompt, so a non-us keymap needs a rebuild, not just the file.
+# ponytail: console only. A non-us KEYMAP also wants X11's 00-keyboard.conf, which
+# localectl used to write; add that when KEYMAP stops being us.
+sed -i "s/^KEYMAP=.*/KEYMAP=$KEYMAP/" /mnt/etc/vconsole.conf
+[[ $KEYMAP == us ]] || arch-chroot /mnt mkinitcpio -P
+
 # ---- verify ----------------------------------------------------------------
 # archinstall can exit 0 on failure (a bootloader-validation failure, "No disk
 # configuration"), so check the result instead of trusting the status. The
@@ -285,6 +303,7 @@ chk "fstab written"          "[ -s /mnt/etc/fstab ]"
 chk "grub.cfg generated"     "[ -s /mnt/boot/grub/grub.cfg ]"
 chk "user $user exists"      "grep -q '^$user:' /mnt/etc/passwd"
 chk "/home is LUKS"          "grep -q luks /mnt/etc/crypttab || grep -q cryptdevice /mnt/etc/default/grub"
+chk "console keymap $KEYMAP"  "grep -qx 'KEYMAP=$KEYMAP' /mnt/etc/vconsole.conf"
 chk "hostname set"           "[ \"\$(cat /mnt/etc/hostname 2>/dev/null)\" = '$host' ]"
 if (( fails )); then
   printf '\n%d check(s) failed. The log is /var/log/archinstall/install.log (and\n' "$fails" >&2
