@@ -75,6 +75,14 @@ KEYXFER_URL=""
 # Weekly it gets the current signature-verified Arch ISO plus install.sh/bootstrap.sh.
 #RESCUE_USB_SERIAL=""
 
+# Memory. /tmp on disk instead of a 50%-of-RAM tmpfs (takes effect at next boot).
+#TMP_ON_DISK=true
+# Disk swap, random-key encrypted, behind zram. The PARTUUID of an EXISTING swap
+# partition (lsblk -no PARTUUID /dev/sdXN) -- it is overwritten at every boot.
+#SWAP_PARTUUID=""
+# Raise -s when adding disk swap: earlyoom needs low RAM AND low free swap to act.
+#EARLYOOM_ARGS="-r 3600 -n -m 10,5 -s 75,50 --avoid '(^|/)(init|systemd|Xorg|sshd)$'"
+
 # ---------------------------------------------------------------- paths
 
 #DOTFILES_DIR="$HOME/.dot"

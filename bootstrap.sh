@@ -122,6 +122,21 @@ CHORES="${CHORES:-}"
 #     this setting does not bound it.
 TMP_ON_DISK="${TMP_ON_DISK:-false}"              # true = mask tmp.mount so /tmp is on disk
 
+# Disk swap, encrypted with a fresh random key at every boot (nothing to manage,
+# contents unrecoverable after power-off; the cost is no hibernation). The value is
+# the swap partition's PARTUUID -- `lsblk -no PARTUUID /dev/sdXN` -- NOT its
+# filesystem UUID: the random-key layer reformats the partition every boot, so the
+# swap UUID and label are gone after the first one. Stage 60 refuses a partition
+# that is not currently `swap`, because whatever this names is overwritten. Sits at
+# pri=10, behind zram's 100, so it only takes overflow. Empty = no disk swap.
+SWAP_PARTUUID="${SWAP_PARTUUID:-}"
+
+# earlyoom acts only when available RAM AND free swap are BOTH under threshold, so
+# adding disk swap without raising -s means it waits until most of that swap has
+# been thrashed through. Written verbatim to /etc/default/earlyoom. Empty = leave
+# the packaged file alone.
+EARLYOOM_ARGS="${EARLYOOM_ARGS:-}"
+
 # Used as the Obsidian sync device name, so the version history says which
 # machine a change came from. `hostname` is not installed everywhere (it is in
 # inetutils, which is not in the package list); `uname -n` always is.
@@ -2736,6 +2751,130 @@ manage_tmp_storage() {
   fi
 }
 
+# Write a whole root-owned file from a string: compare, then `sudo install`.
+# Returns 0 if it wrote (or would write), 1 if the file was already right -- so
+# call it in an `if` and restart whatever reads it only on 0.
+put_etc_file() {   # <path> <content> <what>
+  local path=$1 want=$2 what=$3
+  if [[ -f $path ]] && [[ "$(cat "$path")" == "$want" ]]; then
+    ok "$what already in place ($path)"
+    return 1
+  fi
+  if (( DRY_RUN )); then
+    info "(dry run) would write $path"
+    did "wrote $path"            # counts only; did() prints nothing under DRY_RUN
+    return 0
+  fi
+  local tmp; tmp="$(mktemp)"
+  printf '%s\n' "$want" > "$tmp"
+  if run sudo install -D -m 644 "$tmp" "$path"; then
+    rm -f "$tmp"
+    did "wrote $path -- $what"
+    return 0
+  fi
+  rm -f "$tmp"
+  return 1
+}
+
+# Two drop-ins that lived only in /etc on beast-arch and were lost in the
+# 2026-09-30 rebuild. Universal, not per-host: each is cheap anywhere.
+#   coredump: without a cap, one crashing multi-GiB process writes a multi-GiB
+#     core, and systemd-coredump holds it in memory while compressing it.
+#   journald: the default 5-minute sync means a hard freeze loses the last
+#     minutes of kernel log -- exactly the minutes that would say why it froze.
+install_system_dropins() {
+  put_etc_file /etc/systemd/coredump.conf.d/limits.conf \
+"# Written by arch-bootstrap.
+[Coredump]
+ProcessSizeMax=2G
+MaxUse=1G" "coredump size limits" || true   # read per crash, nothing to restart
+
+  if put_etc_file /etc/systemd/journald.conf.d/sync.conf \
+"# Written by arch-bootstrap.
+[Journal]
+SyncIntervalSec=10s" "journald 10s sync"; then
+    run sudo systemctl restart systemd-journald
+  fi
+}
+
+# Random-key encrypted swap on SWAP_PARTUUID. See the config comment for why
+# PARTUUID. Lines are appended to /etc/crypttab and /etc/fstab, never rewritten:
+# both hold this machine's other filesystems.
+setup_encrypted_swap() {
+  [[ -n $SWAP_PARTUUID ]] || return 0
+  local dev=/dev/disk/by-partuuid/$SWAP_PARTUUID
+  local ct="swap  PARTUUID=$SWAP_PARTUUID  /dev/urandom  swap,cipher=aes-xts-plain64,size=512,sector-size=4096,nofail"
+  local fs="/dev/mapper/swap  none  swap  defaults,pri=10,nofail  0 0"
+
+  # An unreadable file makes every "already there?" grep below say no, and each
+  # run would append another copy.
+  local f
+  for f in /etc/crypttab /etc/fstab; do
+    [[ ! -e $f || -r $f ]] || { warn "$f is not readable -- cannot check it, so not adding disk swap"; return 0; }
+  done
+
+  if grep -qxF "$ct" /etc/crypttab; then
+    ok "encrypted swap already in /etc/crypttab"
+  elif grep -qE '^[[:space:]]*swap[[:space:]]' /etc/crypttab; then
+    warn "/etc/crypttab already maps a 'swap' that is not this one -- not touching it"
+    return 0
+  else
+    # The safety check. The `swap` option reformats the device at every boot, so
+    # a wrong PARTUUID destroys a filesystem. Only a partition that is swap NOW
+    # and not in use is accepted. Done once: after the first boot the partition
+    # reads as random data, and the crypttab line above is the proof it was ours.
+    local fstype mnt
+    fstype="$(lsblk -no FSTYPE "$dev" 2>/dev/null || true)"
+    mnt="$(lsblk -no MOUNTPOINTS "$dev" 2>/dev/null || true)"
+    if [[ ! -b $dev ]]; then
+      warn "SWAP_PARTUUID=$SWAP_PARTUUID: no such partition -- no disk swap"
+      return 0
+    elif [[ $fstype != swap ]]; then
+      warn "REFUSING disk swap: $dev is '${fstype:-unformatted}', not swap -- it would be overwritten every boot"
+      return 0
+    elif [[ -n $mnt ]]; then
+      warn "REFUSING disk swap: $dev is in use ($mnt) -- swapoff it first"
+      return 0
+    fi
+    printf '%s\n' "$ct" | run sudo tee -a /etc/crypttab
+    did "encrypted swap added to /etc/crypttab ($dev)"
+  fi
+
+  if grep -qxF "$fs" /etc/fstab; then
+    ok "encrypted swap already in /etc/fstab"
+  elif grep -qE '^[[:space:]]*/dev/mapper/swap[[:space:]]' /etc/fstab; then
+    warn "/etc/fstab already has a /dev/mapper/swap line that is not this one -- not touching it"
+  else
+    printf '%s\n' "$fs" | run sudo tee -a /etc/fstab
+    did "encrypted swap added to /etc/fstab (pri=10, behind zram)"
+  fi
+
+  # Same boot-time gap as manage_tmp_storage: written is not active.
+  if [[ -e /dev/mapper/swap ]] && grep -q "^$(realpath /dev/mapper/swap) " /proc/swaps; then
+    ok "encrypted swap is active"
+  else
+    warn "encrypted swap is NOT active yet -- it comes up at the next boot; check: swapon --show"
+  fi
+}
+
+configure_earlyoom() {
+  [[ -n $EARLYOOM_ARGS ]] || return 0
+  pacman -Qq earlyoom >/dev/null 2>&1 || return 0
+  [[ -z ${PKG_EXCLUDED[earlyoom]:-} ]] || return 0
+  if [[ $EARLYOOM_ARGS == *'"'* ]]; then
+    warn "EARLYOOM_ARGS contains a double quote -- use single quotes inside it; not written"
+    return 0
+  fi
+  # systemd splits $EARLYOOM_ARGS and honours single quotes, so --avoid/--prefer
+  # regexes survive as one argument each (checked against `ps` on beast-arch).
+  if put_etc_file /etc/default/earlyoom \
+"# Written by arch-bootstrap. Edit EARLYOOM_ARGS in bootstrap.conf, not this file.
+EARLYOOM_ARGS=\"$EARLYOOM_ARGS\"" "earlyoom thresholds"; then
+    systemctl is-active --quiet earlyoom && run sudo systemctl restart earlyoom
+  fi
+  return 0
+}
+
 
 stage_services() {
   stage_banner "60 services -- system and user units"
@@ -2745,6 +2884,9 @@ stage_services() {
   ssh_tailnet_peers
   install_chores
   manage_tmp_storage
+  install_system_dropins
+  setup_encrypted_swap
+  configure_earlyoom
 
   # ---- login keyring auto-unlock (added 2026-08-23) ---------------------------
   #
