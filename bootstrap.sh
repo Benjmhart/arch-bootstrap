@@ -2492,8 +2492,22 @@ AllowUsers $SSHD_ALLOW_USERS"
 ListenAddress $listen"
   fi
 
-  if [[ -f $dropin ]] && [[ "$(cat "$dropin")" == "$want" ]]; then
+  # The drop-in is installed 0600 root, so a plain `cat` as the user always fails
+  # and the comparison always said "differs": every run rewrote it and asked for
+  # sudo, and a dry run counted a change that was not there. Read it through
+  # cached sudo credentials when there are some; otherwise say it could not be
+  # compared rather than claim it is different.
+  local have="" readable=1
+  if [[ -r $dropin ]]; then
+    have="$(cat "$dropin")"
+  elif [[ -f $dropin ]]; then
+    have="$(sudo -n cat "$dropin" 2>/dev/null)" || readable=0
+  fi
+
+  if [[ -f $dropin ]] && (( readable )) && [[ $have == "$want" ]]; then
     ok "sshd hardening already in place ($dropin)"
+  elif [[ -f $dropin ]] && (( ! readable && DRY_RUN )); then
+    info "$dropin exists but is root-only -- cannot compare without sudo (sudo -v first to check)"
   elif (( DRY_RUN )); then
     info "(dry run) would write $dropin"
     did "wrote $dropin"          # counts only; did() prints nothing under DRY_RUN
