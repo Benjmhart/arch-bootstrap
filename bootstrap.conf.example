@@ -64,6 +64,10 @@ KEYXFER_URL=""
 # every interface. Re-run `--redo services` if a node re-registers.
 #SSHD_LISTEN_ADDRESS="tailscale"
 
+# Your other machines by tailnet name. Stage 60 writes an ssh stanza for each,
+# pointing at its MagicDNS name, so `ssh <name>` never needs an IP.
+#SSH_PEERS="desktop laptop"
+
 # ---------------------------------------------------------------- paths
 
 #DOTFILES_DIR="$HOME/.dot"

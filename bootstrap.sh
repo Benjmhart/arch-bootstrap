@@ -89,7 +89,13 @@ CONFIG_FROM_SECRETS="${CONFIG_FROM_SECRETS:-0}"
 # address -- on the next `--redo services`, not by itself. If tailscale has no
 # address yet, sshd is left on every interface and the run says so.
 SSHD_LISTEN_ADDRESS="${SSHD_LISTEN_ADDRESS:-}"   # an address, `tailscale`, or empty = all interfaces
-SSHD_ALLOW_USERS="${SSHD_ALLOW_USERS:-$USER}"    # empty disables the AllowUsers restriction
+SSHD_ALLOW_USERS="${SSHD_ALLOW_USERS:-$USER}"
+
+# Your other machines, by tailnet name (space-separated; this machine is skipped).
+# Stage 60 writes a ~/.ssh/config stanza for each, pointing at its MagicDNS FQDN,
+# so `ssh carbon` and `herdr --remote carbon` follow the node through address
+# changes with no IP written down anywhere. Empty = write nothing.
+SSH_PEERS="${SSH_PEERS:-}"    # empty disables the AllowUsers restriction
 
 # /tmp: RAM or disk. systemd's static tmp.mount makes /tmp a tmpfs at size=50% of
 # RAM, which is an UNBOUNDED claim on memory that no quota limits -- on a 32 GiB
@@ -2507,6 +2513,64 @@ RestartSec=5s"
   fi
 }
 
+# ~/.ssh/config stanzas for SSH_PEERS, kept between markers so a re-run replaces
+# them rather than stacking copies.
+#
+# The FQDN (carbon.<tailnet>.ts.net), not the bare name and not an IP. An IP goes
+# stale when a node re-registers -- beast-arch's did in the 2026-09-30 rebuild.
+# The bare name is worse, because it fails only SOMETIMES: systemd-resolved also
+# answers it over the LAN (LLMNR, fe80::/fd41:: addresses), picks between the
+# answers per attempt, and over the LAN carbon's sshd refused the key (denied or
+# connection reset, on most attempts that hour). Measured 2026-10-01: the FQDN
+# connected 10 of 10, five each way between beast-arch and carbon.
+# HostKeyAlias keeps known_hosts keyed by the short name.
+ssh_tailnet_peers() {
+  [[ -n $SSH_PEERS ]] || return 0
+  local suffix
+  suffix="$(tailscale status --json 2>/dev/null | jq -r '.MagicDNSSuffix // empty' 2>/dev/null || true)"
+  if [[ -z $suffix ]]; then
+    warn "SSH_PEERS is set, but tailscale reports no MagicDNS suffix (not on the tailnet yet?)"
+    todo "after 'tailscale up', with MagicDNS on: $0 --redo services"
+    return 0
+  fi
+
+  local begin="# >>> arch-bootstrap: tailnet peers (stage 60 -- edit SSH_PEERS, not this block)"
+  local end="# <<< arch-bootstrap: tailnet peers"
+  local want="$begin" peer self; self="$(uname -n)"
+  for peer in $SSH_PEERS; do
+    [[ $peer == "$self" ]] && continue
+    want+=$'\n'"Host $peer"$'\n'"    HostName $peer.$suffix"$'\n'"    HostKeyAlias $peer"
+  done
+  want+=$'\n'"$end"
+
+  local sshcfg="$HOME/.ssh/config" current=""
+  [[ -f $sshcfg ]] && current="$(sed -n "\|^$begin\$|,\|^$end\$|p" "$sshcfg")"
+  if [[ $current == "$want" ]]; then
+    ok "ssh peer stanzas up to date ($SSH_PEERS)"
+    return 0
+  elif (( DRY_RUN )); then
+    info "(dry run) would write ssh stanzas for: $SSH_PEERS (via .$suffix)"
+    did "wrote ssh peer stanzas"
+    return 0
+  fi
+  local tmp; tmp="$(mktemp)"
+  if [[ -f $sshcfg ]]; then
+    sed "\|^$begin\$|,\|^$end\$|d" "$sshcfg" > "$tmp"
+  fi
+  printf '\n%s\n' "$want" >> "$tmp"
+  run install -m 600 "$tmp" "$sshcfg"
+  rm -f "$tmp"
+  did "wrote ssh stanzas for tailnet peers: $SSH_PEERS"
+  # ssh takes the FIRST value per keyword: a hand-written stanza for the same
+  # host earlier in the file still wins over this block.
+  for peer in $SSH_PEERS; do
+    [[ $peer == "$self" ]] && continue
+    if [[ "$(ssh -G "$peer" 2>/dev/null | awk '$1=="hostname"{print $2}')" != "$peer.$suffix" ]]; then
+      warn "an earlier stanza in ~/.ssh/config overrides HostName for $peer -- remove it"
+    fi
+  done
+}
+
 enable_system_units() {
   local entry pkg unit why
 
@@ -2641,6 +2705,7 @@ stage_services() {
 
   enable_system_units
   harden_sshd
+  ssh_tailnet_peers
   manage_tmp_storage
 
   # ---- login keyring auto-unlock (added 2026-08-23) ---------------------------
