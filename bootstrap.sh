@@ -1947,6 +1947,47 @@ declare -A OMZ_EXTERNAL_PLUGINS=(
   [zsh-autosuggestions]="https://github.com/zsh-users/zsh-autosuggestions.git"
   [zsh-syntax-highlighting]="https://github.com/zsh-users/zsh-syntax-highlighting.git"
 )
+
+# Put mozc in fcitx5's input-method group. The group lives in
+# $XDG_CONFIG_HOME/fcitx5/profile, which is NOT in the dotfiles: fcitx5 rewrites it
+# at runtime. Without mozc in it, the trigger key (Super+`, in the dotfiles'
+# fcitx5/config) has nothing to switch to and just types a grave. That is how both
+# machines came out of the 2026-09-30 rebuilds. Adds mozc; never removes anything.
+fcitx5_add_mozc() {
+  pacman -Qq fcitx5-mozc >/dev/null 2>&1 || return 0
+  local profile="$XDG_CONFIG_HOME/fcitx5/profile"
+  if grep -qx 'Name=mozc' "$profile" 2>/dev/null; then
+    ok "fcitx5: mozc is in the input-method group"
+    return 0
+  fi
+  local fc=(busctl --user --json=short call org.fcitx.Fcitx5 /controller org.fcitx.Fcitx.Controller1)
+  if "${fc[@]}" CurrentInputMethodGroup >/dev/null 2>&1; then
+    # Running: change it through fcitx5, which saves the profile itself. A file
+    # written underneath a running fcitx5 is overwritten from memory on exit.
+    local group info layout items
+    group="$("${fc[@]}" CurrentInputMethodGroup | jq -r '.data[0]')"
+    info="$("${fc[@]}" InputMethodGroupInfo s "$group")"
+    layout="$(jq -r '.data[0]' <<<"$info")"
+    mapfile -t items < <(jq -r '.data[1][] | .[0], .[1]' <<<"$info")
+    run busctl --user call org.fcitx.Fcitx5 /controller org.fcitx.Fcitx.Controller1 \
+      SetInputMethodGroupInfo 'ssa(ss)' "$group" "$layout" $(( ${#items[@]} / 2 + 1 )) "${items[@]}" mozc ''
+  elif [[ ! -e $profile ]]; then
+    # Fresh machine, fcitx5 never started: seed the profile it will read.
+    if (( ! DRY_RUN )); then
+      mkdir -p "${profile%/*}"
+      printf '%s\n' '[Groups/0]' 'Name=Default' 'Default Layout=us' 'DefaultIM=mozc' '' \
+        '[Groups/0/Items/0]' 'Name=keyboard-us' 'Layout=' '' \
+        '[Groups/0/Items/1]' 'Name=mozc' 'Layout=' '' \
+        '[GroupOrder]' '0=Default' > "$profile"
+    fi
+  else
+    warn "fcitx5: mozc is not in the input-method group, and fcitx5 is not running to add it"
+    todo "re-run this stage from X:  $0 --only session"
+    return 0
+  fi
+  did "fcitx5: mozc added to the input-method group (Super+\` toggles it)"
+}
+
 install_oh_my_zsh() {
   local zdir="${ZSH:-$HOME/.oh-my-zsh}"
   if [[ -f $zdir/oh-my-zsh.sh ]]; then
@@ -1994,6 +2035,7 @@ stage_session() {
   fi
 
   install_oh_my_zsh
+  fcitx5_add_mozc
 
   # NetworkManager. Not hardware -- the general network stack, and easy to
   # forget because the live ISO's networking is not what the installed system uses.
