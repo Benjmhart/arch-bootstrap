@@ -82,7 +82,13 @@ CONFIG_FROM_SECRETS="${CONFIG_FROM_SECRETS:-0}"
 # the tailnet and nowhere else. If you do, stage 60 also writes a systemd drop-in
 # ordering sshd after tailscaled, because the address does not exist until the
 # interface is up.
-SSHD_LISTEN_ADDRESS="${SSHD_LISTEN_ADDRESS:-}"   # e.g. a tailnet address; empty = all interfaces
+#
+# The special value `tailscale` means "this machine's own tailnet IPv4, read when
+# stage 60 runs". It is what lets ONE bootstrap.conf (the copy in the secrets repo)
+# serve every machine, and it follows a node that re-registers and gets a new
+# address -- on the next `--redo services`, not by itself. If tailscale has no
+# address yet, sshd is left on every interface and the run says so.
+SSHD_LISTEN_ADDRESS="${SSHD_LISTEN_ADDRESS:-}"   # an address, `tailscale`, or empty = all interfaces
 SSHD_ALLOW_USERS="${SSHD_ALLOW_USERS:-$USER}"    # empty disables the AllowUsers restriction
 
 # /tmp: RAM or disk. systemd's static tmp.mount makes /tmp a tmpfs at size=50% of
@@ -119,6 +125,10 @@ HOSTNAME_SHORT="${HOSTNAME:-$(uname -n)}"
 # it sooner.
 SSH_ADD_KEYS_TO_AGENT="${SSH_ADD_KEYS_TO_AGENT:-yes}"
 
+# The ONE key stage 05 uses for the git host. Empty = ~/.ssh/id_ed25519, or the
+# only key in ~/.ssh. Its passphrase (or none) is chosen when it is generated.
+SSH_KEY="${SSH_KEY:-}"
+
 # Packages from the shared lists that this MACHINE should not get. One name per
 # line, '#' comments allowed. Defaults to pkglist-exclude.txt beside the script;
 # point it anywhere (e.g. a private per-host list in another repo).
@@ -154,7 +164,7 @@ load_config() {
   if [[ -f $BOOTSTRAP_CONFIG ]]; then . "$BOOTSTRAP_CONFIG"; fi
   local v
   for v in DOTFILES_DIR SECRETS_DIR WALLPAPERS_DIR XMONAD_DIR OBSIDIAN_VAULT \
-           CONFIG_HOME_OVERRIDE PKG_EXCLUDE_FILE; do
+           CONFIG_HOME_OVERRIDE PKG_EXCLUDE_FILE SSH_KEY; do
     printf -v "$v" '%s' "$(expand_tilde "${!v}")"
   done
   # A non-standard XDG_CONFIG_HOME must be exported BEFORE anything else runs, or
@@ -567,92 +577,67 @@ stage_ssh() {
     fi
   fi
 
-  local -a keys=()
-  mapfile -t keys < <(list_private_keys)
-  local k
-  for k in "${keys[@]}"; do ok "private key present: $(basename "$k")"; done
+  # ONE key, used for everything: your own pushes, agents and cron, and the hops
+  # between your machines. Whether it has a passphrase is YOUR call, asked when
+  # the key is generated (2026-10-01).
+  #
+  # Until then this stage also made a second, passphrase-less "agent" key, pinned
+  # it first for github.com and registered it automatically. On 2026-09-28 a
+  # phishing script ran on a git branch change with exactly that key's reach --
+  # push access to every repo on the account. A passphrase-less key is still
+  # allowed; it is just no longer made for you behind your back.
+  local key
+  key="$(pick_ssh_key)" || die "several SSH keys in ~/.ssh and no id_ed25519 -- set SSH_KEY in bootstrap.conf to the one to use"
+  local key_short="${key/#$HOME/\~}"
 
-  # No key at all: offer to make one, then walk the user through registering it.
-  #
-  # Getting this wrong is expensive in a specific way -- offering to generate a
-  # key on a machine that already has one, which then also gets presented for
-  # registration while the real key sits unused.
-  if (( ${#keys[@]} == 0 )) && ! (( DRY_RUN )); then
-    warn "no SSH private key found in ~/.ssh"
-    if confirm "generate a new ed25519 keypair now?"; then
-      run_interactive ssh-keygen -t ed25519 -C "$(whoami)@$(hostname)"
-      mapfile -t keys < <(list_private_keys)
-    fi
-  fi
-
-  # ---- unattended agent key (added 2026-08-23) --------------------------------
-  #
-  # A SECOND key, deliberately WITHOUT a passphrase, pinned to github.com. It is
-  # what lets a non-interactive session -- an agent, cron, anything with no
-  # controlling terminal -- push at all. The primary key above stays
-  # passphrase-protected and remains the fallback.
-  #
-  # Why not simply strip the passphrase off the primary key: this one can be
-  # revoked on its own without disturbing interactive use, and GitHub records a
-  # last-used timestamp per key, so unattended pushes stay distinguishable from
-  # the human's in the audit trail.
-  #
-  # Scope, stated plainly: a GitHub *user* key reaches every repo the account can,
-  # the secrets repo included. Accepted deliberately -- that vault is a KeePassXC
-  # database with no keyfile stored beside it, so a clone of it yields an encrypted
-  # blob rather than usable credentials. If that ever stops being true, this is the
-  # decision to revisit.
-  local agent_key="$HOME/.ssh/id_ed25519_agent" agent_new=0
-  if [[ -f $agent_key ]]; then
-    ok "agent key present: $(basename "$agent_key")"
+  if [[ -f $key ]]; then
+    ok "SSH key: $key_short"
   elif (( DRY_RUN )); then
-    info "(dry run) would generate $agent_key"
+    info "(dry run) would generate $key_short"
   else
-    run ssh-keygen -t ed25519 -N "" -f "$agent_key" \
-      -C "$(whoami)@$(cat /etc/hostname 2>/dev/null || echo unknown) agent key (no passphrase)"
-    did "generated passphrase-less agent key"
-    agent_new=1
-    mapfile -t keys < <(list_private_keys)
+    warn "no SSH key at $key_short"
+    info "ssh-keygen will ask for a passphrase. It is your choice:"
+    info "  a passphrase -- a stolen copy is useless. Unlock once per login (ssh-add);"
+    info "                  unattended jobs cannot push while it is locked."
+    info "  empty        -- agents and cron push with no prompt. So can ANY script that"
+    info "                  runs as you: this key reaches every repo on the account."
+    confirm "generate $key_short now?" \
+      || die "no SSH key -- nothing below this stage can work"
+    run_interactive ssh-keygen -t ed25519 -f "$key" -C "$(whoami)@$(uname -n)"
   fi
 
-  # Pin it for github.com.
-  #
-  # IdentitiesOnly yes is load-bearing: without it ssh ALSO offers the default key
-  # list, the passphrase-protected key can be tried first, and the prompt this key
-  # exists to remove comes straight back.
-  #
-  # The stanza is PREPENDED, not appended. ssh takes the FIRST value it obtains for
-  # each keyword, so a specific block placed after a `Host *` wildcard cannot
-  # override it. Prepending is correct whatever the file already contains.
+  # ssh offers only its default names (id_ed25519, id_rsa, ...) unprompted. A key
+  # under any other name must be named for the git host, or it is never tried.
   local sshcfg="$HOME/.ssh/config"
-  if [[ -f $sshcfg ]] && grep -q 'id_ed25519_agent' "$sshcfg"; then
-    ok "github.com pinned to the agent key in ~/.ssh/config"
-  elif (( DRY_RUN )); then
-    info "(dry run) would prepend a Host github.com stanza to $sshcfg"
-  else
-    # Name the human's key explicitly as the fallback rather than hardcoding
-    # id_rsa -- on a fresh machine stage 05 generates an ed25519 key, and a
-    # hardcoded id_rsa line would point at a file that does not exist.
-    local primary="" k2
-    for k2 in "${keys[@]}"; do
-      [[ $k2 == "$agent_key" ]] && continue
-      primary="$k2"; break
-    done
+  case $(basename "$key") in
+    id_rsa|id_ecdsa|id_ecdsa_sk|id_ed25519|id_ed25519_sk) ;;
+    *)
+      local host; host="$(ssh_git_host)"
+      if [[ -z $host ]] || { [[ -f $sshcfg ]] && grep -qF "$key_short" "$sshcfg"; }; then
+        :
+      elif (( DRY_RUN )); then
+        info "(dry run) would prepend a Host $host stanza for $key_short to $sshcfg"
+      else
+        # PREPENDED: ssh takes the first value it obtains for each keyword, so a
+        # stanza after a `Host *` wildcard would silently do nothing.
+        local tmpcfg; tmpcfg="$(mktemp)"
+        printf '# Added by bootstrap.sh (stage 05). Keep ABOVE any `Host *` block.\nHost %s\n    IdentityFile %s\n\n' \
+          "$host" "$key_short" > "$tmpcfg"
+        [[ -f $sshcfg ]] && cat "$sshcfg" >> "$tmpcfg"
+        run install -m 600 "$tmpcfg" "$sshcfg"
+        rm -f "$tmpcfg"
+        did "named $key_short for $host in ~/.ssh/config"
+      fi ;;
+  esac
 
-    local tmpcfg; tmpcfg="$(mktemp)"
-    {
-      printf '# Added by bootstrap.sh (stage 05). Keep ABOVE any `Host *` block: ssh takes\n'
-      printf '# the FIRST value it obtains for each keyword, so a wildcard placed earlier\n'
-      printf '# would win and this stanza would silently do nothing.\n'
-      printf 'Host github.com\n'
-      printf '    IdentityFile ~/.ssh/id_ed25519_agent\n'
-      [[ -n $primary ]] && printf '    IdentityFile %s\n' "${primary/#$HOME/\~}"
-      printf '    IdentitiesOnly yes\n\n'
-    } > "$tmpcfg"
-    [[ -f $sshcfg ]] && cat "$sshcfg" >> "$tmpcfg"
-    run install -m 600 "$tmpcfg" "$sshcfg"
-    rm -f "$tmpcfg"
-    did "pinned github.com to the agent key in ~/.ssh/config"
+  # A machine bootstrapped before 2026-10-01 may still hold the old agent key and
+  # a github.com stanza that offers it FIRST. Not removed here -- deleting a key
+  # is not this script's call -- but said out loud.
+  if [[ -f $HOME/.ssh/id_ed25519_agent && $key != "$HOME/.ssh/id_ed25519_agent" ]]; then
+    warn "legacy passphrase-less agent key ~/.ssh/id_ed25519_agent is still here (no longer managed)"
+    if [[ -f $sshcfg ]] && grep -q 'id_ed25519_agent' "$sshcfg"; then
+      warn "  ~/.ssh/config still offers it for the git host -- delete that line, or the key"
+    fi
   fi
 
   local tries=0 gh_tried=0
@@ -665,7 +650,7 @@ stage_ssh() {
     # (which is what this stage asked for until 2026-09-30, twice per rebuild).
     if (( ! gh_tried )) && [[ $(ssh_git_host) == github.com ]]; then
       gh_tried=1
-      if github_register_keys "${keys[@]}"; then
+      if github_register_keys "$key"; then
         continue
       fi
       warn "automatic GitHub key registration did not complete -- falling back to manual"
@@ -676,18 +661,15 @@ stage_ssh() {
     # unlock first, and only fall through to "register it" if that fails or is
     # declined. Getting this order wrong tells the user to re-register a key that
     # is already registered, repeatedly, and never asks for the passphrase.
-    if ssh_try_unlock "${keys[@]}"; then
+    if ssh_try_unlock "$key"; then
       continue
     fi
 
     printf '\n'
-    local pub
-    for k in "${keys[@]}"; do
-      pub="$k.pub"
-      [[ -f $pub ]] || continue
-      printf '%s  public key (%s):%s\n' "$C_BOLD" "$(basename "$pub")" "$C_RESET"
-      sed 's/^/        /' "$pub"
-    done
+    if [[ -f $key.pub ]]; then
+      printf '%s  public key (%s):%s\n' "$C_BOLD" "$(basename "$key.pub")" "$C_RESET"
+      sed 's/^/        /' "$key.pub"
+    fi
 
     pause_for "Register that public key with your git host." \
       "GitHub: https://github.com/settings/keys -> New SSH key" \
@@ -700,23 +682,6 @@ stage_ssh() {
       "cannot clone yet, use your account recovery codes. They must be stored" \
       "somewhere that is NOT the vault." || break
   done
-
-  # A new agent key needs registering even when the loop above never ran (the
-  # primary key already worked). Only a NEW one: asking on every run is how a
-  # routine re-run turns into a blocking manual step.
-  if (( agent_new )) && [[ $(ssh_git_host) == github.com ]] \
-     && github_register_keys "$agent_key"; then
-    :
-  elif (( agent_new )) && ! github_key_registered "$agent_key.pub"; then
-    pause_for "Register the AGENT public key with GitHub as well." \
-      "https://github.com/settings/keys -> New SSH key" \
-      "" \
-      "$(cat "$agent_key.pub")" \
-      "" \
-      "This is a SECOND registration -- the primary key above is separate." \
-      "Skip it and unattended pushes fall back to the passphrase-protected key," \
-      "then block on a prompt that has nowhere to appear." || true
-  fi
 
   if ssh_auth_works; then
     ok "git host SSH authentication working"
@@ -732,6 +697,23 @@ stage_ssh() {
   Fix the key, then re-run. Completed stages will not repeat.
 EOF
   die "SSH authentication to the git host failed"
+}
+
+# The one key stage 05 manages. SSH_KEY wins if set; otherwise id_ed25519, or the
+# only private key in ~/.ssh if there is exactly one. With several and no choice
+# made it refuses rather than guesses: registering the wrong one with GitHub --
+# say a per-server key -- would give it push access it was never meant to have.
+# With none, it names the key to generate.
+pick_ssh_key() {
+  local -a keys=()
+  if [[ -n $SSH_KEY ]]; then printf '%s' "$SSH_KEY"; return 0; fi
+  if [[ -f $HOME/.ssh/id_ed25519 ]]; then printf '%s' "$HOME/.ssh/id_ed25519"; return 0; fi
+  mapfile -t keys < <(list_private_keys)
+  case ${#keys[@]} in
+    0) printf '%s' "$HOME/.ssh/id_ed25519" ;;
+    1) printf '%s' "${keys[0]}" ;;
+    *) return 1 ;;
+  esac
 }
 
 # Every private key in ~/.ssh, found by pairing with its .pub.
@@ -2443,18 +2425,29 @@ PermitRootLogin no"
   [[ -n $SSHD_ALLOW_USERS ]] && want+="
 AllowUsers $SSHD_ALLOW_USERS"
 
+  local listen=$SSHD_LISTEN_ADDRESS
+  if [[ $listen == tailscale ]]; then
+    listen="$(tailscale ip -4 2>/dev/null | head -n1 || true)"
+    if [[ -n $listen ]]; then
+      info "SSHD_LISTEN_ADDRESS=tailscale -> $listen"
+    else
+      warn "SSHD_LISTEN_ADDRESS=tailscale, but tailscale has no address (not logged in yet?)"
+      warn "  leaving sshd on every interface -- run 'tailscale up', then: $0 --redo services"
+    fi
+  fi
+
   # A ListenAddress the machine does not have is the one setting here that can
   # lock you out, so it is checked against reality before being written rather
   # than trusted from config. Warn and write anyway -- a tailnet address is
   # legitimately absent when tailscaled has not started yet -- but say so, because
   # a typo and a not-yet-up interface look identical at this point.
-  if [[ -n $SSHD_LISTEN_ADDRESS ]]; then
-    if ! ip -o addr show 2>/dev/null | grep -qw "$SSHD_LISTEN_ADDRESS"; then
-      warn "SSHD_LISTEN_ADDRESS=$SSHD_LISTEN_ADDRESS is not currently assigned to any interface"
+  if [[ -n $listen ]]; then
+    if ! ip -o addr show 2>/dev/null | grep -qw "$listen"; then
+      warn "ListenAddress $listen is not currently assigned to any interface"
       warn "  if that is a typo, sshd will fail to bind and this box becomes unreachable"
     fi
     want+="
-ListenAddress $SSHD_LISTEN_ADDRESS"
+ListenAddress $listen"
   fi
 
   if [[ -f $dropin ]] && [[ "$(cat "$dropin")" == "$want" ]]; then
@@ -2489,7 +2482,7 @@ ListenAddress $SSHD_LISTEN_ADDRESS"
   # what it lacks is a sane retry interval, not the restart itself.
   local unitdir=/etc/systemd/system/sshd.service.d
   local unitfile="$unitdir/10-tailnet.conf"
-  if [[ -z $SSHD_LISTEN_ADDRESS ]]; then
+  if [[ -z $listen ]]; then
     return 0
   fi
   local wantunit="[Unit]

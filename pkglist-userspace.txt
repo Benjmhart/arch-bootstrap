@@ -13,6 +13,7 @@ dmenu
 dmidecode
 docker
 docker-compose
+dunst
 earlyoom
 eva
 eza
@@ -39,6 +40,7 @@ jq
 kdenlive
 keepassxc
 less
+libnotify
 libpulse
 libsecret
 libx11

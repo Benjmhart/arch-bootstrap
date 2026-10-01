@@ -53,6 +53,17 @@ LOGIN_SHELL="zsh"
 # registering the public key by hand.
 KEYXFER_URL=""
 
+# The ONE key stage 05 uses for the git host. Empty = ~/.ssh/id_ed25519 (or the
+# only key in ~/.ssh). If it has to be generated, ssh-keygen asks for a
+# passphrase: set one, or leave it empty so unattended jobs can push -- at the
+# cost that any script running as you can push to every repo too.
+#SSH_KEY="$HOME/.ssh/id_ed25519"
+
+# sshd. `tailscale` = bind only this machine's own tailnet IPv4, resolved when
+# stage 60 runs, so one shared copy of this file works on every machine. Empty =
+# every interface. Re-run `--redo services` if a node re-registers.
+#SSHD_LISTEN_ADDRESS="tailscale"
+
 # ---------------------------------------------------------------- paths
 
 #DOTFILES_DIR="$HOME/.dot"
