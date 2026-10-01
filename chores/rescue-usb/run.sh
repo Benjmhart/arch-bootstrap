@@ -96,6 +96,7 @@ fi
 
 mkdir -p "$mnt/arch-bootstrap"
 cp "$repo"/{install.sh,bootstrap.sh,bootstrap.conf.example,README.md} "$repo"/pkglist-*.txt "$mnt/arch-bootstrap/"
+cp -r "$repo"/tools "$mnt/arch-bootstrap/"   # e.g. encrypt-root-in-place, run from this stick
 { git -C "$repo" log -1 --format='arch-bootstrap %H (%cd)'
   [[ -z $(git -C "$repo" status --porcelain) ]] || echo "  PLUS UNCOMMITTED CHANGES -- these files are not exactly that commit"
 } > "$mnt/arch-bootstrap/COMMIT"
