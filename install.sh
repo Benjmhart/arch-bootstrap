@@ -286,6 +286,20 @@ if [[ -n $render_dir ]]; then
 fi
 
 # ---- install ---------------------------------------------------------------
+# Clear the old signatures first (partitions, then the disk), then let udev finish.
+# archinstall's partition commit fails with "unable to inform the kernel of the
+# change ... in use" when something holds a partition. The 2026-10-01 BIOS rehearsal
+# hit it once on a blank disk (a udev race; a rerun passed). A used disk is worse:
+# the live ISO can activate an old LVM or LUKS volume on it. If a partition is
+# really in use, wipefs stops here with "busy", a clear error before archinstall has
+# written anything.
+mapfile -t old_parts < <(lsblk -lnpo NAME "$disk" | tail -n +2)
+for p in "${old_parts[@]}"; do
+  wipefs -aq "$p" || die "$p is in use (mounted, swap, LVM or open LUKS?) -- release it and rerun"
+done
+wipefs -aq "$disk" || die "$disk is in use -- release it and rerun"
+udevadm settle
+
 # --silent skips archinstall's menu AND its final confirmation (the WIPE prompt
 # above replaced it). --skip-wifi-check: otherwise, with no network, the Wi-Fi TUI
 # opens even under --silent.
