@@ -1255,7 +1255,8 @@ stage_toolchains() {
   stage_banner "25 toolchains"
 
   # rustup / stack / go / ruby / python-pip / luarocks / mise arrive from pacman in
-  # stage 10. What they still need is per-user initialisation.
+  # stage 10. What they still need is per-user initialisation. ghcup does not come
+  # from pacman; it is installed below.
 
   # stable AND nightly (Ben, 2026-08-24). beast-arch also carries pinned 1.97.1 and
   # 1.98.0; those are deliberately NOT reproduced -- a pin belongs to whatever
@@ -1292,6 +1293,22 @@ stage_toolchains() {
     info "GHC itself is fetched by the xmonad stage's build"
   else
     warn "stack missing -- the xmonad stage will fail"
+  fi
+
+  # ghcup: GHC and cabal for Haskell work outside xmonad (Ben, 2026-10-01). Not in
+  # the Arch repos (only the AUR's ghcup-hs-bin), so the official installer is used,
+  # the way nvm is. Non-interactive, it installs the recommended GHC and cabal, and
+  # it does NOT edit shell rc files: .zshrc already sources ~/.ghcup/env. NO_STACK
+  # keeps it off stack, which is pacman's. xmonad's build relies on stack fetching
+  # its own GHC (lts-15.9, no system-ghc), and ghcup's stack hook would change that.
+  if [[ -x $HOME/.ghcup/bin/ghc && -x $HOME/.ghcup/bin/cabal ]]; then
+    ok "ghcup: ghc $("$HOME/.ghcup/bin/ghc" --numeric-version) and cabal $("$HOME/.ghcup/bin/cabal" --numeric-version) present"
+  else
+    info "installing ghcup with the recommended ghc and cabal"
+    # pipefail: without it a failed download pipes nothing into sh, which exits 0.
+    run env BOOTSTRAP_HASKELL_NONINTERACTIVE=1 BOOTSTRAP_HASKELL_INSTALL_NO_STACK=1 \
+      bash -c "set -o pipefail; curl --proto '=https' --tlsv1.2 -sSf https://get-ghcup.haskell.org | sh"
+    did "ghcup installed (ghc + cabal)"
   fi
 
   have go && ok "go present ($(go version))" || warn "go missing"
