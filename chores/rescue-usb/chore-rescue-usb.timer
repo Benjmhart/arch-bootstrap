@@ -1,0 +1,12 @@
+[Unit]
+Description=Weekly: refresh the Ventoy rescue USB with the current Arch ISO
+
+[Timer]
+OnCalendar=weekly
+# A week the machine was off runs at the next boot instead of being skipped.
+Persistent=true
+RandomizedDelaySec=1h
+Unit=chore@rescue-usb.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# chore-run NAME -- run one chore, record its outcome, notify.
+#
+# A chore is chores/NAME/run.sh plus a chore-NAME.timer that starts chore@NAME.service.
+# Its LAST LINE of output is the one-line summary. Exit codes are the whole protocol:
+#   0   done
+#   75  needs you -- a normal, expected outcome (e.g. the USB stick is not plugged in);
+#       chore@.service counts it as success so it is a reminder, not a failure
+#   *   broken
+# bootstrap.conf (beside chores/) is sourced into the chore's environment.
+set -uo pipefail
+name=${1:?usage: chore-run NAME}
+here="$(dirname "$(readlink -f "$0")")"
+script="$here/$name/run.sh"
+[[ -x $script ]] || { echo "no such chore: $name ($script)" >&2; exit 2; }
+state="${XDG_STATE_HOME:-$HOME/.local/state}/chores"
+mkdir -p "$state"
+started=$(date -Is)
+
+( set -a; [[ -f $here/../bootstrap.conf ]] && . "$here/../bootstrap.conf"; set +a
+  exec "$script" ) 2>&1 | tee "$state/$name.log"
+rc=${PIPESTATUS[0]}
+
+summary=$(tail -n1 "$state/$name.log")
+[[ -n $summary || $rc -eq 0 ]] || summary="exited $rc with no output"
+case $rc in
+  0)  status=ok        urgency=low ;;
+  75) status=needs-you urgency=normal ;;
+  *)  status=failed    urgency=critical ;;
+esac
+jq -n --arg n "$name" --arg s "$started" --arg f "$(date -Is)" --argjson rc "$rc" \
+      --arg st "$status" --arg m "$summary" \
+  '{name:$n, started:$s, finished:$f, rc:$rc, status:$st, summary:$m}' > "$state/$name.json"
+notify-send -u "$urgency" -a chores "chore $name: $status" "$summary" 2>/dev/null || true
+exit "$rc"

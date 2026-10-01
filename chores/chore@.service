@@ -1,0 +1,8 @@
+[Unit]
+Description=Chore: %i (arch-bootstrap/chores)
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/chore-run %i
+# 75 = "needs you" (e.g. the stick is not plugged in): a reminder, not a failure.
+SuccessExitStatus=75

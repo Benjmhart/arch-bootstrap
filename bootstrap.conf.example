@@ -68,6 +68,13 @@ KEYXFER_URL=""
 # pointing at its MagicDNS name, so `ssh <name>` never needs an IP.
 #SSH_PEERS="desktop laptop"
 
+# Chores: regular jobs run by systemd user timers (chores/). Names to enable on this
+# machine -- usually set per machine in a `case "$(uname -n)"` block.
+#CHORES="rescue-usb"
+# rescue-usb: the Ventoy stick's USB serial (lsblk -dno PATH,SERIAL,TRAN | grep usb).
+# Weekly it gets the current signature-verified Arch ISO plus install.sh/bootstrap.sh.
+#RESCUE_USB_SERIAL=""
+
 # ---------------------------------------------------------------- paths
 
 #DOTFILES_DIR="$HOME/.dot"

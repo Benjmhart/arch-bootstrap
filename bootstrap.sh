@@ -89,13 +89,17 @@ CONFIG_FROM_SECRETS="${CONFIG_FROM_SECRETS:-0}"
 # address -- on the next `--redo services`, not by itself. If tailscale has no
 # address yet, sshd is left on every interface and the run says so.
 SSHD_LISTEN_ADDRESS="${SSHD_LISTEN_ADDRESS:-}"   # an address, `tailscale`, or empty = all interfaces
-SSHD_ALLOW_USERS="${SSHD_ALLOW_USERS:-$USER}"
+SSHD_ALLOW_USERS="${SSHD_ALLOW_USERS:-$USER}"    # empty disables the AllowUsers restriction
 
 # Your other machines, by tailnet name (space-separated; this machine is skipped).
 # Stage 60 writes a ~/.ssh/config stanza for each, pointing at its MagicDNS FQDN,
 # so `ssh carbon` and `herdr --remote carbon` follow the node through address
 # changes with no IP written down anywhere. Empty = write nothing.
-SSH_PEERS="${SSH_PEERS:-}"    # empty disables the AllowUsers restriction
+SSH_PEERS="${SSH_PEERS:-}"
+
+# Chores to enable on this machine: names of directories under chores/, each with a
+# chore-NAME.timer. See chores/chore-run for the protocol. Empty = none.
+CHORES="${CHORES:-}"
 
 # /tmp: RAM or disk. systemd's static tmp.mount makes /tmp a tmpfs at size=50% of
 # RAM, which is an UNBOUNDED claim on memory that no quota limits -- on a 32 GiB
@@ -2513,6 +2517,39 @@ RestartSec=5s"
   fi
 }
 
+# Chores: regular jobs as systemd user timers (chores/, beast-arch task 69). chore-run
+# and chores go on PATH; every chore shares the chore@.service template, and only the
+# timers named in CHORES are enabled. `systemctl --user link` rather than copying, so a
+# `git pull` here updates the schedule, and it puts the link wherever THIS user manager
+# looks -- not $XDG_CONFIG_HOME, which the manager does not have (the task 58 path trap).
+install_chores() {
+  local d="$SCRIPT_DIR/chores" c unit
+  [[ -d $d ]] || return 0
+  for c in chore-run chores; do
+    if [[ "$(readlink -f "$HOME/.local/bin/$c" 2>/dev/null)" == "$d/$c" ]]; then
+      ok "$c on PATH"
+    else
+      run mkdir -p "$HOME/.local/bin"
+      run ln -sfn "$d/$c" "$HOME/.local/bin/$c"
+      did "linked $c into ~/.local/bin"
+    fi
+  done
+  [[ -n $CHORES ]] || { info "no CHORES enabled for this machine"; return 0; }
+  # `link` is idempotent: re-linking the same file is a no-op, so no check first.
+  for unit in "$d/chore@.service" "$d"/*/chore-*.timer; do
+    run systemctl --user --quiet link "$unit"
+  done
+  for c in $CHORES; do
+    [[ -f $d/$c/chore-$c.timer ]] || { warn "CHORES names '$c', but there is no chores/$c/chore-$c.timer"; continue; }
+    if systemctl --user is-enabled --quiet "chore-$c.timer" 2>/dev/null; then
+      ok "chore $c scheduled"
+    else
+      run systemctl --user enable --now "chore-$c.timer"
+      did "scheduled chore $c ($(sed -n 's/^OnCalendar=//p' "$d/$c/chore-$c.timer"))"
+    fi
+  done
+}
+
 # ~/.ssh/config stanzas for SSH_PEERS, kept between markers so a re-run replaces
 # them rather than stacking copies.
 #
@@ -2706,6 +2743,7 @@ stage_services() {
   enable_system_units
   harden_sshd
   ssh_tailnet_peers
+  install_chores
   manage_tmp_storage
 
   # ---- login keyring auto-unlock (added 2026-08-23) ---------------------------

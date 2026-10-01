@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# chores -- the last outcome of every chore, and when each runs next.
+state="${XDG_STATE_HOME:-$HOME/.local/state}/chores"
+shopt -s nullglob
+files=("$state"/*.json)
+if (( ${#files[@]} )); then
+  jq -r '[.name, .status, .finished[0:16], .summary] | @tsv' "${files[@]}" \
+    | column -t -s $'\t' -N CHORE,STATUS,FINISHED,SUMMARY
+else
+  echo "no chore has run yet"
+fi
+echo
+systemctl --user list-timers 'chore-*' --no-pager
+echo
+echo "run one now: chore-run NAME   full log: $state/NAME.log"
