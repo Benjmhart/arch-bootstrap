@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# adopt-key [CODE] -- run on a machine that already has GitHub access (beast-arch).
+#
+# A new machine's bootstrap.sh (stage 05) offers to send its SSH public key by
+# magic-wormhole and prints a code such as 27-caravan-spigot. Give that code here:
+# the key is received, checked, shown, and registered on GitHub with THIS machine's
+# gh, so the new machine needs no GitHub login, token or device code.
+#
+# magic-wormhole is PAKE-authenticated end to end: only someone holding the code can
+# receive the key, and nobody (the public relay included) can swap it in transit.
+# The code is single-use.
+set -euo pipefail
+die() { printf 'FAIL  %s\n' "$*" >&2; exit 1; }
+
+if command -v wormhole >/dev/null; then wormhole() { command wormhole "$@"; }
+elif command -v uvx >/dev/null; then wormhole() { uvx --from magic-wormhole wormhole "$@"; }
+else die "magic-wormhole not installed (sudo pacman -S magic-wormhole)"
+fi
+command -v gh >/dev/null || die "gh not installed"
+
+# Registering a key needs the admin:public_key scope. Asked for once, by browser.
+if [[ $(gh auth status --hostname github.com 2>&1 || true) != *admin:public_key* ]]; then
+  echo "gh needs the admin:public_key scope (once). A browser login follows."
+  gh auth refresh --hostname github.com --scopes admin:public_key
+fi
+
+code=${1:-}
+[[ -n $code ]] || read -r -p "code shown on the new machine: " code
+key=$(wormhole receive --only-text --hide-progress "$code") || die "nothing received"
+
+# Exactly one line that ssh-keygen accepts as a public key, and nothing else.
+[[ $(wc -l <<<"$key") -eq 1 && $key =~ ^ssh-[a-z0-9-]+\ [A-Za-z0-9+/=]+(\ .*)?$ ]] \
+  || die "that is not a single SSH public key: $key"
+tmp=$(mktemp); trap 'rm -f "$tmp"' EXIT
+printf '%s\n' "$key" > "$tmp"
+fp=$(ssh-keygen -lf "$tmp") || die "ssh-keygen rejects it: $key"
+comment=$(cut -d' ' -f3- <<<"$key")
+
+body=$(cut -d' ' -f1-2 <<<"$key")
+if gh api user/keys --jq '.[].key' | grep -qxF "$body"; then
+  echo "already registered on GitHub: $fp"; exit 0
+fi
+echo "received: $fp"
+read -r -p "register it on GitHub (push access to every repo)? [y/N] " ok
+[[ $ok == [yY]* ]] || die "not registered"
+gh ssh-key add "$tmp" --title "${comment:-new machine} $(date +%F)"
+echo "registered. The new machine's bootstrap continues by itself."

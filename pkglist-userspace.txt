@@ -52,6 +52,7 @@ libxinerama
 libxrandr
 libxss
 luarocks
+magic-wormhole
 make
 mise
 neovim

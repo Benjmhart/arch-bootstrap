@@ -665,10 +665,21 @@ stage_ssh() {
     fi
   fi
 
-  local tries=0 gh_tried=0
+  local tries=0 gh_tried=0 wh_tried=0
   while ! ssh_auth_works; do
     (( DRY_RUN )) && { info "(dry run -- skipping the auth gate)"; return 0; }
     (( ++tries > 3 )) && break
+
+    # Easiest: hand the public key to a machine that already has GitHub access,
+    # which registers it with its own gh (`adopt-key CODE` there). This machine
+    # then needs no GitHub login at all.
+    if (( ! wh_tried )) && [[ $(ssh_git_host) == github.com ]]; then
+      wh_tried=1
+      if confirm "send this key to a machine that already has GitHub access (you run adopt-key there)?"; then
+        wormhole_send_key "$key" && continue
+        warn "key handoff did not complete -- trying the GitHub device code instead"
+      fi
+    fi
 
     # GitHub: log in with a one-time device code and register every key through
     # the API, instead of hand-copying public keys from a raw TTY into a web form
@@ -874,6 +885,25 @@ ssh_git_host() {
   [[ -z $remote ]] && return 0
   host="${remote#*@}"; host="${host%%:*}"
   printf '%s' "$host"
+}
+
+# Send the public key by magic-wormhole to a machine running tools/adopt-key, then
+# wait for GitHub to accept it. PAKE-authenticated: only the holder of the printed
+# code receives it, and the relay cannot swap it. The code is allocated by the
+# server -- a hand-picked one collides with strangers' on the public relay.
+wormhole_send_key() {
+  local pub=$1.pub i
+  [[ -f $pub ]] || return 1
+  have wormhole || run sudo pacman -S --needed --noconfirm magic-wormhole || return 1
+  info "sending $(ssh-keygen -lf "$pub")"
+  info "on beast-arch (or any machine with gh logged in), run:  adopt-key <code below>"
+  run_interactive wormhole send --no-qr --text "$(cat "$pub")" || return 1
+  info "sent -- waiting for GitHub to accept the key (up to 5 minutes)"
+  for (( i = 0; i < 60; i++ )); do
+    ssh_auth_works && return 0
+    sleep 5
+  done
+  return 1
 }
 
 # Is gh logged in to github.com with a scope that can manage SSH keys?
