@@ -2870,6 +2870,29 @@ SyncIntervalSec=10s" "journald 10s sync"; then
   fi
 }
 
+# A readable kernel-console font. default8x16 at 1920x1080 is tiny; ter-v24n
+# (terminus-font, 12x24) gives about 160x45. vconsole.conf also holds KEYMAP, so
+# only its FONT= line is touched. The `consolefont` mkinitcpio hook copies the font
+# into the initramfs, so the LUKS passphrase prompt only changes after a rebuild.
+CONSOLE_FONT=ter-v24n
+set_console_font() {
+  local f=/etc/vconsole.conf
+  if grep -qx "FONT=$CONSOLE_FONT" "$f" 2>/dev/null; then
+    ok "console font $CONSOLE_FONT already set"; return 0
+  fi
+  if [[ ! -e /usr/share/kbd/consolefonts/$CONSOLE_FONT.psf.gz ]] && (( ! DRY_RUN )); then
+    warn "$CONSOLE_FONT not installed (terminus-font) -- console font left alone"; return 0
+  fi
+  if grep -q '^FONT=' "$f" 2>/dev/null; then
+    run sudo sed -i "s/^FONT=.*/FONT=$CONSOLE_FONT/" "$f" || return 0
+  else
+    run sudo sh -c "echo FONT=$CONSOLE_FONT >> $f" || return 0
+  fi
+  did "console font $CONSOLE_FONT in $f"
+  # Used from the next boot. The rebuild is what reaches the passphrase prompt.
+  grep -Eq '^HOOKS=.*\<consolefont\>' /etc/mkinitcpio.conf && run sudo mkinitcpio -P
+}
+
 # Random-key encrypted swap on SWAP_PARTUUID. See the config comment for why
 # PARTUUID. Lines are appended to /etc/crypttab and /etc/fstab, never rewritten:
 # both hold this machine's other filesystems.
@@ -2958,6 +2981,7 @@ stage_services() {
   install_chores
   manage_tmp_storage
   install_system_dropins
+  set_console_font
   setup_encrypted_swap
   configure_earlyoom
 

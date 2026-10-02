@@ -89,6 +89,7 @@ stack
 stalonetray
 starship
 tailscale
+terminus-font
 texlive-basic
 texlive-fontsrecommended
 texlive-latex
