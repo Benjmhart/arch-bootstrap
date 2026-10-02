@@ -1,0 +1,12 @@
+# Profile media-center: PROFILES="media-center" in bootstrap.conf for that host.
+# Jellyfin: the server plus its web client. jellyfin.service is enabled in stage 60
+# (SYSTEM_UNITS); first-run setup is in the browser at http://<host>:8096.
+jellyfin-server
+jellyfin-web
+# VPNs, all driven by the NetworkManager install.sh already set up (nmtui / nmcli).
+# WireGuard is built into NetworkManager; wireguard-tools adds `wg` to inspect it.
+# A provider's .conf imports with:  nmcli connection import type wireguard file x.conf
+# OpenVPN (.ovpn):                  nmcli connection import type openvpn file x.ovpn
+wireguard-tools
+openvpn
+networkmanager-openvpn

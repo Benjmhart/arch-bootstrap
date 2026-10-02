@@ -196,8 +196,9 @@ if PHASE == "install":
     expect(r"archiso login:", 180); send("root"); expect(r"#\s*$", 30)
     send("export TERM=dumb PS1='# '"); time.sleep(1)
     step("network up", run("until curl -fsI https://raw.githubusercontent.com >/dev/null; do sleep 2; done", 120))
+    # INSTALL_URL= (empty): use the install.sh a rescue ISO carries on PATH.
     step("fetch install.sh",
-         run(f"curl -fsSL -o install.sh {URL}"))
+         run(f"curl -fsSL -o install.sh {URL}" if URL else "cp /usr/local/bin/install.sh ."))
     send(f"LUKS_PASSWORD={PW} USER_PASSWORD={PW} bash install.sh {INSTALL_ARGS} --disk {GUEST_DISK} rehearsal ben; echo __RC_$?__")
     expect(r"Type WIPE to continue", 300); send("WIPE")
     rc = step("install.sh", int(expect(r"__RC_(\d+)__", 3600).group(1)))

@@ -165,6 +165,11 @@ SSH_KEY="${SSH_KEY:-}"
 # second one rots.
 PKG_EXCLUDE_FILE="${PKG_EXCLUDE_FILE:-}"
 
+# Extra roles for this machine, on top of the shared lists: each name adds the
+# packages in pkglist-profile-<name>.txt (and any SYSTEM_UNITS they bring). Set it
+# per host in bootstrap.conf, e.g.  case "$(uname -n)" in tv) PROFILES="media-center" ;; esac
+PROFILES="${PROFILES:-}"
+
 BOOTSTRAP_CONFIG="${BOOTSTRAP_CONFIG:-$SCRIPT_DIR/bootstrap.conf}"
 
 # A path written as "~/BRAIN" -- which is what anyone types at a prompt -- keeps
@@ -976,6 +981,13 @@ stage_packages() {
 
   local -a all=() want=() missing=()
   mapfile -t all < <(grep -vE '^[[:space:]]*(#|$)' "$SCRIPT_DIR/pkglist-userspace.txt")
+  local p plist
+  for p in $PROFILES; do
+    plist="$SCRIPT_DIR/pkglist-profile-$p.txt"
+    [[ -f $plist ]] || die "PROFILES names '$p', but there is no ${plist##*/}"
+    info "profile $p: adding ${plist##*/}"
+    mapfile -t -O "${#all[@]}" all < <(grep -vE '^[[:space:]]*(#|$)' "$plist")
+  done
   partition_by_exclusion "${all[@]}"
   want=("${EX_WANT[@]}")
   report_exclusions
@@ -2517,6 +2529,7 @@ SYSTEM_UNITS=(
   "earlyoom|earlyoom.service|kills a memory hog before the box livelocks"
   "tailscale|tailscaled.service|mesh VPN; joining a tailnet is a separate manual step"
   "openssh|sshd.service|remote shell; harden_sshd() writes the config it needs"
+  "jellyfin-server|jellyfin.service|media server (profile media-center); web UI on port 8096"
 )
 
 # Write sshd's configuration, and the boot ordering it needs if it binds a VPN

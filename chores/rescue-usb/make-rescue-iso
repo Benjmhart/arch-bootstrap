@@ -34,11 +34,18 @@ for f in "$repo"/tools/* "$repo"/install.sh; do
   pseudo+=(-p "usr/local/bin/${tools[-1]} f 755 0 0 cat $f")
 done
 (( ${#tools[@]} )) || { echo "no executables in $repo/tools"; exit 1; }
+# The repo itself, as a clean clone of HEAD (so never the gitignored bootstrap.conf,
+# which holds machine values that must not sit on an unencrypted stick). install.sh
+# unpacks it into the new user's ~/projects, so bootstrap.sh needs no network clone.
+git clone -q --no-local "$repo" "$tmp/arch-bootstrap"
+git -C "$tmp/arch-bootstrap" remote set-url origin https://github.com/Benjmhart/arch-bootstrap
+tar -C "$tmp" -cf "$tmp/arch-bootstrap.tar" arch-bootstrap
+pseudo+=(-p "usr/local/share/arch-bootstrap.tar f 644 0 0 cat $tmp/arch-bootstrap.tar")
 commit=$(git -C "$repo" log -1 --format='%h %cs' -- tools install.sh)   # last change to either
 [[ -z $(git -C "$repo" status --porcelain -- tools install.sh) ]] || commit+=" + uncommitted changes"
 # Login shells (zsh -> /etc/profile -> profile.d) print this, on tty1 and on serial.
 cat > "$tmp/banner.sh" <<EOF
-printf '\n\033[1march-bootstrap rescue tools\033[0m (${commit}), on PATH:\n  ${tools[*]}\n\n'
+printf '\n\033[1march-bootstrap rescue tools\033[0m (${commit}), on PATH:\n  ${tools[*]}\ninstall.sh also puts arch-bootstrap ($(git -C "$repo" log -1 --format=%h)) in the new user'"'"'s ~/projects\nWi-Fi:  iwctl station wlan0 connect "<network>"   (iwctl device list: adapter name)\n\n'
 EOF
 pseudo+=(-p "etc/profile.d/rescue-tools.sh f 644 0 0 cat $tmp/banner.sh")
 

@@ -74,9 +74,9 @@ if [[ ! -f $cache/$iso ]]; then
   echo "verified $iso: signature by ${primary: -16}, sha256 matches archlinux.org"
 fi
 
-# ---- the rescue ISO, rebuilt when the ISO, tools/, install.sh or the builder changes
+# ---- the rescue ISO, rebuilt when the ISO, the repo's HEAD (it carries a clone), tools/, install.sh or the builder changes
 rescue="rescue-archlinux-$ver.iso"
-stamp=$({ echo "$sha"; cat "$repo"/tools/* "$repo"/install.sh "$here/make-rescue-iso"; } | sha256sum | cut -d' ' -f1)
+stamp=$({ echo "$sha"; git -C "$repo" rev-parse HEAD; cat "$repo"/tools/* "$repo"/install.sh "$here/make-rescue-iso"; } | sha256sum | cut -d' ' -f1)
 built=0
 if [[ ! -f $cache/$rescue || $(cut -d' ' -f3 "$cache/$rescue.sha256" 2>/dev/null) != "$stamp" ]]; then
   "$here/make-rescue-iso" "$cache/$iso" "$cache/$rescue" || built=$?

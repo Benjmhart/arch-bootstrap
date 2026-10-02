@@ -316,6 +316,17 @@ rm -f "$out/user_credentials.json"
 sed -i "s/^KEYMAP=.*/KEYMAP=$KEYMAP/" /mnt/etc/vconsole.conf
 [[ $KEYMAP == us ]] || arch-chroot /mnt mkinitcpio -P
 
+# The arch-bootstrap clone the rescue ISO carries (chores/rescue-usb/make-rescue-iso):
+# unpacked into the new user's ~/projects, so after the reboot it is
+# `cd ~/projects/arch-bootstrap && ./bootstrap.sh`, with no clone over the network.
+# Absent on the official ISO; then clone it from GitHub as before.
+bundle=/usr/local/share/arch-bootstrap.tar
+if [[ -f $bundle ]]; then
+  install -d "/mnt/home/$user/projects"
+  tar -C "/mnt/home/$user/projects" -xf "$bundle"
+  arch-chroot /mnt chown -R "$user:$user" "/home/$user/projects"
+fi
+
 # ---- verify ----------------------------------------------------------------
 # archinstall can exit 0 on failure (a bootloader-validation failure, "No disk
 # configuration"), so check the result instead of trusting the status. The
@@ -331,6 +342,8 @@ chk "user $user exists"      "grep -q '^$user:' /mnt/etc/passwd"
 chk "/home is LUKS"          "grep -q luks /mnt/etc/crypttab || grep -q cryptdevice /mnt/etc/default/grub"
 chk "/etc is 755"            "[ \"\$(stat -c %a /mnt/etc)\" = 755 ]"
 chk "console keymap $KEYMAP"  "grep -qx 'KEYMAP=$KEYMAP' /mnt/etc/vconsole.conf"
+[[ -f $bundle ]] && chk "arch-bootstrap in ~$user/projects" \
+  "arch-chroot /mnt runuser -u '$user' -- git -C '/home/$user/projects/arch-bootstrap' status --short >/dev/null"
 chk "hostname set"           "[ \"\$(cat /mnt/etc/hostname 2>/dev/null)\" = '$host' ]"
 if (( fails )); then
   printf '\n%d check(s) failed. The log is /var/log/archinstall/install.log (and\n' "$fails" >&2
@@ -340,9 +353,9 @@ fi
 
 cat <<EOF
 
-Installed. Reboot, log in as $user on the TTY, then:
+Installed. Reboot, log in as $user on the TTY (Wi-Fi: nmtui), then:
 
-  git clone https://github.com/Benjmhart/arch-bootstrap ~/projects/arch-bootstrap
+$( [[ -f $bundle ]] || echo "  git clone https://github.com/Benjmhart/arch-bootstrap ~/projects/arch-bootstrap")
   cd ~/projects/arch-bootstrap && ./bootstrap.sh
 
 EOF
