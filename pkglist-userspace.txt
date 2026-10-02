@@ -41,6 +41,7 @@ jq
 kdenlive
 keepassxc
 less
+libisoburn
 libnotify
 libpulse
 libsecret

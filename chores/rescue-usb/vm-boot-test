@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# vm-boot-test ISO -- boot an Arch ISO in a throwaway KVM guest and pass if it reaches
-# `archiso login:` on the serial console. No disk, no network, the ISO read-only, no root.
+# vm-boot-test ISO [CHECK] -- boot an Arch ISO in a throwaway KVM guest and pass if it
+# reaches `archiso login:` on the serial console. No disk, no network, the ISO read-only,
+# no root. With CHECK, it then logs in as root (no password on archiso) and also needs
+# the shell command CHECK to succeed there, e.g. `command -v encrypt-root-in-place`.
 #
 # The ISO's own boot entries have no serial console, so this boots ITS kernel and
 # initramfs directly with ITS own command line plus console=ttyS0. That covers the
@@ -10,7 +12,8 @@
 #
 # Exit: 0 booted; 1 did not boot; 75 cannot test here (no qemu, no /dev/kvm).
 set -euo pipefail
-iso=${1:?usage: vm-boot-test ISO}
+iso=${1:?usage: vm-boot-test ISO [CHECK]}
+check=${2:-}
 limit=${VM_BOOT_TIMEOUT:-180}   # seconds; a good boot takes ~25s under KVM
 
 command -v qemu-system-x86_64 >/dev/null || { echo "qemu-system-x86_64 not installed -- cannot boot-test"; exit 75; }
@@ -23,17 +26,31 @@ opts=$(bsdtar -xOf "$iso" loader/entries/01-archiso-linux.conf | sed -n 's/^opti
 [[ $opts == *archisosearchuuid=* ]] || { echo "no archiso boot entry in $iso"; exit 1; }
 bsdtar -xOf "$iso" arch/boot/x86_64/vmlinuz-linux > "$tmp/vmlinuz"
 bsdtar -xOf "$iso" arch/boot/x86_64/initramfs-linux.img > "$tmp/initrd"
-: > "$tmp/serial"
+# The serial port is a pair of fifos so CHECK can be typed into the guest.
+mkfifo "$tmp/s.in" "$tmp/s.out"
+cat "$tmp/s.out" > "$tmp/serial" &
 
 qemu-system-x86_64 -enable-kvm -cpu host -m 2048 -smp 2 -nic none \
-  -display none -monitor none -serial "file:$tmp/serial" -no-reboot \
+  -display none -monitor none -serial "pipe:$tmp/s" -no-reboot \
   -drive "file=$iso,media=cdrom,readonly=on" \
   -kernel "$tmp/vmlinuz" -initrd "$tmp/initrd" -append "$opts console=ttyS0" &
 pid=$!
+exec 3> "$tmp/s.in"
 
 for (( t = 0; t < limit; t++ )); do
   if grep -q 'archiso login:' "$tmp/serial"; then
-    echo "boot test: $(basename "$iso") reached a login prompt in ${t}s"; exit 0
+    echo "boot test: $(basename "$iso") reached a login prompt in ${t}s"
+    [[ -z $check ]] && exit 0
+    # The echoed input reads "check-ok-$((6*7))"; only the shell's output reads 42.
+    printf 'root\n' >&3; sleep 5
+    printf '%s && echo check-ok-$((6*7))\n' "$check" >&3
+    for (( c = 0; c < 30; c++ )); do
+      grep -aq 'check-ok-42' "$tmp/serial" && { echo "check passed in the guest: $check"; exit 0; }
+      sleep 1
+    done
+    echo "boot test FAILED: logged in, but '$check' did not succeed. Last console lines:"
+    tr -d '\r' < "$tmp/serial" | grep -av '^\s*$' | tail -n 8 | sed 's/^/  | /'
+    exit 1
   fi
   # The archiso initramfs drops to this emergency shell when it cannot find its root.
   grep -q '^\[rootfs ' "$tmp/serial" && break

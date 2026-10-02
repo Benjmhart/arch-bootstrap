@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# make-rescue-iso OFFICIAL_ISO OUT_ISO -- the official Arch ISO with this repo's tools/
+# on PATH (/usr/local/bin) and a login banner naming them, so on the stick
+# `encrypt-root-in-place /dev/X /dev/Y` just works. NO ROOT.
+#
+# Only airootfs.sfs changes. It is rebuilt from a pseudo-file dump of the original
+# (`unsquashfs -pf`), which carries owners, modes, setuid bits, device nodes and xattrs
+# without extracting anything -- an unprivileged unsquashfs would lose all of those.
+# xorriso then replays the original's boot records (El Torito, MBR/GPT, the appended
+# EFI partition) and keeps its volume date, which IS the archisosearchuuid=
+# the boot entries look for: a new date would leave an ISO that cannot find itself.
+#
+# airootfs.sha512 is regenerated and airootfs.sfs.cms.sig dropped, since that
+# signature can only ever be Arch's. The boot entries ask for neither check
+# (no checksum=/verify=), so nothing relies on them at boot.
+#
+# Exit: 0 built; 1 failed; 75 cannot build here (xorriso missing).
+set -euo pipefail
+in=${1:?usage: make-rescue-iso OFFICIAL_ISO OUT_ISO}
+out=${2:?usage: make-rescue-iso OFFICIAL_ISO OUT_ISO}
+repo="$(dirname "$(readlink -f "$0")")/../.."
+command -v xorriso >/dev/null || { echo "xorriso not installed (pacman -S libisoburn) -- cannot build the rescue ISO"; exit 75; }
+
+tmp=$(mktemp -d -p "$(dirname "$out")")      # ~2 GiB of scratch, beside the output
+trap 'rm -rf "$tmp"' EXIT
+
+uuid=$(bsdtar -xOf "$in" loader/entries/01-archiso-linux.conf | sed -n 's/.*archisosearchuuid=\([0-9-]*\).*/\1/p')
+[[ $uuid =~ ^[0-9]{4}(-[0-9]{2}){6}$ ]] || { echo "no archisosearchuuid in $in"; exit 1; }
+
+tools=() pseudo=()
+for f in "$repo"/tools/*; do
+  [[ -f $f && -x $f ]] || continue
+  tools+=("$(basename "$f")")
+  pseudo+=(-p "usr/local/bin/${tools[-1]} f 755 0 0 cat $f")
+done
+(( ${#tools[@]} )) || { echo "no executables in $repo/tools"; exit 1; }
+commit=$(git -C "$repo" log -1 --format='%h %cs' -- tools)   # last change to tools/
+[[ -z $(git -C "$repo" status --porcelain -- tools) ]] || commit+=" + uncommitted changes"
+# Login shells (zsh -> /etc/profile -> profile.d) print this, on tty1 and on serial.
+cat > "$tmp/banner.sh" <<EOF
+printf '\n\033[1march-bootstrap rescue tools\033[0m (${commit}), on PATH:\n  ${tools[*]}\n\n'
+EOF
+pseudo+=(-p "etc/profile.d/rescue-tools.sh f 644 0 0 cat $tmp/banner.sh")
+
+bsdtar -xOf "$in" arch/x86_64/airootfs.sfs > "$tmp/old.sfs"
+# mkarchiso's own compression settings
+unsquashfs -pf - "$tmp/old.sfs" \
+  | mksquashfs - "$tmp/airootfs.sfs" -pf - "${pseudo[@]}" -noappend -quiet -no-progress \
+      -comp xz -Xbcj x86 -b 1M -Xdict-size 1M
+rm "$tmp/old.sfs"
+(cd "$tmp" && sha512sum airootfs.sfs > airootfs.sha512)
+
+xorriso -no_rc -indev "$in" -outdev "$tmp/out.iso" \
+  -boot_image any replay -volume_date uuid "${uuid//-/}" \
+  -map "$tmp/airootfs.sfs" /arch/x86_64/airootfs.sfs \
+  -map "$tmp/airootfs.sha512" /arch/x86_64/airootfs.sha512 \
+  -find /arch/x86_64 -name 'airootfs.sfs*.sig' -exec rm -- \
+  2> "$tmp/xorriso.log" || { tail -n 20 "$tmp/xorriso.log"; echo "xorriso failed"; exit 1; }
+mv "$tmp/out.iso" "$out"
+echo "built $(basename "$out"): ${tools[*]} in /usr/local/bin ($commit)"

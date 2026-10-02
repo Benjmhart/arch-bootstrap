@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Weekly: put the current, signature-verified Arch ISO on the Ventoy rescue stick,
-# with this repo's install.sh / bootstrap.sh beside it. NO ROOT: the stick is mounted
+# Weekly: put the current, signature-verified Arch ISO on the Ventoy rescue stick, plus
+# rescue-archlinux-VER.iso -- the same ISO with this repo's tools/ on PATH
+# (make-rescue-iso) -- and install.sh / bootstrap.sh beside them. NO ROOT: the stick is mounted
 # through udisks. Installing or upgrading Ventoy itself does need root, so that is
 # reported (exit 75) rather than done.
 #
@@ -8,10 +9,10 @@
 #   lsblk -dno PATH,SERIAL,TRAN | grep usb
 set -euo pipefail
 : "${RESCUE_USB_SERIAL:?set RESCUE_USB_SERIAL in bootstrap.conf}"
-repo="$(dirname "$(readlink -f "$0")")/../.."
+here="$(dirname "$(readlink -f "$0")")"
+repo="$here/../.."
 cache="${XDG_CACHE_HOME:-$HOME/.cache}/rescue-usb"
 keyring=/usr/share/pacman/keyrings/archlinux.gpg
-keep=2            # ISOs kept on the stick: the new one, and the last one known good
 mkdir -p "$cache"
 
 # ---- the stick: by USB serial, never by /dev name (that changes with plug order)
@@ -73,26 +74,49 @@ if [[ ! -f $cache/$iso ]]; then
   echo "verified $iso: signature by ${primary: -16}, sha256 matches archlinux.org"
 fi
 
-# ---- onto the stick
-mount_dev "$data"
-if [[ ! -f $mnt/$iso ]]; then
-  echo "copying $iso to the stick"
-  cp "$cache/$iso" "$mnt/.$iso.part"
-  sync
-  echo "$sha  $mnt/.$iso.part" | sha256sum -c --quiet \
-    || { rm -f "$mnt/.$iso.part"; echo "copy on the stick does not match -- removed"; exit 1; }
-  mv "$mnt/.$iso.part" "$mnt/$iso"
+# ---- the rescue ISO, rebuilt when the ISO, tools/ or the builder changes
+rescue="rescue-archlinux-$ver.iso"
+stamp=$({ echo "$sha"; cat "$repo"/tools/* "$here/make-rescue-iso"; } | sha256sum | cut -d' ' -f1)
+built=0
+if [[ ! -f $cache/$rescue || $(cut -d' ' -f3 "$cache/$rescue.sha256" 2>/dev/null) != "$stamp" ]]; then
+  rm -f "$cache"/rescue-archlinux-*
+  "$here/make-rescue-iso" "$cache/$iso" "$cache/$rescue" || built=$?
+  if (( built == 0 )); then
+    echo "$(sha256sum < "$cache/$rescue" | cut -d' ' -f1) stamp $stamp" > "$cache/$rescue.sha256"
+  elif (( built != 75 )); then
+    echo "building $rescue FAILED -- stick left as it was"; exit 1
+  fi
 fi
 
-# ---- boot the copy ON THE STICK in a throwaway VM. Older ISOs are pruned only after it
-# passes, so a new ISO that does not boot leaves the last known-good one in place.
-boot=0; "$(dirname "$(readlink -f "$0")")/vm-boot-test" "$mnt/$iso" || boot=$?
-if (( boot == 1 )); then
-  echo "$iso is on the stick but did NOT boot in the VM -- older ISOs kept"; exit 1
+# ---- onto the stick: copy, then check the copy, never trust cp
+mount_dev "$data"
+put() {             # $1 file in $cache, $2 its sha256
+  [[ -f $mnt/$1 ]] && echo "$2  $mnt/$1" | sha256sum -c --quiet 2>/dev/null && return
+  echo "copying $1 to the stick"
+  cp "$cache/$1" "$mnt/.$1.part"
+  sync
+  echo "$2  $mnt/.$1.part" | sha256sum -c --quiet \
+    || { rm -f "$mnt/.$1.part"; echo "copy of $1 on the stick does not match -- removed"; exit 1; }
+  mv "$mnt/.$1.part" "$mnt/$1"
+}
+put "$iso" "$sha"
+if (( built == 0 )); then put "$rescue" "$(cut -d' ' -f1 "$cache/$rescue.sha256")"; fi
+
+# ---- boot the copies ON THE STICK in a throwaway VM; the rescue ISO must also have its
+# tools on PATH. Old ISOs are pruned only after both pass, so an ISO that does not boot
+# leaves the last known-good ones in place.
+boot=0; "$here/vm-boot-test" "$mnt/$iso" || boot=$?
+if (( boot == 0 && built == 0 )); then
+  "$here/vm-boot-test" "$mnt/$rescue" 'command -v encrypt-root-in-place' || boot=$?
 fi
-(( boot == 0 )) || keep=99      # could not test: prune nothing
-# Newest $keep ISOs stay (names sort by date); anything else of ours goes.
-{ ls -1 "$mnt"/archlinux-*-x86_64.iso 2>/dev/null || true; } | sort -r | tail -n +$((keep + 1)) | xargs -r -d '\n' rm -f --
+if (( boot == 1 )); then
+  echo "a new ISO is on the stick but did NOT pass the VM test -- older ISOs kept"; exit 1
+fi
+if (( boot == 0 && built == 0 )); then   # everything current passed: drop the rest
+  for f in "$mnt"/archlinux-*-x86_64.iso "$mnt"/rescue-archlinux-*.iso; do
+    [[ -f $f && ${f##*/} != "$iso" && ${f##*/} != "$rescue" ]] && rm -f -- "$f"
+  done
+fi
 
 mkdir -p "$mnt/arch-bootstrap"
 cp "$repo"/{install.sh,bootstrap.sh,bootstrap.conf.example,README.md} "$repo"/pkglist-*.txt "$mnt/arch-bootstrap/"
@@ -100,7 +124,7 @@ cp -r "$repo"/tools "$mnt/arch-bootstrap/"   # e.g. encrypt-root-in-place, run f
 { git -C "$repo" log -1 --format='arch-bootstrap %H (%cd)'
   [[ -z $(git -C "$repo" status --porcelain) ]] || echo "  PLUS UNCOMMITTED CHANGES -- these files are not exactly that commit"
 } > "$mnt/arch-bootstrap/COMMIT"
-on_stick=$(cd "$mnt" && ls -1 archlinux-*-x86_64.iso | tr '\n' ' ')
+on_stick=$(cd "$mnt" && ls -1 archlinux-*-x86_64.iso rescue-archlinux-*.iso 2>/dev/null | tr '\n' ' ')
 
 # ---- Ventoy itself: report, don't fix (root)
 want=$(cat /opt/ventoy/ventoy/version 2>/dev/null || true)
@@ -110,6 +134,9 @@ if [[ -z $want ]]; then
   echo "ISOs: $on_stick| Ventoy $have on stick; ventoy-bin not installed here, so currency unknown"; exit 75
 elif [[ $have != "$want" ]]; then
   echo "ISOs: $on_stick| Ventoy $have on stick, $want available: sudo ventoy -u $disk"; exit 75
+fi
+if (( built )); then
+  echo "ISOs: $on_stick| Ventoy $have (current) | rescue ISO NOT built (see the log)"; exit 75
 fi
 if (( boot )); then
   echo "ISOs: $on_stick| Ventoy $have (current) | NOT boot-tested (no qemu or /dev/kvm -- see the log)"; exit 75
