@@ -217,7 +217,7 @@ elif PHASE == "convert":
     step("fetch encrypt-root-in-place (working tree)", run(f"curl -fsS -o eri {HOST}/encrypt-root-in-place"))
     send(f"bash eri {part(2)} {part(3)}; echo __RC_$?__")
     while True:   # answer every prompt; the passphrase is the same everywhere
-        m = expect(r"(?:Type ENCRYPT to continue|Type 'yes' in capital letters|passphrase[^\n]*:)\s*$|__RC_(\d+)__", 3600)
+        m = expect(r"(?:Type ENCRYPT to continue:?|Type 'yes' in capital letters|passphrase[^\n]*:)\s*$|__RC_(\d+)__", 3600)
         if m.group(1) is not None:
             rc = step("encrypt-root-in-place", int(m.group(1))); break
         a = m.group(0).decode()
