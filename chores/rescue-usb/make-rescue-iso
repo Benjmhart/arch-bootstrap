@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# make-rescue-iso OFFICIAL_ISO OUT_ISO -- the official Arch ISO with this repo's tools/
+# make-rescue-iso OFFICIAL_ISO OUT_ISO -- the official Arch ISO with this repo's tools/ and install.sh
 # on PATH (/usr/local/bin) and a login banner naming them, so on the stick
 # `encrypt-root-in-place /dev/X /dev/Y` just works. NO ROOT.
 #
@@ -28,14 +28,14 @@ uuid=$(bsdtar -xOf "$in" loader/entries/01-archiso-linux.conf | sed -n 's/.*arch
 [[ $uuid =~ ^[0-9]{4}(-[0-9]{2}){6}$ ]] || { echo "no archisosearchuuid in $in"; exit 1; }
 
 tools=() pseudo=()
-for f in "$repo"/tools/*; do
+for f in "$repo"/tools/* "$repo"/install.sh; do
   [[ -f $f && -x $f ]] || continue
   tools+=("$(basename "$f")")
   pseudo+=(-p "usr/local/bin/${tools[-1]} f 755 0 0 cat $f")
 done
 (( ${#tools[@]} )) || { echo "no executables in $repo/tools"; exit 1; }
-commit=$(git -C "$repo" log -1 --format='%h %cs' -- tools)   # last change to tools/
-[[ -z $(git -C "$repo" status --porcelain -- tools) ]] || commit+=" + uncommitted changes"
+commit=$(git -C "$repo" log -1 --format='%h %cs' -- tools install.sh)   # last change to either
+[[ -z $(git -C "$repo" status --porcelain -- tools install.sh) ]] || commit+=" + uncommitted changes"
 # Login shells (zsh -> /etc/profile -> profile.d) print this, on tty1 and on serial.
 cat > "$tmp/banner.sh" <<EOF
 printf '\n\033[1march-bootstrap rescue tools\033[0m (${commit}), on PATH:\n  ${tools[*]}\n\n'

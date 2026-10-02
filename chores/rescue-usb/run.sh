@@ -74,9 +74,9 @@ if [[ ! -f $cache/$iso ]]; then
   echo "verified $iso: signature by ${primary: -16}, sha256 matches archlinux.org"
 fi
 
-# ---- the rescue ISO, rebuilt when the ISO, tools/ or the builder changes
+# ---- the rescue ISO, rebuilt when the ISO, tools/, install.sh or the builder changes
 rescue="rescue-archlinux-$ver.iso"
-stamp=$({ echo "$sha"; cat "$repo"/tools/* "$here/make-rescue-iso"; } | sha256sum | cut -d' ' -f1)
+stamp=$({ echo "$sha"; cat "$repo"/tools/* "$repo"/install.sh "$here/make-rescue-iso"; } | sha256sum | cut -d' ' -f1)
 built=0
 if [[ ! -f $cache/$rescue || $(cut -d' ' -f3 "$cache/$rescue.sha256" 2>/dev/null) != "$stamp" ]]; then
   "$here/make-rescue-iso" "$cache/$iso" "$cache/$rescue" || built=$?
@@ -107,7 +107,7 @@ if (( built == 0 )); then put "$rescue" "$(cut -d' ' -f1 "$cache/$rescue.sha256"
 # leaves the last known-good ones in place.
 boot=0; "$here/vm-boot-test" "$mnt/$iso" || boot=$?
 if (( boot == 0 && built == 0 )); then
-  "$here/vm-boot-test" "$mnt/$rescue" 'command -v encrypt-root-in-place' || boot=$?
+  "$here/vm-boot-test" "$mnt/$rescue" 'command -v encrypt-root-in-place && command -v install.sh' || boot=$?
 fi
 if (( boot == 1 )); then
   echo "a new ISO is on the stick but did NOT pass the VM test -- older ISOs kept"; exit 1
