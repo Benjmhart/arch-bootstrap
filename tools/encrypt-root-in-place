@@ -75,7 +75,9 @@ free_kib=$(df --output=avail -k "$mnt" | tail -1)
 backup="root-backup-$(date +%F).tar"
 mkdir -p /mnt/eri-root; mount -o ro "$root_part" /mnt/eri-root
 info "backing up / to /home/$backup"
-tar --acls --xattrs --one-file-system -cpf "$mnt/$backup" -C /mnt/eri-root .
+# 0600: the tar holds /etc/shadow, ssh host keys and /root. Under the live ISO's
+# umask it came out 0644, world-readable on the booted machine (carbon 2026-10-02).
+(umask 077 && tar --acls --xattrs --one-file-system -cpf "$mnt/$backup" -C /mnt/eri-root .)
 umount /mnt/eri-root
 info "backup done: $(du -h "$mnt/$backup" | cut -f1)"
 umount "$mnt"
