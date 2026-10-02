@@ -79,9 +79,9 @@ rescue="rescue-archlinux-$ver.iso"
 stamp=$({ echo "$sha"; cat "$repo"/tools/* "$here/make-rescue-iso"; } | sha256sum | cut -d' ' -f1)
 built=0
 if [[ ! -f $cache/$rescue || $(cut -d' ' -f3 "$cache/$rescue.sha256" 2>/dev/null) != "$stamp" ]]; then
-  rm -f "$cache"/rescue-archlinux-*
   "$here/make-rescue-iso" "$cache/$iso" "$cache/$rescue" || built=$?
-  if (( built == 0 )); then
+  if (( built == 0 )); then   # old ones go only now: a failed or skipped build keeps them
+    find "$cache" -maxdepth 1 -name 'rescue-archlinux-*' ! -name "$rescue" -delete
     echo "$(sha256sum < "$cache/$rescue" | cut -d' ' -f1) stamp $stamp" > "$cache/$rescue.sha256"
   elif (( built != 75 )); then
     echo "building $rescue FAILED -- stick left as it was"; exit 1
@@ -91,7 +91,7 @@ fi
 # ---- onto the stick: copy, then check the copy, never trust cp
 mount_dev "$data"
 put() {             # $1 file in $cache, $2 its sha256
-  [[ -f $mnt/$1 ]] && echo "$2  $mnt/$1" | sha256sum -c --quiet 2>/dev/null && return
+  [[ -f $mnt/$1 ]] && echo "$2  $mnt/$1" | sha256sum -c --quiet >/dev/null 2>&1 && return
   echo "copying $1 to the stick"
   cp "$cache/$1" "$mnt/.$1.part"
   sync
