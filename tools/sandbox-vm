@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# sandbox-vm [--net] [--in DIR] [--disk GiB] [ISO] -- a throwaway VM for running untrusted code.
+#
+# Boots the Arch live ISO (default: the newest signature-verified one the rescue-usb
+# chore cached) under KVM, console on this terminal. Log in as `root`, no password.
+# Ctrl-a x kills it. Nothing survives: the live root is RAM, and the scratch disk and
+# work dir are deleted on exit, however the VM ends.
+#
+# Isolation, as built:
+#   - no shared folders, no guest agent, no USB/sound/display (-nodefaults)
+#   - QEMU itself runs in bubblewrap with NO home directory mounted, so a guest that
+#     escapes QEMU lands in a process that cannot see ~/.ssh, ~/secrets or the agent
+#     socket; plus QEMU's own seccomp filter (-sandbox)
+#   - network OFF by default. --net gives user-mode NAT, which reaches the internet AND
+#     everything this host reaches: the LAN, the tailnet, and the host's own 127.0.0.1
+#     services at 10.0.2.2.
+#     ponytail: slirp cannot hide host loopback; switch to passt (--no-map-gw) if --net
+#     gets used for anything that should not see local services.
+#   - --in DIR copies DIR in as a read-only tar on /dev/vda (in the guest:
+#     `mkdir in && tar -xf /dev/vda -C in`). The copy is taken once; the VM never sees DIR.
+#   - --disk N adds an empty N GiB scratch disk (/dev/vdb, or /dev/vda without --in).
+set -euo pipefail
+net=0 in= disk=0
+while (( $# )); do
+  case $1 in
+    --net) net=1 ;;
+    --in) in=${2:?--in needs a directory}; shift ;;
+    --disk) disk=${2:?--disk needs a size in GiB}; shift ;;
+    -h|--help) sed -n '2,/^set /p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
+    -*) echo "unknown option $1" >&2; exit 2 ;;
+    *) break ;;
+  esac
+  shift
+done
+iso=${1:-$(ls -1 "${XDG_CACHE_HOME:-$HOME/.cache}"/rescue-usb/archlinux-*-x86_64.iso 2>/dev/null | sort | tail -n1)}
+[[ -f $iso ]] || { echo "no ISO -- run 'chore-run rescue-usb' or pass one" >&2; exit 1; }
+[[ -z $in || -d $in ]] || { echo "--in: $in is not a directory" >&2; exit 2; }
+for c in qemu-system-x86_64 bwrap bsdtar; do command -v $c >/dev/null || { echo "$c not installed" >&2; exit 1; }; done
+[[ -r /dev/kvm && -w /dev/kvm ]] || { echo "/dev/kvm not usable" >&2; exit 1; }
+
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/sandbox-vm.XXXXXX")
+trap 'rm -rf "$tmp"' EXIT
+iso=$(realpath "$iso")
+
+opts=$(bsdtar -xOf "$iso" loader/entries/01-archiso-linux.conf | sed -n 's/^options *//p')
+bsdtar -xOf "$iso" arch/boot/x86_64/vmlinuz-linux > "$tmp/vmlinuz"
+bsdtar -xOf "$iso" arch/boot/x86_64/initramfs-linux.img > "$tmp/initrd"
+
+drives=()
+if [[ -n $in ]]; then
+  tar -cf "$tmp/in.tar" -C "$in" .
+  drives+=(-drive "file=/work/in.tar,format=raw,if=virtio,readonly=on")
+fi
+if (( disk > 0 )); then
+  truncate -s "${disk}G" "$tmp/scratch.img"
+  drives+=(-drive "file=/work/scratch.img,format=raw,if=virtio")
+fi
+nic=(-nic none); share=()
+# /etc/resolv.conf is a symlink into /run (systemd-resolved stub), which slirp's DNS reads
+(( net )) && { nic=(-nic user,model=virtio-net-pci); share=(--share-net --ro-bind-try /run/systemd/resolve /run/systemd/resolve); }
+echo "sandbox-vm: $(basename "$iso"), network $( (( net )) && echo 'NAT (host loopback reachable at 10.0.2.2)' || echo off). Ctrl-a x to kill." >&2
+
+bwrap --unshare-all "${share[@]}" --die-with-parent --new-session \
+  --ro-bind /usr /usr --symlink usr/bin /bin --symlink usr/lib /lib --symlink usr/lib /lib64 \
+  --ro-bind /etc /etc --proc /proc --dev /dev --dev-bind /dev/kvm /dev/kvm --tmpfs /tmp \
+  --bind "$tmp" /work --ro-bind "$iso" /work/live.iso --chdir /work --setenv HOME /work \
+  qemu-system-x86_64 -enable-kvm -cpu host -m "${VM_MEM:-4096}" -smp "${VM_CPUS:-4}" \
+    -nodefaults -display none -serial mon:stdio -no-reboot \
+    -sandbox on,obsolete=deny,elevateprivileges=deny,spawn=deny,resourcecontrol=deny \
+    "${nic[@]}" -drive "file=/work/live.iso,media=cdrom,readonly=on" "${drives[@]}" \
+    -kernel /work/vmlinuz -initrd /work/initrd -append "$opts console=ttyS0"

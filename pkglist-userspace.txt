@@ -4,6 +4,7 @@ alsa-utils
 arandr
 base-devel
 bat
+bubblewrap
 cbatticon
 chromium
 clang
