@@ -1,0 +1,4 @@
+# Profile lean: PROFILES="lean" in bootstrap.conf for old or slow machines (micro).
+# Adds no packages. The profile's work is in bootstrap.sh: LEAN_UNITS_OFF and
+# apply_lean_profile (units off, CPU governor follows AC, zram sized to RAM).
+# This file exists because every profile name must have one (stage 10 checks).

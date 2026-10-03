@@ -2620,6 +2620,16 @@ SYSTEM_UNITS=(
   "jellyfin-server|jellyfin.service|media server (profile media-center); web UI on port 8096"
 )
 
+# Profile `lean`: old, slow hardware (first: micro, an i3-3227U with 3.5 GiB and a
+# spinning disk, 2026-10-03). Units the shared lists enable that a lean host does
+# without. enable_system_units skips them; apply_lean_profile turns them OFF where an
+# earlier run or the installer already enabled them. docker was the only thing pulling
+# in network-online.target, so it and wait-online together were ~15 s of micro's boot.
+LEAN_UNITS_OFF=(docker.service docker.socket containerd.service bluetooth.service
+                NetworkManager-wait-online.service)
+
+profile_on() { [[ " $PROFILES " == *" $1 "* ]]; }
+
 # Write sshd's configuration, and the boot ordering it needs if it binds a VPN
 # address. Called from stage 60 AFTER enable_system_units, so the unit exists.
 #
@@ -2833,6 +2843,11 @@ enable_system_units() {
   for entry in "${SYSTEM_UNITS[@]}"; do
     IFS='|' read -r pkg unit why <<< "$entry"
 
+    if profile_on lean && [[ " ${LEAN_UNITS_OFF[*]} " == *" $unit "* ]]; then
+      info "$unit: off on lean hosts (PROFILES=lean) -- not enabling"
+      continue
+    fi
+
     # An excluded package must not have its unit enabled either. Without this the
     # exclusion file would decline to INSTALL something and then this loop would
     # try to start it, which is worse than either behaviour on its own.
@@ -3001,6 +3016,90 @@ SyncIntervalSec=10s" "journald 10s sync"; then
   fi
 }
 
+# zram is this machine's ONLY swap: zram configured, no SWAP_PARTUUID, and nothing
+# but zram in /proc/swaps. The sysctls below assume exactly that.
+zram_only_swap() {
+  [[ -f /etc/systemd/zram-generator.conf ]] || return 1
+  [[ -z ${SWAP_PARTUUID:-} ]] || return 1
+  ! awk 'NR>1 && $1 !~ /^\/dev\/zram/' /proc/swaps | grep -q .
+}
+
+# Universal, but each part only where it applies. Added 2026-10-03 from micro.
+#   bfq: the I/O scheduler built for interactive latency on rotational disks. The
+#     rule matches rotational=1 only, so on SSD/NVMe machines it is inert.
+#   zram sysctls (ArchWiki "zram"): swappiness 60 is the disk-swap default. With
+#     zram as the only swap, compressing idle anonymous memory is far cheaper than
+#     dropping page cache, which a spinning disk then has to seek to re-read. NOT
+#     applied where disk swap sits behind zram (beast-arch): at 180 the kernel would
+#     swap to that disk as eagerly.
+tune_storage_and_swap() {
+  if put_etc_file /etc/udev/rules.d/60-ioscheduler.rules \
+'# Written by arch-bootstrap. bfq on rotational disks only.
+ACTION=="add|change", KERNEL=="sd[a-z]", ATTR{queue/rotational}=="1", ATTR{queue/scheduler}="bfq"' \
+     "bfq I/O scheduler for rotational disks"; then
+    run sudo udevadm control --reload
+    run sudo udevadm trigger --subsystem-match=block --action=change
+  fi
+
+  if zram_only_swap; then
+    if put_etc_file /etc/sysctl.d/99-vm-zram-parameters.conf \
+"# Written by arch-bootstrap. zram is the only swap here (see tune_storage_and_swap).
+vm.swappiness = 180
+vm.watermark_boost_factor = 0
+vm.watermark_scale_factor = 125
+vm.page-cluster = 0" "zram swap tuning"; then
+      run sudo sysctl --system
+    fi
+  else
+    info "zram is not the only swap here -- zram sysctls not applied"
+  fi
+}
+
+# Profile `lean` (see LEAN_UNITS_OFF). Everything here is reversible by dropping the
+# profile and re-running `--redo services`, except the units, which stay disabled
+# until enabled by hand.
+apply_lean_profile() {
+  profile_on lean || return 0
+  info "profile lean: turning off ${LEAN_UNITS_OFF[*]}"
+  local unit
+  for unit in "${LEAN_UNITS_OFF[@]}"; do
+    if systemctl is-enabled --quiet "$unit" 2>/dev/null; then
+      run sudo systemctl disable --now "$unit"
+      did "$unit disabled (lean)"
+    else
+      ok "$unit already off"
+    fi
+  done
+
+  # CPU governor follows the power source. schedutil's ramp-up lags bursts of typing
+  # on a slow CPU; on AC that is not worth the saved heat. Tested on micro 2026-10-03
+  # by unplugging and replugging. `$$` is a literal `$` to udev.
+  local rule
+  rule="$(cat <<'EOF'
+# Written by arch-bootstrap (profile lean). performance on AC, schedutil on battery.
+# Fires on plug/unplug (change) and at boot (coldplug add).
+SUBSYSTEM=="power_supply", ACTION=="add|change", ATTR{type}=="Mains", ATTR{online}=="1", RUN+="/bin/sh -c 'for f in /sys/devices/system/cpu/cpufreq/policy*/scaling_governor; do echo performance > $$f; done'"
+SUBSYSTEM=="power_supply", ACTION=="add|change", ATTR{type}=="Mains", ATTR{online}=="0", RUN+="/bin/sh -c 'for f in /sys/devices/system/cpu/cpufreq/policy*/scaling_governor; do echo schedutil > $$f; done'"
+EOF
+)"
+  if put_etc_file /etc/udev/rules.d/61-cpu-governor-ac.rules "$rule" "CPU governor follows AC (lean)"; then
+    run sudo udevadm control --reload
+    run sudo udevadm trigger --subsystem-match=power_supply --action=change
+  fi
+
+  # zram as big as RAM (ArchWiki's suggestion for low-memory machines). The cap is on
+  # UNcompressed data; at micro's measured ~3.4:1 a full 3.5 GiB zram holds ~1 GiB of
+  # real RAM. At the default (half of RAM) micro's zram sat 97% full. Applies at the
+  # next boot: resizing live would mean swapping everything back into RAM first.
+  if zram_only_swap && put_etc_file /etc/systemd/zram-generator.conf \
+"# Written by arch-bootstrap (profile lean).
+[zram0]
+zram-size = ram
+compression-algorithm = zstd" "zram sized to RAM (lean)"; then
+    info "zram size changes at the next boot"
+  fi
+}
+
 # A readable kernel-console font. default8x16 at 1920x1080 is tiny; ter-v24n
 # (terminus-font, 12x24) gives about 160x45. vconsole.conf also holds KEYMAP, so
 # only its FONT= line is touched. The `consolefont` mkinitcpio hook copies the font
@@ -3112,6 +3211,8 @@ stage_services() {
   install_chores
   manage_tmp_storage
   install_system_dropins
+  tune_storage_and_swap
+  apply_lean_profile
   set_console_font
   setup_encrypted_swap
   configure_earlyoom
@@ -3373,6 +3474,17 @@ stage_verify() {
   check "nvm present"                   "[ -s \"\${NVM_DIR:-\$HOME/.nvm}/nvm.sh\" ]"
   check "herdr installed"               "command -v herdr"
   check "arch-bootstrap origin is SSH"  "git -C '$SCRIPT_DIR' remote get-url origin | grep -q '^git@'"
+  check "bfq rule for rotational disks"  "[ -f /etc/udev/rules.d/60-ioscheduler.rules ]"
+  if zram_only_swap; then
+    check "zram swap tuning live (swappiness 180)" "[ \"\$(sysctl -n vm.swappiness)\" = 180 ]"
+  fi
+  if profile_on lean; then
+    local u
+    for u in "${LEAN_UNITS_OFF[@]}"; do
+      check "lean: $u not enabled" "! systemctl is-enabled --quiet $u"
+    done
+    check "lean: CPU governor rule present" "[ -f /etc/udev/rules.d/61-cpu-governor-ac.rules ]"
+  fi
 
   # Clock. install.sh sets the timezone and turns NTP on; the prompt's clock must then
   # FOLLOW the system rather than pin an offset. starship.toml pinned utc_time_offset
