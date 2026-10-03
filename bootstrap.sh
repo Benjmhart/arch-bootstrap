@@ -537,6 +537,7 @@ stage_preflight() {
   else
     info "sudo will prompt for a password during package stages"
   fi
+  sudo_timeout_dropin
 
   if ping -c1 -W3 archlinux.org >/dev/null 2>&1; then
     ok "network reachable"
@@ -587,6 +588,39 @@ $(wc -l < "$SCRIPT_DIR/pkglist-aur.txt") AUR)"
   fi
 
   info "stage completion is recorded in $STATE_FILE"
+}
+
+# One sudo password lasts an hour per terminal, not Arch's default 5 minutes. A run
+# needs sudo across many stages, and on 2026-10-03 (media-center) it asked over and
+# over. timestamp_type stays the default (tty), so a cached credential still only
+# works in the terminal where the password was typed. sudo re-reads sudoers on every
+# call, so the hour applies from the next sudo in this same run. Asking here, at
+# stage 00, also puts the first password prompt up front. `visudo -c` checks the
+# file before it goes in, because a broken sudoers.d file breaks sudo outright.
+sudo_timeout_dropin() {
+  local dropin=/etc/sudoers.d/10-timestamp-timeout want='Defaults timestamp_timeout=60' have
+  if (( DRY_RUN )); then
+    if ! have="$(sudo -n cat "$dropin" 2>/dev/null)" && ! sudo -n true 2>/dev/null; then
+      info "cannot check $dropin without sudo (sudo -v first to check)"; return 0
+    fi
+  else
+    have="$(run sudo cat "$dropin" 2>/dev/null)" || have=""
+  fi
+  if [[ $have == "$want" ]]; then
+    ok "sudo credentials last 60 min per terminal ($dropin)"
+  elif (( DRY_RUN )); then
+    info "(dry run) would write $dropin: $want"
+    did "wrote $dropin"
+  else
+    local tmp; tmp="$(mktemp)"
+    printf '%s\n' "$want" > "$tmp"
+    if run sudo visudo -cqf "$tmp" && run sudo install -m 440 -o root -g root "$tmp" "$dropin"; then
+      did "sudo credentials now last 60 min per terminal ($dropin)"
+    else
+      warn "could not write $dropin -- sudo keeps its 5-minute timeout"
+    fi
+    rm -f "$tmp"
+  fi
 }
 
 # --------------------------------------------------------------------------- 05
