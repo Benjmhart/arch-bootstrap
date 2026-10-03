@@ -1,0 +1,129 @@
+#!/usr/bin/env python3
+"""tests/vimium-restore -- end-to-end check of tools/vimium-restore. Exit 1 on FAIL.
+
+  tests/vimium-restore [BACKUP_JSON]     default: the dotfiles' vimium-options.json
+
+No root, and it never touches a real browser profile. In a temporary directory it:
+  1. shallow-clones Vimium from GitHub (an unpacked copy, so no Web Store);
+  2. works out the unpacked extension's ID from its path, the way Chromium does
+     (sha256 of the path, first 32 hex digits mapped 0-f -> a-p);
+  3. runs tools/vimium-restore into a user-data dir the browser has NEVER opened;
+  4. starts headless Chromium with that Vimium loaded, attaches to the extension's
+     service worker over the DevTools protocol, and asks Vimium itself what it read
+     (Settings.get), i.e. what the user would get, after Vimium's own migrations.
+
+Needs: chromium, git, python-plyvel (for the tool), python-websocket-client.
+
+What it does NOT cover: a Web Store install keeping storage that was seeded before
+it (see station-maintenance beast-arch task 74), and Vivaldi Sync.
+
+First written and passed 2026-10-03 on micro: Chromium 153, Vimium 2.4.2.
+"""
+import hashlib
+import json
+import os
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.request
+from pathlib import Path
+
+try:
+    import websocket
+except ImportError:
+    sys.exit("needs python-websocket-client (pacman -S python-websocket-client)")
+
+REPO = Path(__file__).resolve().parent.parent
+TOOL = REPO / "tools" / "vimium-restore"
+BACKUP = Path(sys.argv[1]) if len(sys.argv) > 1 else \
+    Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".configure")) / "vimium-backup" / "vimium-options.json"
+CHECKED = ["keyMappings", "linkHintCharacters", "searchUrl", "exclusionRules"]
+PORT = "9333"
+
+
+def unpacked_id(path):
+    return "".join(chr(ord("a") + int(c, 16)) for c in hashlib.sha256(str(path).encode()).hexdigest()[:32])
+
+
+def main():
+    want = json.loads(BACKUP.read_text())
+    with tempfile.TemporaryDirectory(prefix="vimium-restore-test.", ignore_cleanup_errors=True) as tmp:
+        ext, udd = Path(tmp) / "vimium", Path(tmp) / "udd"
+        subprocess.run(["git", "clone", "-q", "--depth", "1", "https://github.com/philc/vimium.git", str(ext)],
+                       check=True)
+        ext_id = unpacked_id(ext)
+        r = subprocess.run([sys.executable, str(TOOL), "--user-data-dir", str(udd),
+                            "--extension-id", ext_id, "--backup", str(BACKUP)], capture_output=True, text=True)
+        print(f"restore: rc {r.returncode} {r.stdout.strip()} {r.stderr.strip()}")
+        if r.returncode != 0:
+            print("FAIL restore")
+            return 1
+
+        browser = subprocess.Popen(
+            ["chromium", "--headless=new", f"--user-data-dir={udd}", f"--remote-debugging-port={PORT}",
+             f"--load-extension={ext}", f"--disable-extensions-except={ext}",
+             "--disable-features=DisableLoadExtensionCommandLineSwitch", "--no-first-run", "about:blank"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        try:
+            sw = None
+            for _ in range(60):
+                time.sleep(1)
+                try:
+                    targets = json.load(urllib.request.urlopen(f"http://127.0.0.1:{PORT}/json/list"))
+                except OSError:
+                    continue
+                sw = next((t for t in targets if t.get("type") == "service_worker"
+                           and ext_id in t.get("url", "")), None)
+                if sw:
+                    break
+            if not sw:
+                print("FAIL Vimium's service worker never appeared (extension not loaded, or ID differs)")
+                return 1
+            # Chromium rejects DevTools websockets that send an Origin header.
+            ws = websocket.create_connection(sw["webSocketDebuggerUrl"], timeout=60, suppress_origin=True)
+
+            def evaluate(i, expr):
+                ws.send(json.dumps({"id": i, "method": "Runtime.evaluate", "params": {
+                    "expression": expr, "awaitPromise": True, "returnByValue": True}}))
+                while True:
+                    m = json.loads(ws.recv())
+                    if m.get("id") == i:
+                        res = m.get("result", {})
+                        if "exceptionDetails" in res or "error" in m:
+                            raise RuntimeError(f"evaluate {i} failed: {json.dumps(m)[:600]}")
+                        return res["result"].get("value")
+
+            # The worker is listed before Vimium's scripts have finished loading, so
+            # `Settings` can be undefined for a while (seen 2026-10-03: a ReferenceError
+            # on one run, a pass on another). Wait for it, up to 60 s.
+            for n in range(60):
+                if evaluate(100 + n, "typeof Settings") == "object":
+                    break
+                time.sleep(1)
+            else:
+                print("FAIL Vimium's Settings never became defined in the service worker")
+                return 1
+            got = json.loads(evaluate(2, "(async () => { await Settings.load(); return JSON.stringify({"
+                                         + ", ".join(f"{k}: Settings.get('{k}')" for k in CHECKED)
+                                         + "}); })()"))
+        finally:
+            # Whole process group: terminating only the parent left renderer and
+            # utility processes writing into the profile while it was being deleted.
+            os.killpg(browser.pid, signal.SIGTERM)
+            browser.wait(10)
+            time.sleep(2)
+
+    fails = 0
+    for k in CHECKED:
+        if got[k] == want.get(k):
+            print(f"PASS {k}")
+        else:
+            print(f"FAIL {k}: Vimium has {got[k]!r}")
+            fails += 1
+    return 1 if fails else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

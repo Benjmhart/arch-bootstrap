@@ -726,6 +726,7 @@ stage_ssh() {
 
   if ssh_auth_works; then
     ok "git host SSH authentication working"
+    bootstrap_remote_to_ssh
     adopt_config_from_secrets
     return 0
   fi
@@ -880,6 +881,21 @@ ssh_auth_works() {
   [[ -z $host ]] && return 1
   out="$(ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -T "git@$host" 2>&1 || true)"
   grep -qiE 'successfully authenticated|You.ve successfully|logged in as' <<<"$out"
+}
+
+# This checkout's own origin, HTTPS -> SSH. The rescue ISO's clone gets an HTTPS origin
+# on purpose (chores/rescue-usb/make-rescue-iso): it is all a machine with no registered
+# key can fetch. Once the key works, the HTTPS remote is only a liability -- a push asks
+# for a username and fails (micro, 2026-10-03), and if the repo is made private, fetch
+# would fail too. Leaves any non-GitHub-HTTPS origin alone.
+bootstrap_remote_to_ssh() {
+  local url new
+  url="$(git -C "$SCRIPT_DIR" remote get-url origin 2>/dev/null)" || return 0
+  [[ $url == https://github.com/* ]] || return 0
+  new="git@github.com:${url#https://github.com/}"
+  new="${new%/}"; new="${new%.git}.git"
+  run git -C "$SCRIPT_DIR" remote set-url origin "$new"
+  did "arch-bootstrap origin: $url -> $new"
 }
 
 # The git host to authenticate against, from whichever remote is known. The
@@ -3356,6 +3372,16 @@ stage_verify() {
   [[ -d $XMONAD_DIR ]]      && check "xmonad binary built"   "command -v xmonad"
   check "nvm present"                   "[ -s \"\${NVM_DIR:-\$HOME/.nvm}/nvm.sh\" ]"
   check "herdr installed"               "command -v herdr"
+  check "arch-bootstrap origin is SSH"  "git -C '$SCRIPT_DIR' remote get-url origin | grep -q '^git@'"
+
+  # Clock. install.sh sets the timezone and turns NTP on; the prompt's clock must then
+  # FOLLOW the system rather than pin an offset. starship.toml pinned utc_time_offset
+  # "-5" until 2026-10-03, which put the prompt an hour behind for all of daylight time
+  # while every other clock on the machine was right.
+  info "timezone: $(timedatectl show -p Timezone --value 2>/dev/null || echo unknown)"
+  check "system clock NTP-synchronised" "[ \"\$(timedatectl show -p NTPSynchronized --value)\" = yes ]"
+  check "prompt clock follows system time (no utc_time_offset in starship.toml)" \
+    "! grep -qE '^[[:space:]]*utc_time_offset' '$HOME/.config/starship.toml'"
 
   # Only once the obsidian stage has run: from a TTY it is deferred to X, and
   # failing verify for a stage that deliberately has not happened would stop the run.
