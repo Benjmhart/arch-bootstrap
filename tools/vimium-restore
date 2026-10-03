@@ -1,0 +1,163 @@
+#!/usr/bin/env python3
+"""vimium-restore -- load a Vimium options backup into Chromium-family profiles.
+
+Does what Vimium's own Options -> "Restore" button does, without opening the
+browser. That is one manual step per browser per workspace, which is the step Ben
+asked to stop doing (station-maintenance beast-arch task 22, 2026-10-03).
+
+How it works. Vimium 2.x keeps every setting as its own top-level key in
+chrome.storage.sync (lib/settings.js, Settings.load). Chromium stores that area
+on disk as a LevelDB at
+
+    <user-data-dir>/<profile>/Sync Extension Settings/<extension id>/
+
+with the setting name as the key and the JSON-serialised value as the value.
+The backup file the options page exports has exactly that shape, so restoring
+is a matter of writing each key of the backup into that database. Vimium migrates
+old values (e.g. a 1.x `settingsVersion`) itself the next time it loads, which is
+the same thing that happens after a Restore from the options page.
+
+Only keys in the backup are written. Nothing is deleted, so running it twice is
+harmless, and settings absent from the backup keep Vimium's defaults.
+
+THE BROWSER MUST BE CLOSED. A running browser holds the database's LOCK, and it
+caches the settings in memory, so a write made underneath it would be lost.
+The script refuses (exit 3) rather than racing it.
+
+The profile does not need to exist yet. On a fresh machine the directory is created
+ahead of the browser's first launch, and the browser builds the rest of the profile
+around it.
+
+Needs python-plyvel (Arch extra).
+
+Usage:
+    vimium-restore                          every known browser, Default profile
+    vimium-restore --browser vivaldi
+    vimium-restore --user-data-dir DIR      one explicit user-data dir (testing)
+    vimium-restore --dry-run
+
+Exit: 0 written (or nothing to do), 1 error, 3 a target browser is running.
+"""
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+VIMIUM_ID = "dbepggeogbaibhgnhhndojpepiihcmeb"  # Chrome Web Store ID
+
+# user-data dir (under the config root) -> process names that hold it open.
+BROWSERS = {
+    "vivaldi": ("vivaldi", ["vivaldi-bin"]),
+    "chromium": ("chromium", ["chromium"]),
+    "google-chrome": ("google-chrome", ["chrome"]),
+    "brave": ("BraveSoftware/Brave-Browser", ["brave"]),
+}
+
+HOME = Path.home()
+
+
+def config_roots():
+    # The browsers honour XDG_CONFIG_HOME, which is ~/.configure on Ben's machines
+    # but is set by .zshrc, so it may be missing from this process. Check both
+    # spellings, and list each root only once.
+    roots = []
+    for r in (os.environ.get("XDG_CONFIG_HOME"), HOME / ".configure", HOME / ".config"):
+        if r and Path(r).is_dir() and Path(r).resolve() not in [x.resolve() for x in roots]:
+            roots.append(Path(r))
+    return roots
+
+
+def browser_installed(name):
+    return any(
+        subprocess.run(["which", b], capture_output=True).returncode == 0
+        for b in {name, name.split("/")[-1].lower()}
+    )
+
+
+def running(procs):
+    return [p for p in procs if subprocess.run(["pgrep", "-x", p], capture_output=True).returncode == 0]
+
+
+def targets(args):
+    """Yield (label, user_data_dir, process names)."""
+    if args.user_data_dir:
+        yield ("explicit", Path(args.user_data_dir), [])
+        return
+    roots = config_roots()
+    for name in args.browser or BROWSERS:
+        subdir, procs = BROWSERS[name]
+        existing = [r / subdir for r in roots if (r / subdir).is_dir()]
+        if existing:
+            for d in existing:
+                yield (name, d, procs)
+        elif browser_installed(name) and roots:
+            # Not launched yet: prepare the dir it WILL use. The first root is
+            # XDG_CONFIG_HOME when set, otherwise ~/.configure if it exists.
+            yield (name, roots[0] / subdir, procs)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--backup", default=str(
+        Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".configure")) / "vimium-backup" / "vimium-options.json"))
+    ap.add_argument("--browser", action="append", choices=sorted(BROWSERS))
+    ap.add_argument("--profile", default="Default")
+    ap.add_argument("--user-data-dir")
+    ap.add_argument("--extension-id", default=VIMIUM_ID)
+    ap.add_argument("--dry-run", action="store_true")
+    args = ap.parse_args()
+
+    backup_path = Path(args.backup)
+    if not backup_path.is_file():
+        print(f"vimium-restore: no backup at {backup_path}", file=sys.stderr)
+        return 1
+    settings = json.loads(backup_path.read_text())
+    if not isinstance(settings, dict) or not settings:
+        print(f"vimium-restore: {backup_path} is not a Vimium settings object", file=sys.stderr)
+        return 1
+
+    try:
+        import plyvel
+    except ImportError:
+        print("vimium-restore: needs python-plyvel (pacman -S python-plyvel)", file=sys.stderr)
+        return 1
+
+    found = list(targets(args))
+    if not found:
+        print("vimium-restore: no Chromium-family browser found; nothing to do")
+        return 0
+
+    busy = sorted({p for _, _, procs in found for p in running(procs)})
+    if busy:
+        print(f"vimium-restore: close {', '.join(busy)} first -- a running browser holds "
+              "the settings database and would overwrite the restore", file=sys.stderr)
+        return 3
+
+    for label, udd, _ in found:
+        db_dir = udd / args.profile / "Sync Extension Settings" / args.extension_id
+        if args.dry_run:
+            print(f"would write {len(settings)} keys -> {db_dir}")
+            continue
+        db_dir.mkdir(parents=True, exist_ok=True)
+        encoded = {k.encode(): json.dumps(v, separators=(",", ":"), ensure_ascii=False).encode()
+                   for k, v in settings.items()}
+        db = plyvel.DB(str(db_dir), create_if_missing=True)
+        try:
+            with db.write_batch(sync=True) as wb:
+                for k, v in encoded.items():
+                    wb.put(k, v)
+            bad = [k.decode() for k, v in encoded.items() if db.get(k) != v]
+        finally:
+            db.close()
+        if bad:
+            print(f"vimium-restore: {label}: read-back mismatch for {bad}", file=sys.stderr)
+            return 1
+        print(f"{label}: wrote {len(encoded)} Vimium settings -> {db_dir}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

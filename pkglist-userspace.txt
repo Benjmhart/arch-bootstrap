@@ -80,6 +80,7 @@ pnpm
 poppler
 poppler-data
 python-pip
+python-plyvel
 qemu-system-x86
 ripgrep
 ruby

@@ -2260,6 +2260,27 @@ EOF
     todo "expected it to arrive with the dotfiles; check the tree"
   fi
 
+  # Vimium settings from the dotfiles' backup, written straight into each Chromium-family
+  # profile's extension storage (tools/vimium-restore says how). Replaces a manual
+  # Options -> Restore in every browser on every machine. It only needs the browser
+  # CLOSED, which a first run from a TTY guarantees. From X with a browser open, it
+  # says so and leaves a todo rather than failing the stage.
+  local vbackup="${XDG_CONFIG_HOME:-$HOME/.configure}/vimium-backup/vimium-options.json"
+  if [[ ! -f $vbackup ]]; then
+    info "no Vimium backup at $vbackup -- skipping restore"
+  elif (( DRY_RUN )); then
+    python3 "$SCRIPT_DIR/tools/vimium-restore" --backup "$vbackup" --dry-run || true
+  else
+    local vrc=0
+    python3 "$SCRIPT_DIR/tools/vimium-restore" --backup "$vbackup" || vrc=$?
+    case $vrc in
+      0) did "Vimium settings restored from $vbackup" ;;
+      3) warn "a browser is open, so Vimium settings were not restored"
+         todo "close it, then:  $SCRIPT_DIR/tools/vimium-restore" ;;
+      *) warn "vimium-restore failed (exit $vrc)" ;;
+    esac
+  fi
+
   # Deliberately NOT enabling lingering here. systemd starts a user manager at login
   # and pulls in default.target, so `WantedBy=default.target` units come up by
   # themselves every session. Linger governs one thing only -- whether user units keep
