@@ -1018,6 +1018,32 @@ $(tr '\n' ' ' < "$SCRIPT_DIR/pkglist-hardware.txt")"
 
 # --------------------------------------------------------------------------- 15
 
+# Read `lspci -nnk -d ::0280` (wireless controllers) on stdin; print the packages a
+# card with no bound kernel driver needs. Warns about unbound cards it cannot map.
+wifi_driver_packages() {
+  local line dev="" vid="" bound=0 out=()
+  flush() {
+    [[ -z $dev ]] && return
+    if (( ! bound )); then
+      case $vid in
+        14e4) out+=(broadcom-wl) ;;
+        *) warn "Wi-Fi card with no kernel driver, vendor [$vid] -- not guessed: $dev" ;;
+      esac
+    fi
+  }
+  while IFS= read -r line; do
+    if [[ $line != [[:space:]]* ]]; then
+      flush
+      dev=$line bound=0
+      vid="$(grep -oE '\[[0-9a-fA-F]{4}:[0-9a-fA-F]{4}\]' <<<"$line" | tail -1 | tr -d '[]' | cut -d: -f1 | tr 'A-F' 'a-f')"
+    elif [[ $line == *"Kernel driver in use:"* ]]; then
+      bound=1
+    fi
+  done
+  flush
+  printf '%s\n' "${out[@]}" | sort -u | tr '\n' ' ' | sed 's/ $//'
+}
+
 stage_hardware() {
   stage_banner "15 hardware -- DETECT, do not replay"
 
@@ -1093,6 +1119,26 @@ stage_hardware() {
           warn "unrecognised GPU vendor [$vendor_id] -- deferred to stage 90"
           ;;
       esac
+    fi
+  fi
+
+  # -- Wi-Fi -> driver --------------------------------------------------------
+  # Only cards with NO kernel driver bound are acted on; a bound driver means the
+  # kernel (and linux-firmware) already covers it. The one common gap is Broadcom:
+  # many of its chips (BCM4313, 43142, 4331, 4360 ...) have no open driver, so the
+  # live ISO and a fresh install show no Wi-Fi device at all (iwctl device list is
+  # empty). broadcom-wl ships the module and blacklists b43/bcma/ssb, which would
+  # otherwise claim the card first.
+  local wifi_line wifi_pkgs
+  wifi_line="$(lspci -nnk -d ::0280 2>/dev/null || true)"
+  if [[ -z $wifi_line ]]; then
+    info "Wi-Fi: no PCI wireless controller (none, or USB) -- nothing to add"
+  else
+    printf '%s\n' "$wifi_line" | grep -v '^[[:space:]]' | sed 's/^/      /'
+    wifi_pkgs="$(wifi_driver_packages <<<"$wifi_line")"
+    if [[ -n $wifi_pkgs ]]; then
+      info "Wi-Fi: unbound Broadcom card -> $wifi_pkgs (loads at next boot, or: sudo modprobe wl)"
+      read -ra _w <<<"$wifi_pkgs"; detected+=("${_w[@]}")
     fi
   fi
 
