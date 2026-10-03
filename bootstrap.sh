@@ -131,6 +131,12 @@ TMP_ON_DISK="${TMP_ON_DISK:-false}"              # true = mask tmp.mount so /tmp
 # pri=10, behind zram's 100, so it only takes overflow. Empty = no disk swap.
 SWAP_PARTUUID="${SWAP_PARTUUID:-}"
 
+# USB media drives for Jellyfin (profile media-center). Space-separated
+# name:fs-UUID:fstype entries -- `lsblk -no UUID,FSTYPE /dev/sdXN` -- each mounted at
+# /srv/media/<name> on first access. Use ntfs3 (the kernel driver) for NTFS, not ntfs.
+# Empty = none.
+MEDIA_DRIVES="${MEDIA_DRIVES:-}"
+
 # earlyoom acts only when available RAM AND free swap are BOTH under threshold, so
 # adding disk swap without raising -s means it waits until most of that swap has
 # been thrashed through. Written verbatim to /etc/default/earlyoom. Empty = leave
@@ -3242,6 +3248,62 @@ setup_encrypted_swap() {
   fi
 }
 
+# MEDIA_DRIVES at /srv/media/<name> (added 2026-10-03 for media-center).
+# exFAT and NTFS store no Unix ownership, so the mount options ARE the permissions:
+# the login user owns everything (read/write/delete), group jellyfin can read but
+# not write (the server cannot delete media), and root bypasses the masks.
+# nofail + x-systemd.automount: an absent drive does not hold up boot, and one
+# plugged in later mounts when the path is touched (a Jellyfin scan does that).
+# udiskie would otherwise mount it first under /run/media/$USER, which is 750 root
+# plus an ACL for the user only, so jellyfin cannot read it there; a udev rule
+# marks these UUIDs UDISKS_IGNORE. fstab lines are appended, never rewritten, as
+# for the encrypted swap.
+setup_media_drives() {
+  [[ -n $MEDIA_DRIVES ]] || return 0
+  [[ -r /etc/fstab ]] || { warn "/etc/fstab is not readable -- media drives not added"; return 0; }
+  local gid
+  gid="$(getent group jellyfin | cut -d: -f3)"
+  [[ -n $gid ]] || { warn "no jellyfin group (jellyfin-server not installed?) -- media drives not added"; return 0; }
+
+  local entry name uuid fstype mp line where rules="# Written by arch-bootstrap (MEDIA_DRIVES). Mounted by fstab, not udisks/udiskie."
+  local -a units=()
+  for entry in $MEDIA_DRIVES; do
+    IFS=: read -r name uuid fstype <<< "$entry"
+    if [[ -z $name || -z $uuid || -z $fstype || $name == */* ]]; then
+      warn "MEDIA_DRIVES entry '$entry' is not name:uuid:fstype -- skipped"
+      continue
+    fi
+    mp=/srv/media/$name
+    line="UUID=$uuid  $mp  $fstype  nofail,x-systemd.automount,x-systemd.device-timeout=10s,uid=$(id -u),gid=$gid,dmask=0027,fmask=0137  0 0"
+    rules+=$'\n'"SUBSYSTEM==\"block\", ENV{ID_FS_UUID}==\"$uuid\", ENV{UDISKS_IGNORE}=\"1\""
+
+    if grep -qxF "$line" /etc/fstab; then
+      ok "$mp already in /etc/fstab"
+    elif grep -qE "^[^#]*[[:space:]]$mp[[:space:]]" /etc/fstab || grep -qE "^[[:space:]]*UUID=$uuid[[:space:]]" /etc/fstab; then
+      warn "/etc/fstab already has a line for $mp or UUID=$uuid that is not this one -- not touching it"
+      continue
+    else
+      run sudo install -d -m 755 "$mp"
+      printf '%s\n' "$line" | run sudo tee -a /etc/fstab
+      did "media drive $name added to /etc/fstab ($mp, $fstype)"
+    fi
+    units+=("$(systemd-escape -p --suffix=automount "$mp")")
+
+    # Mounted elsewhere already (udiskie got there first): a second mount of the
+    # same device would not take these options. Say so rather than unmount it.
+    where="$(findmnt -rno TARGET -S "UUID=$uuid" 2>/dev/null | grep -vxF "$mp" || true)"
+    [[ -z $where ]] || warn "$name is mounted at $where -- unmount it (udisksctl unmount -b $(findmnt -rno SOURCE -S "UUID=$uuid" | head -1)), then: ls $mp"
+  done
+
+  if put_etc_file /etc/udev/rules.d/61-media-drives-udisks-ignore.rules "$rules" "udisks ignores the media drives"; then
+    run sudo udevadm control --reload
+  fi
+  (( ${#units[@]} )) || return 0
+  run sudo systemctl daemon-reload
+  run sudo systemctl start "${units[@]}"
+  ok "media drives on automount: ${units[*]}"
+}
+
 configure_earlyoom() {
   [[ -n $EARLYOOM_ARGS ]] || return 0
   pacman -Qq earlyoom >/dev/null 2>&1 || return 0
@@ -3275,6 +3337,7 @@ stage_services() {
   apply_lean_profile
   set_console_font
   setup_encrypted_swap
+  setup_media_drives
   configure_earlyoom
 
   # ---- login keyring auto-unlock (added 2026-08-23) ---------------------------

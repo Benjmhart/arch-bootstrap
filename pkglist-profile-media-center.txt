@@ -3,6 +3,13 @@
 # (SYSTEM_UNITS); first-run setup is in the browser at http://<host>:8096.
 jellyfin-server
 jellyfin-web
+# Hardware transcoding (Jellyfin: VAAPI, /dev/dri/renderD128). libva-intel-driver
+# (i965) is for Intel up to Haswell/Broadwell -- media-center is a Haswell i3-4130T.
+# Broadwell and newer want intel-media-driver instead.
+libva-intel-driver
+# Plays on this box's own screen, as a cast target driven from the Jellyfin phone
+# app (mpv underneath, so most files direct-play instead of transcoding).
+jellyfin-mpv-shim
 # VPNs, all driven by the NetworkManager install.sh already set up (nmtui / nmcli).
 # WireGuard is built into NetworkManager; wireguard-tools adds `wg` to inspect it.
 # A provider's .conf imports with:  nmcli connection import type wireguard file x.conf
