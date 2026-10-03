@@ -10,6 +10,12 @@ libva-intel-driver
 # Plays on this box's own screen, as a cast target driven from the Jellyfin phone
 # app (mpv underneath, so most files direct-play instead of transcoding).
 jellyfin-mpv-shim
+# Its optional deps, needed in practice (media-center, 2026-10-03): without pystray
+# the GUI process dies silently and the first-run login window never appears -- the
+# shim just sits there. Without the shader pack it logs "Could not find default
+# shader pack" at every start.
+mpv-shim-default-shaders
+python-pystray
 # VPNs, all driven by the NetworkManager install.sh already set up (nmtui / nmcli).
 # WireGuard is built into NetworkManager; wireguard-tools adds `wg` to inspect it.
 # A provider's .conf imports with:  nmcli connection import type wireguard file x.conf
