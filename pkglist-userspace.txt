@@ -79,9 +79,9 @@ pkgconf
 pnpm
 poppler
 poppler-data
+python-gobject
 python-pip
 python-plyvel
-python-gobject
 qemu-system-x86
 ripgrep
 ruby
