@@ -3050,6 +3050,31 @@ SyncIntervalSec=10s" "journald 10s sync"; then
   fi
 }
 
+# Every browser searches DuckDuckGo (Ben, 2026-10-03; station-maintenance beast-arch
+# task 73). Uses *managed* policy, so the setting is locked in the browser's UI. For
+# a default that can be changed in the UI, use policies/recommended/ instead.
+# Chromium-family browsers merge every file in managed/, so this file sits next to
+# any extension policy without needing to know about it. A browser reads policy
+# only at launch, so one already running needs a restart. qutebrowser's half is
+# in the dotfiles.
+install_browser_search_policy() {
+  local d chromium_family='{
+  "DefaultSearchProviderEnabled": true,
+  "DefaultSearchProviderName": "DuckDuckGo",
+  "DefaultSearchProviderKeyword": "ddg",
+  "DefaultSearchProviderSearchURL": "https://duckduckgo.com/?q={searchTerms}",
+  "DefaultSearchProviderSuggestURL": "https://duckduckgo.com/ac/?q={searchTerms}&type=list"
+}'
+  for d in /etc/vivaldi /etc/chromium /etc/opt/chrome; do
+    put_etc_file "$d/policies/managed/search-duckduckgo.json" "$chromium_family" \
+      "DuckDuckGo default search" || true
+  done
+  # Firefox reads one policies.json, not a directory; nothing else writes it yet.
+  put_etc_file /etc/firefox/policies/policies.json \
+    '{ "policies": { "SearchEngines": { "Default": "DuckDuckGo" } } }' \
+    "Firefox DuckDuckGo default search" || true
+}
+
 # zram is this machine's ONLY swap: zram configured, no SWAP_PARTUUID, and nothing
 # but zram in /proc/swaps. The sysctls below assume exactly that.
 zram_only_swap() {
@@ -3245,6 +3270,7 @@ stage_services() {
   install_chores
   manage_tmp_storage
   install_system_dropins
+  install_browser_search_policy
   tune_storage_and_swap
   apply_lean_profile
   set_console_font
