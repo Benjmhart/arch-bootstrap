@@ -3275,13 +3275,27 @@ stage_services() {
 
   # Only the keyring named `login` is unlocked by PAM. If the default alias names
   # any other, apps store their secrets where nothing unlocks them and prompt at
-  # every login. Not fixed automatically: moving the items needs both keyrings
-  # unlocked, and the backing files are the only copy of browser Safe Storage keys.
+  # every login. tools/keyring-to-login moves the items (backup, copy, read back,
+  # switch the alias, then delete originals). It needs the session's D-Bus and both
+  # keyrings unlocked, so it runs only under X; exit 3 (locked / no login keyring)
+  # becomes a todo. install.sh now wires PAM at install time, so new machines should
+  # not reach this branch; beast-arch, carbon and micro all did.
   local kdefault="${XDG_DATA_HOME:-$HOME/.local/share}/keyrings/default"
   if [[ -f $kdefault ]] && [[ "$(cat "$kdefault")" != login ]]; then
     warn "default keyring is '$(cat "$kdefault")', not 'login' -- it will not unlock at login"
-    todo "move its items into 'login' (seahorse, or the Secret Service API), then:"
-    todo "  printf login > $kdefault      and log out and back in"
+    if [[ -z ${DISPLAY:-} ]]; then
+      todo "from X:  $SCRIPT_DIR/tools/keyring-to-login"
+    elif (( DRY_RUN )); then
+      python3 "$SCRIPT_DIR/tools/keyring-to-login" --dry-run || true
+    else
+      local krc=0
+      python3 "$SCRIPT_DIR/tools/keyring-to-login" || krc=$?
+      case $krc in
+        0) did "keyring items moved into 'login', default switched -- log out and back in to check" ;;
+        3) todo "unlock both keyrings (seahorse), then:  $SCRIPT_DIR/tools/keyring-to-login" ;;
+        *) warn "keyring-to-login failed (exit $krc) -- backup in ~/keyrings-backup-*.tar.gz" ;;
+      esac
+    fi
   elif [[ -f $kdefault ]]; then
     ok "default keyring is 'login'"
   fi

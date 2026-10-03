@@ -81,6 +81,7 @@ poppler
 poppler-data
 python-pip
 python-plyvel
+python-gobject
 qemu-system-x86
 ripgrep
 ruby

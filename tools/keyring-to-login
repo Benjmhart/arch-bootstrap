@@ -1,0 +1,159 @@
+#!/usr/bin/env python3
+"""keyring-to-login -- move the default keyring's items into `login` and make it the default.
+
+The problem it fixes. PAM (pam_gnome_keyring) unlocks only the keyring named `login`.
+If the first app to ask for a keyring runs before `login` exists, gnome-keyring makes
+a new one, `Default_Keyring`, and points the default alias at it. From then on apps
+keep their secrets (browser "Safe Storage" keys, Rambox, ...) in a keyring nothing
+unlocks at login, and prompt for it every session. Happened on beast-arch (task 63),
+carbon (task 7) and micro (2026-10-03). Each was fixed by hand the same way; this is
+that procedure as a tool. install.sh now wires PAM at install time, so a fresh
+machine should not get here at all.
+
+What it does, in this order, stopping at the first failure:
+  1. Both the current default and `login` must exist and be UNLOCKED. It never
+     unlocks anything itself (that would mean prompting), it exits 3 instead.
+  2. Backs up ~/.local/share/keyrings to keyrings-backup-<date>.tar.gz (0600).
+  3. Copies every readable item into `login` (label, attributes, secret, content
+     type), reads each copy back and compares it byte for byte.
+  4. Only if every copy matched: points the `default` alias at `login`.
+  5. Only then deletes the originals. Unreadable items are left where they are.
+
+The old keyring itself is left in place (empty). Delete it in seahorse when happy.
+
+Usage:
+    keyring-to-login            do it
+    keyring-to-login --dry-run  report what it would move: labels only, no secrets
+
+Exit: 0 done or nothing to do, 1 error, 3 a keyring is locked / missing.
+Needs python-gobject and a running session (D-Bus + gnome-keyring), i.e. run it under X.
+One D-Bus connection for the whole run: Secret Service sessions belong to the
+connection that opened them, so a busctl-per-call script cannot do this.
+"""
+import argparse
+import datetime
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import gi
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib  # noqa: E402
+
+SS = "org.freedesktop.secrets"
+SS_PATH = "/org/freedesktop/secrets"
+SVC = "org.freedesktop.Secret.Service"
+COLL = "org.freedesktop.Secret.Collection"
+ITEM = "org.freedesktop.Secret.Item"
+PROPS = "org.freedesktop.DBus.Properties"
+LOGIN = "/org/freedesktop/secrets/collection/login"
+
+BUS = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+
+
+def call(path, iface, method, params=None, reply="()"):
+    return BUS.call_sync(SS, path, iface, method, params, GLib.VariantType(reply),
+                         Gio.DBusCallFlags.NONE, -1, None).unpack()
+
+
+def prop(path, iface, name):
+    return call(path, PROPS, "Get", GLib.Variant("(ss)", (iface, name)), "(v)")[0]
+
+
+def get_secret(item, session):
+    """(content bytes, content type, parameters bytes) of one item."""
+    _, params, value, ctype = call(item, ITEM, "GetSecret", GLib.Variant("(o)", (session,)),
+                                   "((oayays))")[0]
+    return bytes(value), ctype, bytes(params)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--dry-run", action="store_true")
+    args = ap.parse_args()
+
+    default = call(SS_PATH, SVC, "ReadAlias", GLib.Variant("(s)", ("default",)), "(o)")[0]
+    if default == LOGIN:
+        print("default keyring is already 'login' -- nothing to do")
+        return 0
+    collections = prop(SS_PATH, SVC, "Collections")
+    if LOGIN not in collections:
+        print("there is no 'login' keyring yet -- log in on a console (PAM creates it), then rerun",
+              file=sys.stderr)
+        return 3
+    if default == "/":
+        print("no default keyring set; pointing the default alias at 'login'")
+        if not args.dry_run:
+            call(SS_PATH, SVC, "SetAlias", GLib.Variant("(so)", ("default", LOGIN)))
+        return 0
+
+    src_label = prop(default, COLL, "Label")
+    for path, name in ((default, f"'{src_label}'"), (LOGIN, "'login'")):
+        if prop(path, COLL, "Locked"):
+            print(f"{name} is locked -- unlock it (e.g. open seahorse), then rerun", file=sys.stderr)
+            return 3
+
+    items = prop(default, COLL, "Items")
+    print(f"default keyring is '{src_label}' ({default}), with {len(items)} item(s):")
+    for it in items:
+        print(f"  - {prop(it, ITEM, 'Label')}")
+    if args.dry_run:
+        print("(dry run) would copy them into 'login', verify, set default -> login, delete originals")
+        return 0
+
+    # 2. backup
+    kdir = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "keyrings"
+    backup = Path.home() / f"keyrings-backup-{datetime.date.today().isoformat()}.tar.gz"
+    if not backup.exists():
+        old = os.umask(0o077)
+        try:
+            subprocess.run(["tar", "-czf", str(backup), "-C", str(kdir.parent), kdir.name], check=True)
+        finally:
+            os.umask(old)
+    print(f"backup: {backup}")
+
+    # 3. copy + read back
+    _, session = call(SS_PATH, SVC, "OpenSession",
+                      GLib.Variant("(sv)", ("plain", GLib.Variant("s", ""))), "(vo)")
+    copied, skipped = [], []
+    for it in items:
+        label = prop(it, ITEM, "Label")
+        try:
+            value, ctype, params = get_secret(it, session)
+        except GLib.Error as e:
+            print(f"  ! cannot read '{label}' ({e.message}) -- left in place")
+            skipped.append(it)
+            continue
+        attrs = prop(it, ITEM, "Attributes")
+        new, prompt = call(LOGIN, COLL, "CreateItem", GLib.Variant("(a{sv}(oayays)b)", (
+            {"org.freedesktop.Secret.Item.Label": GLib.Variant("s", label),
+             "org.freedesktop.Secret.Item.Attributes": GLib.Variant("a{ss}", attrs)},
+            (session, list(params), list(value), ctype), True)), "(oo)")
+        if new == "/":
+            print(f"  ! creating '{label}' in login needs a prompt ({prompt}) -- stopping", file=sys.stderr)
+            return 1
+        if get_secret(new, session)[0] != value:
+            print(f"  ! read-back mismatch for '{label}' -- stopping, nothing deleted", file=sys.stderr)
+            return 1
+        print(f"  copied and verified: {label}")
+        copied.append(it)
+
+    # 4. default -> login, and check it took
+    call(SS_PATH, SVC, "SetAlias", GLib.Variant("(so)", ("default", LOGIN)))
+    if call(SS_PATH, SVC, "ReadAlias", GLib.Variant("(s)", ("default",)), "(o)")[0] != LOGIN:
+        print("SetAlias did not take -- originals NOT deleted", file=sys.stderr)
+        return 1
+    print("default keyring is now 'login'")
+
+    # 5. delete originals that were copied
+    for it in copied:
+        call(it, ITEM, "Delete", None, "(o)")
+    print(f"deleted {len(copied)} original(s) from '{src_label}'"
+          + (f"; {len(skipped)} unreadable item(s) left there" if skipped else ""))
+    print("log out and back in (or reboot) and check apps did not ask for a keyring password")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

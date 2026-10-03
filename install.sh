@@ -52,7 +52,9 @@ set -euo pipefail
 TIMEZONE="America/Toronto"
 LOCALE="en_US.UTF-8"
 KEYMAP="us"
-EXTRA_PACKAGES=(base-devel git zsh openssh github-cli)
+# gnome-keyring is here, not left to bootstrap.sh, so PAM can create and unlock the
+# `login` keyring at the very FIRST login (see the PAM block after archinstall).
+EXTRA_PACKAGES=(base-devel git zsh openssh github-cli gnome-keyring)
 TESTED_ARCHINSTALL="4.4 4.5"
 
 die()  { printf 'FAIL  %s\n' "$*" >&2; exit 1; }
@@ -316,6 +318,30 @@ rm -f "$out/user_credentials.json"
 sed -i "s/^KEYMAP=.*/KEYMAP=$KEYMAP/" /mnt/etc/vconsole.conf
 [[ $KEYMAP == us ]] || arch-chroot /mnt mkinitcpio -P
 
+# pam_gnome_keyring at install time, the same three lines bootstrap.sh's services stage
+# adds. Without them the first login creates no `login` keyring; the first app that
+# then asks for one (a browser under X) makes `Default_Keyring` the default, which PAM
+# never unlocks. That happened on beast-arch, carbon and micro, each fixed by hand
+# (tools/keyring-to-login now does it). Wired here, the first login creates `login`.
+# Same refusal rule as bootstrap.sh: all three lines or the file is left alone, since a
+# PAM file written from a partial match can lock you out of the console.
+pamfile=/mnt/etc/pam.d/login
+if [[ -f $pamfile ]] && ! grep -q pam_gnome_keyring "$pamfile"; then
+  awk '
+    { print }
+    /^auth[[:space:]]+include[[:space:]]+system-local-login/ && !a {
+      print "auth       optional     pam_gnome_keyring.so"; a=1 }
+    /^session[[:space:]]+include[[:space:]]+system-local-login/ && !s {
+      print "session    optional     pam_gnome_keyring.so auto_start"; s=1 }
+    /^password[[:space:]]+include[[:space:]]+system-local-login/ && !p {
+      print "password   optional     pam_gnome_keyring.so"; p=1 }
+  ' "$pamfile" > "$pamfile.new"
+  if [[ $(grep -c pam_gnome_keyring "$pamfile.new") -eq 3 ]]; then
+    install -m 644 "$pamfile.new" "$pamfile"
+  fi
+  rm -f "$pamfile.new"
+fi
+
 # The arch-bootstrap clone the rescue ISO carries (chores/rescue-usb/make-rescue-iso):
 # unpacked into the new user's ~/projects, so after the reboot it is
 # `cd ~/projects/arch-bootstrap && ./bootstrap.sh`, with no clone over the network.
@@ -344,6 +370,8 @@ chk "/etc is 755"            "[ \"\$(stat -c %a /mnt/etc)\" = 755 ]"
 chk "console keymap $KEYMAP"  "grep -qx 'KEYMAP=$KEYMAP' /mnt/etc/vconsole.conf"
 [[ -f $bundle ]] && chk "arch-bootstrap in ~$user/projects" \
   "arch-chroot /mnt runuser -u '$user' -- git -C '/home/$user/projects/arch-bootstrap' status --short >/dev/null"
+chk "pam_gnome_keyring wired (login keyring at first login)" \
+  "[ \"\$(grep -c pam_gnome_keyring /mnt/etc/pam.d/login)\" = 3 ]"
 chk "hostname set"           "[ \"\$(cat /mnt/etc/hostname 2>/dev/null)\" = '$host' ]"
 if (( fails )); then
   printf '\n%d check(s) failed. The log is /var/log/archinstall/install.log (and\n' "$fails" >&2
