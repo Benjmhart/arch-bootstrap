@@ -16,6 +16,13 @@ jellyfin-mpv-shim
 # shader pack" at every start.
 mpv-shim-default-shaders
 python-pystray
+# VLC casting to a Chromecast (Playback > Renderer). The shared list has vlc and
+# vlc-plugin-ffmpeg only. vlc-plugin-chromecast is the renderer itself;
+# vlc-plugin-avahi finds _googlecast._tcp on the LAN (Arch's VLC is built without
+# libmicrodns, so avahi is the only discovery path), and it needs avahi-daemon
+# running. Stage 60 enables that, gated on vlc-plugin-avahi (SYSTEM_UNITS).
+vlc-plugin-chromecast
+vlc-plugin-avahi
 # VPNs, all driven by the NetworkManager install.sh already set up (nmtui / nmcli).
 # WireGuard is built into NetworkManager; wireguard-tools adds `wg` to inspect it.
 # A provider's .conf imports with:  nmcli connection import type wireguard file x.conf

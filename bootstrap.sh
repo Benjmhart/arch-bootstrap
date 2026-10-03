@@ -2908,6 +2908,9 @@ SYSTEM_UNITS=(
   "openssh|sshd.service|remote shell; harden_sshd() writes the config it needs"
   "pacman-contrib|paccache.timer|weekly: keeps 3 versions per package in /var/cache/pacman, which is on the root filesystem"
   "jellyfin-server|jellyfin.service|media server (profile media-center); web UI on port 8096"
+  # Gated on the VLC plugin, not on avahi itself: avahi arrives as a dependency on
+  # every host, and mDNS should not be switched on everywhere just because of that.
+  "vlc-plugin-avahi|avahi-daemon.service|mDNS for VLC's Chromecast renderer discovery (profile media-center)"
 )
 
 # Profile `lean`: old, slow hardware (first: micro, an i3-3227U with 3.5 GiB and a
