@@ -1026,7 +1026,12 @@ wifi_driver_packages() {
     [[ -z $dev ]] && return
     if (( ! bound )); then
       case $vid in
-        14e4) out+=(broadcom-wl) ;;
+        # Arch dropped the prebuilt broadcom-wl; the dkms build needs the headers
+        # of every installed kernel (dkms itself comes as a dependency).
+        14e4) out+=(broadcom-wl-dkms)
+              local k; for k in linux linux-lts linux-zen linux-hardened; do
+                pacman -Qq "$k" >/dev/null 2>&1 && out+=("$k-headers")
+              done ;;
         *) warn "Wi-Fi card with no kernel driver, vendor [$vid] -- not guessed: $dev" ;;
       esac
     fi
@@ -1127,8 +1132,8 @@ stage_hardware() {
   # kernel (and linux-firmware) already covers it. The one common gap is Broadcom:
   # many of its chips (BCM4313, 43142, 4331, 4360 ...) have no open driver, so the
   # live ISO and a fresh install show no Wi-Fi device at all (iwctl device list is
-  # empty). broadcom-wl ships the module and blacklists b43/bcma/ssb, which would
-  # otherwise claim the card first.
+  # empty). broadcom-wl-dkms builds the module and blacklists b43/bcma/ssb, which
+  # would otherwise claim the card first.
   local wifi_line wifi_pkgs
   wifi_line="$(lspci -nnk -d ::0280 2>/dev/null || true)"
   if [[ -z $wifi_line ]]; then

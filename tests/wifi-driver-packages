@@ -3,12 +3,14 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 warn() { echo "WARN: $*" >&2; }
+# The kernel set is read from pacman; pin it to the stock kernel for the test.
+pacman() { [[ $1 == -Qq && $2 == linux ]]; }
 eval "$(sed -n '/^wifi_driver_packages() {/,/^}/p' bootstrap.sh)"
 t() { local got; got="$(printf '%s\n' "$2" | wifi_driver_packages 2>/dev/null)"
       [[ $got == "$3" ]] && echo "ok   $1" || { echo "FAIL $1: got [$got] want [$3]"; exit 1; }; }
-t "unbound Broadcom -> broadcom-wl" "03:00.0 Network controller [0280]: Broadcom Inc. and subsidiaries BCM43142 802.11b/g/n [14e4:4365] (rev 01)
+t "unbound Broadcom -> broadcom-wl-dkms + headers" "03:00.0 Network controller [0280]: Broadcom Inc. and subsidiaries BCM43142 802.11b/g/n [14e4:4365] (rev 01)
 	Subsystem: Lenovo Device [17aa:0611]
-	Kernel modules: bcma" "broadcom-wl"
+	Kernel modules: bcma" "broadcom-wl-dkms linux-headers"
 t "bound Intel -> nothing" "03:00.0 Network controller [0280]: Intel Corporation Centrino Advanced-N 6205 [8086:0085] (rev 34)
 	Kernel driver in use: iwlwifi" ""
 t "bound Broadcom -> nothing" "03:00.0 Network controller [0280]: Broadcom BCM4313 [14e4:4727] (rev 01)
@@ -16,5 +18,8 @@ t "bound Broadcom -> nothing" "03:00.0 Network controller [0280]: Broadcom BCM43
 t "unbound non-Broadcom -> warn, nothing" "02:00.0 Network controller [0280]: Realtek RTL8821CE [10ec:c821]" ""
 t "two cards, one unbound Broadcom" "03:00.0 Network controller [0280]: Broadcom BCM4313 [14e4:4727] (rev 01)
 04:00.0 Network controller [0280]: Intel 7260 [8086:08b1]
-	Kernel driver in use: iwlwifi" "broadcom-wl"
+	Kernel driver in use: iwlwifi" "broadcom-wl-dkms linux-headers"
 t "no cards" "" ""
+# Every package this parser can name must exist in the repos (broadcom-wl did not).
+command pacman -Si broadcom-wl-dkms linux-headers linux-lts-headers linux-zen-headers linux-hardened-headers >/dev/null \
+  && echo "ok   package names exist in the repos" || { echo "FAIL a package name is not in the repos"; exit 1; }
