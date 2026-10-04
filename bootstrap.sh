@@ -3525,7 +3525,9 @@ font-name=$KMSCON_FONT" "kmscon font" || true
 # the tailnet policy is the access control there), docker's bridges, ICMP,
 # tailscale's direct UDP port, mDNS (cast discovery) and DHCP replies.
 # FIREWALL_LAN_TCP / FIREWALL_LAN_UDP open ports to the LAN; profile media-center
-# adds Jellyfin (8096, and 7359 for the apps' discovery) for the LAN-only phone.
+# adds Jellyfin (8096, and 7359 for the apps' discovery) for the LAN-only phone,
+# and 8010: VLC's Chromecast output serves the stream over HTTP on it and the TV
+# connects IN to fetch it (vlc-plugin-chromecast, --sout-chromecast-http-port).
 #
 # Its own table only, never `flush ruleset`, so a reload leaves the tables docker
 # and tailscaled maintain alone. It does NOT cover docker-published ports: those
@@ -3546,7 +3548,7 @@ setup_firewall() {
   [[ -d /lib/modules/$(uname -r) ]] || {
     warn "kernel $(uname -r) is running but its modules are gone (upgraded, not rebooted) -- reboot, then --only services for the firewall"; return 0; }
   local tcp=$FIREWALL_LAN_TCP udp=$FIREWALL_LAN_UDP extra=""
-  profile_on media-center && { tcp+=" 8096"; udp+=" 7359"; }
+  profile_on media-center && { tcp+=" 8096 8010"; udp+=" 7359"; }
   tcp="$(echo $tcp | tr ' ' ',')"; udp="$(echo $udp | tr ' ' ',')"
   [[ -n $tcp ]] && extra+="
     tcp dport { $tcp } accept"
