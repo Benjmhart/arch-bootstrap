@@ -3374,7 +3374,13 @@ set_console_font() {
 # own failure (OnFailure=). From a kmscon tty, X needs `kmscon-launch-gui startx`:
 # kmscon has to let go of the display first. Ttys already spawned keep agetty
 # until they are released (logout, or a reboot).
+#
+# KMSCON_TTY1=yes moves tty1 too: kmsconvt@tty1 enabled, getty@tty1 disabled (the
+# unit Conflicts= with it). The dotfiles alias startx to kmscon-launch-gui on a
+# kmscon tty, so the login habit is unchanged. =no puts agetty back. Off by default
+# until it has been tried on a machine that can be rebooted freely (micro/carbon).
 KMSCON_FONT="${KMSCON_FONT:-Fira Code}"   # Alacritty's font
+KMSCON_TTY1="${KMSCON_TTY1:-no}"
 setup_kmscon() {
   if ! pacman -Qq kmscon >/dev/null 2>&1; then
     (( DRY_RUN )) || warn "kmscon not installed -- console left on agetty"
@@ -3392,7 +3398,20 @@ font-name=$KMSCON_FONT" "kmscon font" || true
   else
     run sudo ln -sfn "$target" "$link"
     run sudo systemctl daemon-reload
-    did "kmscon on tty2-6 (autovt@ -> kmsconvt@); tty1 stays agetty"
+    did "kmscon on tty2-6 (autovt@ -> kmsconvt@)"
+  fi
+
+  # Enable/disable only, never --now: switching the tty under a logged-in session
+  # would kill it. Takes effect at the next boot.
+  local on=kmsconvt@tty1.service off=getty@tty1.service
+  [[ $KMSCON_TTY1 == yes ]] || { on=getty@tty1.service; off=kmsconvt@tty1.service; }
+  if systemctl is-enabled --quiet "$on" 2>/dev/null \
+     && ! systemctl is-enabled --quiet "$off" 2>/dev/null; then
+    ok "tty1: ${on%@*} (KMSCON_TTY1=$KMSCON_TTY1)"
+  else
+    run sudo systemctl disable "$off"
+    run sudo systemctl enable "$on"
+    did "tty1: ${on%@*} from the next boot (KMSCON_TTY1=$KMSCON_TTY1)"
   fi
 }
 
