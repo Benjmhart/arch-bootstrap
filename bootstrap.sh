@@ -100,6 +100,9 @@ SSH_PEERS="${SSH_PEERS:-}"
 # authorized_keys? "ask" prompts per peer, "no" never adds any. Set "no" on a host that must
 # not be reachable (micro, an outbound-only recovery box).
 AUTHORIZE_PEERS="${AUTHORIZE_PEERS:-ask}"
+# This machine's own key for ssh to the peers (stage 75 generates it; never copied
+# between machines). The GitHub key stays separate.
+PEER_KEY="${PEER_KEY:-$HOME/.ssh/id_ed25519_peer}"
 
 # Chores to enable on this machine: names of directories under chores/, each with a
 # chore-NAME.timer. See chores/chore-run for the protocol. Empty = none.
@@ -2178,6 +2181,27 @@ install_oh_my_zsh() {
 
 # --------------------------------------------------------------------------- 75
 
+# publish_host_key <secrets ssh dir> <host> <"type blob comment">
+# Writes pubkeys/<host>.pub. If it held a different key, replaces that key's blob with the
+# new one in every authorized_keys/* file, leaving each line's from= as it was.
+# Returns 0 when nothing changed, 1 when it wrote. Separate so tests can drive it.
+publish_host_key() {
+  local dir=$1 host=$2 line=$3 pub="$1/pubkeys/$2.pub" old new f
+  [[ "$(cat "$pub" 2>/dev/null)" == "$line" ]] && return 0
+  old="$(awk '{print $2}' "$pub" 2>/dev/null || true)"; new="$(awk '{print $2}' <<<"$line")"
+  mkdir -p "$dir/pubkeys" && printf '%s\n' "$line" > "$pub"
+  if [[ -n $old && $old != "$new" ]]; then
+    for f in "$dir"/authorized_keys/*; do
+      [[ -f $f ]] && grep -qF "$old" "$f" || continue
+      awk -v o="$old" -v n="$new" -v h="$host" '
+        { i = index($0 " ", " " o " ") }
+        i { $0 = substr($0, 1, i) n " ben@" h }
+        { print }' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+    done
+  fi
+  return 1
+}
+
 # Joins the tailnet and wires ssh between this machine and the others in SSH_PEERS.
 # Added 2026-10-03 after micro and media-center were each wired by hand: tailscale up,
 # a Tailnet Lock signature carried to a signer, host keys, and authorized_keys lines
@@ -2212,6 +2236,7 @@ stage_tailnet() {
   systemctl is-active --quiet tailscaled || run sudo systemctl enable --now tailscaled
   local backend
   backend="$(tailscale status --json 2>/dev/null | jq -r '.BackendState // empty' 2>/dev/null || true)"
+  local ak_changed=0
   if [[ $backend != Running && -z ${DISPLAY:-} ]]; then
     info "not on the tailnet, and no X display to sign in from -- deferring"
     STAGE_DEFERRED=1
@@ -2252,19 +2277,30 @@ stage_tailnet() {
   fi
 
   [[ -n $SSH_PEERS ]] || { info "SSH_PEERS not set -- no peers to wire"; return 0; }
-  ssh_tailnet_peers      # ~/.ssh/config stanzas, also written by stage 60
 
-  # 3. Publish this machine's public key to the secrets repo, for the others to read.
+  # 3a. This machine's own key for ssh between machines, separate from its GitHub key
+  # (task 76): a leaked GitHub key then opens no peer, and the reverse. Generated HERE,
+  # never copied; the private half does not leave this machine.
   local self keydir mine
   self="$(uname -n)"; keydir="$SECRETS_DIR/ssh/pubkeys"
-  if [[ -f $HOME/.ssh/id_ed25519.pub ]] && [[ -d $SECRETS_DIR ]]; then
-    mine="$(awk -v h="$self" '{print $1, $2, "ben@" h}' "$HOME/.ssh/id_ed25519.pub")"
-    if [[ "$(cat "$keydir/$self.pub" 2>/dev/null)" == "$mine" ]]; then
+  if [[ ! -f $PEER_KEY ]] && have_tty \
+     && confirm "generate this machine's own key for ssh to the other machines ($PEER_KEY)?"; then
+    run_interactive ssh-keygen -t ed25519 -f "$PEER_KEY" -C "ben@$self peer" \
+      && did "generated $PEER_KEY" || warn "ssh-keygen failed -- peers keep using the old key"
+  fi
+  ssh_tailnet_peers      # ~/.ssh/config stanzas (name $PEER_KEY once it exists); also stage 60
+
+  # 3b. Publish this machine's public key to the secrets repo, for the others to read.
+  # The peer key if there is one, else the old default. A changed key is swapped into
+  # every peer's tracked file in place (from= kept), so their timers move with it.
+  local pubsrc="$PEER_KEY.pub"; [[ -f $pubsrc ]] || pubsrc="$HOME/.ssh/id_ed25519.pub"
+  if [[ -f $pubsrc ]] && [[ -d $SECRETS_DIR ]]; then
+    mine="$(awk -v h="$self" '{print $1, $2, "ben@" h}' "$pubsrc")"
+    if publish_host_key "$SECRETS_DIR/ssh" "$self" "$mine"; then
       ok "this machine's key is in secrets ($keydir/$self.pub)"
     else
-      mkdir -p "$keydir" && printf '%s\n' "$mine" > "$keydir/$self.pub"
-      did "wrote $keydir/$self.pub"
-      todo "commit and push the secrets repo so the other machines can read it"
+      did "wrote $keydir/$self.pub, and swapped it into any peer file that listed the old one"
+      ak_changed=1
     fi
   fi
 
@@ -2272,7 +2308,7 @@ stage_tailnet() {
   # ~/.ssh/authorized_keys by tools/authorized-keys (a checked copy). This stage edits
   # the tracked files and then applies; it never appends to the live file. A file
   # holding the line `# no-inbound` (micro) is never offered keys.
-  local akdir="$SECRETS_DIR/ssh/authorized_keys" ak_changed=0
+  local akdir="$SECRETS_DIR/ssh/authorized_keys"
   local ak="$akdir/$self"
   if [[ -d $SECRETS_DIR && ! -f $ak ]]; then
     mkdir -p "$akdir"
@@ -3046,6 +3082,7 @@ ssh_tailnet_peers() {
   for peer in $SSH_PEERS; do
     [[ $peer == "$self" ]] && continue
     want+=$'\n'"Host $peer"$'\n'"    HostName $peer.$suffix"$'\n'"    HostKeyAlias $peer"
+    [[ -f $PEER_KEY ]] && want+=$'\n'"    IdentityFile $PEER_KEY"$'\n'"    IdentitiesOnly yes"
   done
   want+=$'\n'"$end"
 

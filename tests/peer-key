@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# tests/peer-key -- stage 75's publish_host_key: a machine switching to its own peer key
+# rewrites the registry and every peer's tracked authorized_keys, and the result still
+# passes tools/authorized-keys check (what each peer's timer runs). Temp dir only.
+set -uo pipefail
+root=$(cd "$(dirname "$0")/.." && pwd)
+eval "$(awk '/^publish_host_key\(\) \{/,/^\}/' "$root/bootstrap.sh")"
+t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
+export SECRETS_DIR=$t/secrets; unset SSH_CONNECTION
+d=$SECRETS_DIR/ssh; mkdir -p "$d/pubkeys" "$d/authorized_keys"
+for k in a b c a_peer; do ssh-keygen -q -t ed25519 -N '' -C x -f "$t/$k"; done
+pubof() { awk -v h="$2" '{print $1, $2, "ben@" h}' "$t/$1.pub"; }
+blob() { awk '{print $2}' "$t/$1.pub"; }
+for h in a b c; do pubof $h $h > "$d/pubkeys/$h.pub"; done
+{ echo '# b'; printf 'from="100.64.0.1" %s\n' "$(pubof a a)"; printf 'from="100.64.0.3" %s\n' "$(pubof c c)"; } > "$d/authorized_keys/b"
+{ echo '# c'; printf 'from="100.64.0.1" ssh-ed25519 %s\n' "$(blob a)"; } > "$d/authorized_keys/c"   # no comment field
+{ echo '# a'; echo '# no-inbound'; } > "$d/authorized_keys/a"
+
+pass=0 fail=0
+ok()  { pass=$((pass+1)); echo "pass  $1"; }
+bad() { fail=$((fail+1)); echo "FAIL  $1"; }
+
+publish_host_key "$d" a "$(pubof a a)" && ok "unchanged key: returns 0" || bad "unchanged key: returns 0"
+cp -r "$d" "$t/before"
+diff -r "$d" "$t/before" >/dev/null && ok "unchanged key: nothing written" || bad "unchanged key: nothing written"
+
+publish_host_key "$d" a "$(pubof a_peer a)"; [[ $? == 1 ]] && ok "new key: returns 1" || bad "new key: returns 1"
+[[ $(cat "$d/pubkeys/a.pub") == "$(pubof a_peer a)" ]] && ok "registry holds the new key" || bad "registry holds the new key"
+for f in b c; do
+  grep -qF "$(blob a)" "$d/authorized_keys/$f" && bad "old key gone from $f" || ok "old key gone from $f"
+  grep -qxF "from=\"100.64.0.1\" $(pubof a_peer a)" "$d/authorized_keys/$f" && ok "new key in $f, from= kept" || bad "new key in $f, from= kept"
+  AK_HOST=$f AK_LIVE=$t/live-$f "$root/tools/authorized-keys" check >/dev/null 2>&1 \
+    && ok "$f still passes authorized-keys check" || bad "$f still passes authorized-keys check"
+done
+grep -qxF "from=\"100.64.0.3\" $(pubof c c)" "$d/authorized_keys/b" && ok "other peers' lines untouched" || bad "other peers' lines untouched"
+[[ $(cat "$d/authorized_keys/a") == $'# a\n# no-inbound' ]] && ok "no-inbound file untouched" || bad "no-inbound file untouched"
+[[ -z $(find "$d" -name '*.tmp') ]] && ok "no temp files left" || bad "no temp files left"
+
+echo "$pass passed, $fail failed"; (( fail == 0 ))
