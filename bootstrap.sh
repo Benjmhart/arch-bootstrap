@@ -3366,6 +3366,114 @@ set_console_font() {
   grep -Eq '^HOOKS=.*\<consolefont\>' /etc/mkinitcpio.conf && run sudo mkinitcpio -P
 }
 
+# kmscon on tty2-6: a userspace console that draws with real fonts (pango, so
+# fallback glyphs too), full Unicode and truecolor -- what the kernel console's
+# 512-glyph, 16-colour bitmap cannot. Only the autovt@ alias is pointed at it, so
+# tty1, where X is started, keeps agetty, and so does the initramfs passphrase
+# prompt (that one gets CONSOLE_FONT above). kmsconvt@ falls back to getty@ on its
+# own failure (OnFailure=). From a kmscon tty, X needs `kmscon-launch-gui startx`:
+# kmscon has to let go of the display first. Ttys already spawned keep agetty
+# until they are released (logout, or a reboot).
+KMSCON_FONT="${KMSCON_FONT:-Fira Code}"   # Alacritty's font
+setup_kmscon() {
+  if ! pacman -Qq kmscon >/dev/null 2>&1; then
+    (( DRY_RUN )) || warn "kmscon not installed -- console left on agetty"
+    return 0
+  fi
+  put_etc_file /etc/kmscon/kmscon.conf \
+"# Written by arch-bootstrap. Edit bootstrap.sh, not this file.
+font-engine=pango
+font-name=$KMSCON_FONT" "kmscon font" || true
+
+  local link=/etc/systemd/system/autovt@.service
+  local target=/usr/lib/systemd/system/kmsconvt@.service
+  if [[ "$(readlink "$link" 2>/dev/null)" == "$target" ]]; then
+    ok "kmscon already serves tty2-6 (autovt@)"
+  else
+    run sudo ln -sfn "$target" "$link"
+    run sudo systemctl daemon-reload
+    did "kmscon on tty2-6 (autovt@ -> kmsconvt@); tty1 stays agetty"
+  fi
+}
+
+# Host firewall (beast-arch task 76, 2026-10-03): none was active on beast-arch,
+# carbon or micro. Inbound is dropped except loopback, the tailnet (tailscale0 --
+# the tailnet policy is the access control there), docker's bridges, ICMP,
+# tailscale's direct UDP port, mDNS (cast discovery) and DHCP replies.
+# FIREWALL_LAN_TCP / FIREWALL_LAN_UDP open ports to the LAN; profile media-center
+# adds Jellyfin (8096, and 7359 for the apps' discovery) for the LAN-only phone.
+#
+# Its own table only, never `flush ruleset`, so a reload leaves the tables docker
+# and tailscaled maintain alone. It does NOT cover docker-published ports: those
+# are DNATed in prerouting and never reach the input hook, so a container
+# published on 0.0.0.0 stays reachable. Bind those to 127.0.0.1 in compose.
+# Tested 2026-10-03 across two user+net namespaces: LAN :8096 open, :22 and
+# :56379 dropped, tailscale0 open, ping answered, a foreign table survived reload.
+FIREWALL="${FIREWALL:-yes}"
+FIREWALL_LAN_TCP="${FIREWALL_LAN_TCP:-}"
+FIREWALL_LAN_UDP="${FIREWALL_LAN_UDP:-}"
+setup_firewall() {
+  if [[ $FIREWALL != yes ]]; then
+    info "FIREWALL=$FIREWALL -- host firewall left alone"; return 0
+  fi
+  pacman -Qq nftables >/dev/null 2>&1 || { warn "nftables not installed -- no firewall"; return 0; }
+  local tcp=$FIREWALL_LAN_TCP udp=$FIREWALL_LAN_UDP extra=""
+  profile_on media-center && { tcp+=" 8096"; udp+=" 7359"; }
+  tcp="$(echo $tcp | tr ' ' ',')"; udp="$(echo $udp | tr ' ' ',')"
+  [[ -n $tcp ]] && extra+="
+    tcp dport { $tcp } accept"
+  [[ -n $udp ]] && extra+="
+    udp dport { $udp } accept"
+
+  local rules="#!/usr/bin/nft -f
+# Written by arch-bootstrap. Edit bootstrap.sh / bootstrap.conf, not this file.
+# Only this table: no flush ruleset, which would wipe docker's and tailscaled's.
+table inet hostfw
+delete table inet hostfw
+table inet hostfw {
+  chain input {
+    type filter hook input priority filter; policy drop;
+    ct state established,related accept
+    ct state invalid drop
+    iif \"lo\" accept
+    iifname \"tailscale0\" accept
+    iifname \"docker0\" accept
+    iifname \"br-*\" accept
+    meta l4proto { icmp, ipv6-icmp } accept
+    udp dport 41641 accept
+    udp dport 5353 accept
+    udp sport 67 udp dport 68 accept
+    udp sport 547 udp dport 546 accept$extra
+  }
+}"
+  # Syntax-check before it goes near /etc: a private user+net namespace gives nft
+  # the capability it needs for -c without sudo.
+  local tmp; tmp="$(mktemp)"
+  printf '%s\n' "$rules" > "$tmp"
+  if unshare -rn true 2>/dev/null && ! unshare -rn nft -c -f "$tmp" >/dev/null; then
+    rm -f "$tmp"; warn "generated firewall rules fail nft -c -- not installed"; return 0
+  fi
+  rm -f "$tmp"
+
+  if put_etc_file /etc/nftables.conf "$rules" "host firewall" \
+     || ! systemctl is-enabled --quiet nftables 2>/dev/null; then
+    run sudo systemctl enable nftables
+    run sudo nft -f /etc/nftables.conf
+    did "host firewall loaded and enabled (LAN tcp: ${tcp:-none}, udp: ${udp:-none})"
+  fi
+}
+
+# LLMNR answers name queries from anyone on the LAN on tcp/udp 5355; nothing here
+# uses it (mDNS covers .local, the tailnet has MagicDNS). Found listening on every
+# interface on beast-arch and carbon, 2026-10-03 (task 76).
+disable_llmnr() {
+  put_etc_file /etc/systemd/resolved.conf.d/no-llmnr.conf \
+"# Written by arch-bootstrap.
+[Resolve]
+LLMNR=no" "LLMNR off" && run sudo systemctl restart systemd-resolved
+  return 0
+}
+
 # Random-key encrypted swap on SWAP_PARTUUID. See the config comment for why
 # PARTUUID. Lines are appended to /etc/crypttab and /etc/fstab, never rewritten:
 # both hold this machine's other filesystems.
@@ -3514,6 +3622,9 @@ stage_services() {
   tune_storage_and_swap
   apply_lean_profile
   set_console_font
+  setup_kmscon
+  setup_firewall
+  disable_llmnr
   setup_encrypted_swap
   setup_media_drives
   configure_earlyoom

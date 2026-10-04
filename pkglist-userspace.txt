@@ -37,9 +37,11 @@ gnome-keyring
 go
 godot
 gst-plugin-pipewire
+inotify-tools
 jq
 kdenlive
 keepassxc
+kmscon
 less
 libisoburn
 libnotify
@@ -58,6 +60,7 @@ mise
 neovim
 networkmanager
 network-manager-applet
+nftables
 nm-connection-editor
 noto-fonts
 noto-fonts-cjk
@@ -68,6 +71,7 @@ ollama
 openbsd-netcat
 openssh
 pandoc-cli
+pango
 pastebinit
 patchelf
 picom
