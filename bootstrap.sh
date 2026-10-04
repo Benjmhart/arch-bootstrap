@@ -2870,6 +2870,15 @@ LEAN_UNITS_OFF=(docker.service docker.socket containerd.service bluetooth.servic
 
 profile_on() { [[ " $PROFILES " == *" $1 "* ]]; }
 
+# A machine nothing may ssh into (micro, a recovery box): AUTHORIZE_PEERS=no, or
+# `# no-inbound` in its tracked secrets ssh/authorized_keys/<host>. Its sshd is not
+# enabled at all -- an empty authorized_keys behind the tailnet policy still leaves
+# a listening daemon, and its attack surface, for nothing.
+no_inbound() {
+  [[ $AUTHORIZE_PEERS == no ]] \
+    || grep -qx '# no-inbound' "$SECRETS_DIR/ssh/authorized_keys/$(uname -n)" 2>/dev/null
+}
+
 # Write sshd's configuration, and the boot ordering it needs if it binds a VPN
 # address. Called from stage 60 AFTER enable_system_units, so the unit exists.
 #
@@ -3085,6 +3094,10 @@ enable_system_units() {
 
     if profile_on lean && [[ " ${LEAN_UNITS_OFF[*]} " == *" $unit "* ]]; then
       info "$unit: off on lean hosts (PROFILES=lean) -- not enabling"
+      continue
+    fi
+    if [[ $unit == sshd.service ]] && no_inbound; then
+      info "$unit: no inbound ssh on this machine -- not enabling (stop_sshd_no_inbound)"
       continue
     fi
 
@@ -3655,6 +3668,7 @@ stage_services() {
 
   enable_system_units
   harden_sshd
+  stop_sshd_no_inbound
   ssh_tailnet_peers
   install_chores
   manage_tmp_storage
@@ -3919,6 +3933,20 @@ EOF
       run systemctl --user disable --now obsidian-sync.service
       did "obsidian-sync stopped and disabled (re-enable with --redo obsidian once bound)"
     fi
+  fi
+}
+
+# Turn sshd off on a no_inbound machine. harden_sshd still writes its config, so
+# turning it back on later (drop the marker / AUTHORIZE_PEERS) starts it hardened.
+# Disabled AND stopped: enabled-but-stopped comes back at the next boot.
+stop_sshd_no_inbound() {
+  no_inbound || return 0
+  if systemctl is-enabled --quiet sshd.service 2>/dev/null \
+     || systemctl is-active --quiet sshd.service 2>/dev/null; then
+    run sudo systemctl disable --now sshd.service
+    did "sshd disabled and stopped (no inbound ssh on this machine)"
+  else
+    ok "sshd off (no inbound ssh on this machine)"
   fi
 }
 
