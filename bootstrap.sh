@@ -100,6 +100,8 @@ SSH_PEERS="${SSH_PEERS:-}"
 # authorized_keys? "ask" prompts per peer, "no" never adds any. Set "no" on a host that must
 # not be reachable (micro, an outbound-only recovery box).
 AUTHORIZE_PEERS="${AUTHORIZE_PEERS:-ask}"
+# Wifi regulatory country for wireless-regdb (two letters, or 00 = world). See set_wireless_regdom.
+WIRELESS_REGDOM="${WIRELESS_REGDOM:-00}"
 # This machine's own key for ssh to the peers (stage 75 generates it; never copied
 # between machines). The GitHub key stays separate.
 PEER_KEY="${PEER_KEY:-$HOME/.ssh/id_ed25519_peer}"
@@ -3608,15 +3610,24 @@ LLMNR=no" "LLMNR off" && run sudo systemctl restart systemd-resolved
 # country is uncommented in its conf file (carbon task 11, 2026-10-04). "00" is the
 # world domain: no fixed country, so right for a machine that travels, and Intel
 # cards with self-managed regulatory (LAR) pick the real country from nearby APs
-# anyway. A country already chosen by hand is left alone.
+# anyway. WIRELESS_REGDOM picks another country (Ben: CA, 2026-10-04, in the secrets
+# bootstrap.conf). A line this function wrote (marked "# arch-bootstrap") follows the
+# setting; a country chosen by hand is left alone.
 set_wireless_regdom() {
-  local f=/etc/conf.d/wireless-regdom
+  local f=/etc/conf.d/wireless-regdom cur
   [[ -f $f ]] || return 0
-  if grep -q '^WIRELESS_REGDOM=' "$f"; then
-    ok "wireless regdom: $(grep '^WIRELESS_REGDOM=' "$f" | tail -1)"
+  [[ $WIRELESS_REGDOM =~ ^[A-Z0-9]{2}$ ]] \
+    || { warn "WIRELESS_REGDOM='$WIRELESS_REGDOM' is not two letters or 00 -- not set"; return 0; }
+  local want="WIRELESS_REGDOM=\"$WIRELESS_REGDOM\"   # arch-bootstrap"
+  cur="$(grep '^WIRELESS_REGDOM=' "$f" | tail -1 || true)"
+  if [[ $cur == "$want" ]]; then
+    ok "wireless regdom $WIRELESS_REGDOM already in $f"
+  elif [[ -n $cur && $cur != *'# arch-bootstrap'* ]]; then
+    ok "wireless regdom set by hand ($cur) -- left alone"
   else
-    run sudo sh -c "echo 'WIRELESS_REGDOM=\"00\"   # arch-bootstrap: world domain' >> $f" \
-      && did "wireless regdom 00 (world) in $f, from the next boot"
+    run sudo sed -i '/^WIRELESS_REGDOM=.*# arch-bootstrap/d' "$f" \
+      && run sudo sh -c "printf '%s\n' '$want' >> $f" \
+      && did "wireless regdom $WIRELESS_REGDOM in $f, from the next boot"
   fi
   return 0
 }
