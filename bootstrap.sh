@@ -3471,6 +3471,10 @@ setup_firewall() {
     info "FIREWALL=$FIREWALL -- host firewall left alone"; return 0
   fi
   pacman -Qq nftables >/dev/null 2>&1 || { warn "nftables not installed -- no firewall"; return 0; }
+  # A kernel upgraded but not yet booted has no modules on disk, so nft_ct cannot
+  # load and `ct state` fails nft -c with ENOENT (carbon, 2026-10-04).
+  [[ -d /lib/modules/$(uname -r) ]] || {
+    warn "kernel $(uname -r) is running but its modules are gone (upgraded, not rebooted) -- reboot, then --only services for the firewall"; return 0; }
   local tcp=$FIREWALL_LAN_TCP udp=$FIREWALL_LAN_UDP extra=""
   profile_on media-center && { tcp+=" 8096"; udp+=" 7359"; }
   tcp="$(echo $tcp | tr ' ' ',')"; udp="$(echo $udp | tr ' ' ',')"
