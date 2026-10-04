@@ -96,6 +96,10 @@ SSHD_ALLOW_USERS="${SSHD_ALLOW_USERS:-$USER}"    # empty disables the AllowUsers
 # so `ssh carbon` and `herdr --remote carbon` follow the node through address
 # changes with no IP written down anywhere. Empty = write nothing.
 SSH_PEERS="${SSH_PEERS:-}"
+# Stage 38: may the peers' keys (secrets ssh/pubkeys/<peer>.pub) go into THIS machine's
+# authorized_keys? "ask" prompts per peer, "no" never adds any. Set "no" on a host that must
+# not be reachable (micro, an outbound-only recovery box).
+AUTHORIZE_PEERS="${AUTHORIZE_PEERS:-ask}"
 
 # Chores to enable on this machine: names of directories under chores/, each with a
 # chore-NAME.timer. See chores/chore-run for the protocol. Empty = none.
@@ -227,7 +231,7 @@ REDO=""
 # no second window to work in. From a TTY it is DEFERRED -- not failed, not
 # marked done -- and the run ends by saying to resume it from X.
 STAGES=(preflight ssh packages hardware aur toolchains dotfiles secrets
-        session xmonad services obsidian verify manual)
+        tailnet session xmonad services obsidian verify manual)
 
 # --------------------------------------------------------------------------- output
 
@@ -2160,6 +2164,144 @@ install_oh_my_zsh() {
     else
       run git clone --depth 1 "${OMZ_EXTERNAL_PLUGINS[$name]}" "$pdir"
       did "cloned oh-my-zsh plugin $name"
+    fi
+  done
+}
+
+# --------------------------------------------------------------------------- 38
+
+# Joins the tailnet and wires ssh between this machine and the others in SSH_PEERS.
+# Added 2026-10-03 after micro and media-center were each wired by hand: tailscale up,
+# a Tailnet Lock signature carried to a signer, host keys, and authorized_keys lines
+# carried around by magic-wormhole.
+#
+# Public keys come from the secrets repo, ssh/pubkeys/<host>.pub -- one per machine.
+# GitHub's .keys endpoint cannot be used: it does not say which key is which host's.
+#
+# Every grant of access is a prompt (y/N), because the right answer is not always yes:
+# a recovery box that must stay unreachable, or a peer whose key is suspect. A peer is
+# authorized as from="<its tailnet IP>" -- the same restriction beast-arch already
+# had on carbon's key -- so a stolen key alone does not get in from elsewhere. If a
+# peer re-registers with a new IP, re-run this stage.
+#
+# The tailnet POLICY (hosts + grants, admin console) is not touched; a new machine
+# must be added there by hand, or every port times out while `tailscale ping` works.
+stage_tailnet() {
+  stage_banner "38 tailnet -- join, sign, and ssh keys with the other machines"
+
+  if ! have tailscale; then
+    info "tailscale not installed -- skipping"
+    return 0
+  fi
+  if (( DRY_RUN )); then
+    info "(dry run) would: tailscale up if needed, offer the Tailnet Lock sign command,"
+    info "  publish this machine's key, and offer peer keys in both directions: $SSH_PEERS"
+    return 0
+  fi
+
+  # 1. Join.
+  systemctl is-active --quiet tailscaled || run sudo systemctl enable --now tailscaled
+  local backend
+  backend="$(tailscale status --json 2>/dev/null | jq -r '.BackendState // empty' 2>/dev/null || true)"
+  if [[ $backend != Running ]]; then
+    info "tailscale is '${backend:-unknown}' -- logging in (open the URL it prints)"
+    run_interactive sudo tailscale up || { warn "tailscale up failed"; return 1; }
+  fi
+  ok "on the tailnet as $(tailscale ip -4 2>/dev/null | head -n1)"
+
+  # 2. Tailnet Lock: a new node is locked out until a trusted node signs it.
+  local sign
+  sign="$(tailscale lock status 2>/dev/null | grep -o 'tailscale lock sign nodekey:[0-9a-f]* tlpub:[0-9a-f]*' || true)"
+  if [[ -n $sign ]]; then
+    warn "locked out by Tailnet Lock until a trusted node signs this one"
+    if have wormhole && confirm "send the sign command to a trusted node by magic-wormhole?"; then
+      run_interactive wormhole send --text "$sign" || true
+    else
+      printf '\n    on a trusted node (beast-arch, carbon):\n      %s\n\n' "$sign"
+    fi
+    pause_for "Run that on a trusted node, then press Enter." || true
+    tailscale lock status 2>/dev/null | grep -q 'LOCKED OUT' && {
+      warn "still locked out -- re-run:  $0 --redo tailnet"; return 1; }
+  fi
+
+  [[ -n $SSH_PEERS ]] || { info "SSH_PEERS not set -- no peers to wire"; return 0; }
+  ssh_tailnet_peers      # ~/.ssh/config stanzas, also written by stage 60
+
+  # 3. Publish this machine's public key to the secrets repo, for the others to read.
+  local self keydir mine
+  self="$(uname -n)"; keydir="$SECRETS_DIR/ssh/pubkeys"
+  if [[ -f $HOME/.ssh/id_ed25519.pub ]] && [[ -d $SECRETS_DIR ]]; then
+    mine="$(awk -v h="$self" '{print $1, $2, "ben@" h}' "$HOME/.ssh/id_ed25519.pub")"
+    if [[ "$(cat "$keydir/$self.pub" 2>/dev/null)" == "$mine" ]]; then
+      ok "this machine's key is in secrets ($keydir/$self.pub)"
+    else
+      mkdir -p "$keydir" && printf '%s\n' "$mine" > "$keydir/$self.pub"
+      did "wrote $keydir/$self.pub"
+      todo "commit and push the secrets repo so the other machines can read it"
+    fi
+  fi
+
+  local peer fqdn ip pub body ak="$HOME/.ssh/authorized_keys" suffix
+  suffix="$(tailscale status --json 2>/dev/null | jq -r '.MagicDNSSuffix // empty' 2>/dev/null || true)"
+  for peer in $SSH_PEERS; do
+    [[ $peer == "$self" ]] && continue
+    fqdn="$peer.$suffix"
+
+    # 4. Host key, pinned under the alias the stanza uses. ONE key type, ONE line: appending
+    # raw ssh-keyscan output writes only the first line with a hostname (media-center, 2026-10-03).
+    if ! ssh-keygen -F "$peer" >/dev/null 2>&1; then
+      local hk
+      hk="$(ssh-keyscan -T 8 -t ed25519 "$fqdn" 2>/dev/null | awk -v h="$peer" '!/^#/ {$1=h; print; exit}' || true)"
+      if [[ -n $hk ]]; then
+        printf '%s\n' "$hk" >> "$HOME/.ssh/known_hosts"
+        did "$peer: host key pinned ($(printf '%s\n' "$hk" | ssh-keygen -lf - | awk '{print $2}'))"
+      else
+        warn "$peer: no host key over the tailnet (offline, or the policy does not allow tcp:22?)"
+      fi
+    fi
+
+    # 5. Inbound: may $peer ssh in here?
+    pub="$keydir/$peer.pub"
+    if [[ $AUTHORIZE_PEERS == no ]]; then
+      info "$peer: not offered ssh access here (AUTHORIZE_PEERS=no)"
+    elif [[ ! -f $pub ]]; then
+      info "$peer: no key in secrets ($pub) -- cannot authorize it"
+    else
+      body="$(awk '{print $2}' "$pub")"
+      if grep -qF "$body" "$ak" 2>/dev/null; then
+        ok "$peer may already ssh in here"
+      else
+        ip="$(tailscale ip -4 "$peer" 2>/dev/null | head -n1 || true)"
+        if [[ -n $ip ]] && confirm "let $peer ssh into this machine (from=\"$ip\" only)?"; then
+          install -d -m 700 "$HOME/.ssh"
+          printf 'from="%s" %s\n' "$ip" "$(cat "$pub")" >> "$ak"
+          chmod 600 "$ak"
+          did "$peer authorized (from=$ip)"
+        elif [[ -z $ip ]]; then
+          warn "$peer: no tailnet IP -- not authorized"
+        fi
+      fi
+    fi
+
+    # 6. Outbound: can this machine ssh to $peer? If not, offer to carry the key there.
+    if ssh -o BatchMode=yes -o ConnectTimeout=8 "$peer" true 2>/dev/null; then
+      ok "ssh to $peer works"
+    elif [[ -n ${mine:-} ]] && have wormhole \
+         && confirm "add this machine's key to $peer (wormhole; you run 'wormhole receive' there)?"; then
+      local script; script="$(mktemp --suffix=.sh)"
+      printf '%s\n' "K='from=\"$(tailscale ip -4 | head -n1)\" $mine'" \
+        'grep -qF "$(echo "$K" | awk "{print \$3}")" ~/.ssh/authorized_keys 2>/dev/null || { install -d -m 700 ~/.ssh; echo "$K" >> ~/.ssh/authorized_keys; chmod 600 ~/.ssh/authorized_keys; }' \
+        'grep -c "$(echo "$K" | awk "{print \$3}")" ~/.ssh/authorized_keys' > "$script"
+      info "on $peer:  wormhole receive <code>  &&  sh $(basename "$script")"
+      run_interactive wormhole send "$script" || true
+      rm -f "$script"
+      if ssh -o BatchMode=yes -o ConnectTimeout=8 "$peer" true 2>/dev/null; then
+        did "ssh to $peer works"
+      else
+        warn "ssh to $peer still fails -- check the tailnet policy grants this machine tcp:22 on $peer"
+      fi
+    else
+      info "ssh to $peer does not work; left alone"
     fi
   done
 }
