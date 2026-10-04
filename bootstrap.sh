@@ -4196,6 +4196,15 @@ main() {
     ONLY="${ONLY:+$ONLY,}$s"
   done
 
+  # Stage 05 adopts the secrets copy of bootstrap.conf, but once 05 is marked done
+  # (or --only leaves it out) nothing re-read it. On 2026-10-04 micro's copy, adopted
+  # at install, lacked DEPLOY_REPOS, and `--only tailnet` silently made no deploy keys
+  # (station-maintenance beast-arch task 76). So follow the local secrets checkout on
+  # every run; stage 05 still does the first clone.
+  if (( CONFIG_FROM_SECRETS )) && [[ -f $SECRETS_DIR/arch-bootstrap/bootstrap.conf ]]; then
+    adopt_config_from_secrets
+  fi
+
   # Before the stage loop, so `--only packages` gets them too.
   load_exclusions
 
