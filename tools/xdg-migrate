@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""xdg-migrate [--dry-run] -- move this machine's config from ~/.configure to ~/.config.
+"""xdg-migrate [--dry-run] [--prefer NAME=.config|.configure ...] -- move this machine's config from ~/.configure to ~/.config.
 
 Until 2026-10-04 every machine set XDG_CONFIG_HOME=~/.configure (CONFIG_HOME_OVERRIDE),
 while systemd user units and anything started without the shell's environment still
@@ -35,6 +35,17 @@ import os, subprocess, sys, time
 from pathlib import Path
 
 DRY = "--dry-run" in sys.argv
+# --prefer NAME=.config|.configure overrides the rule for one dual entry. Read the
+# dry run first: "newest non-empty file" cannot tell a real config from a default
+# one an app rewrote later (media-center's jellyfin-mpv-shim: conf.json rewritten in
+# ~/.config at 16:55, the login cred.json only in ~/.configure).
+PREFER = {}
+for i, a in enumerate(sys.argv):
+    if a == "--prefer":
+        name, _, side = sys.argv[i + 1].partition("=")
+        if side not in (".config", ".configure"):
+            sys.exit(f"--prefer {sys.argv[i + 1]}: side must be .config or .configure")
+        PREFER[name] = side
 HOME = Path(os.environ["HOME"])
 OLD, NEW = HOME / ".configure", HOME / ".config"
 STAMP = time.strftime("%Y%m%d-%H%M%S")
@@ -53,22 +64,33 @@ def flush():
         (WORK / "report.txt").write_text("\n".join(report) + "\n")
 
 def git(*args, check=True):
+    # cwd=HOME: path arguments are relative to the cwd, and a cwd INSIDE the work tree
+    # (any ~/projects/x) would silently scope ".configure/" to the wrong directory.
     r = subprocess.run(["git", f"--git-dir={HOME}/.dot", f"--work-tree={HOME}", *args],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, cwd=HOME)
     if check and r.returncode:
         die(f"git {' '.join(args)}: {r.stderr.strip()}")
     return r.stdout.strip()
 
 def newest(p: Path) -> float:
-    """Most recent mtime anywhere inside p (lstat, symlinks not followed)."""
-    best = p.lstat().st_mtime
-    if p.is_dir() and not p.is_symlink():
-        for root, dirs, files in os.walk(p, followlinks=False):
-            for n in dirs + files:
-                try:
-                    best = max(best, os.lstat(os.path.join(root, n)).st_mtime)
-                except FileNotFoundError:
-                    pass
+    """Most recent mtime of a NON-EMPTY REGULAR FILE inside p (0 if none).
+    Directories, empty files, sockets and symlinks do not count: an app run once
+    without the right XDG_CONFIG_HOME leaves a skeleton of empty files that is
+    NEWER than the real config (media-center's jellyfin-mpv-shim: empty mpv.conf
+    in ~/.config at 16:55 vs cred.json in ~/.configure at 16:38)."""
+    def score(f):
+        try:
+            st = os.lstat(f)
+        except FileNotFoundError:
+            return 0.0
+        import stat
+        return st.st_mtime if stat.S_ISREG(st.st_mode) and st.st_size > 0 else 0.0
+    if p.is_symlink() or not p.is_dir():
+        return score(p)
+    best = 0.0
+    for root, dirs, files in os.walk(p, followlinks=False):
+        for n in files:
+            best = max(best, score(os.path.join(root, n)))
     return best
 
 def mv(src: Path, dst: Path):
@@ -83,14 +105,17 @@ def park(p: Path, side: str):
 def resolve(name, keep_dir: Path, other_dir: Path, tracked_in_keep: set, tracked_in_other: set):
     """Entry `name` exists in both. Leave the winner at keep_dir/name."""
     k, o = keep_dir / name, other_dir / name
-    if name in tracked_in_keep:
+    if name in PREFER:
+        win, why = ("keep" if PREFER[name] == keep_dir.name else "other"), f"--prefer {name}={PREFER[name]}"
+    elif name in tracked_in_keep:
         win, why = "keep", "tracked by dotfiles"
     elif name in tracked_in_other:
         win, why = "other", "tracked by dotfiles"
     else:
         nk, no = NEWEST[k], NEWEST[o]
         win = "keep" if nk >= no else "other"
-        why = f"newest write {time.strftime('%F %T', time.localtime(max(nk, no)))}"
+        why = (f"newest non-empty file {time.strftime('%F %T', time.localtime(max(nk, no)))}"
+               if max(nk, no) else "neither side has a non-empty file; kept the first")
     if win == "keep":
         say(f"dual  {name}: {k} wins ({why}); {o} parked")
         park(o, other_dir.name)
