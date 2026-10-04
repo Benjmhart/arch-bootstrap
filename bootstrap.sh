@@ -96,7 +96,7 @@ SSHD_ALLOW_USERS="${SSHD_ALLOW_USERS:-$USER}"    # empty disables the AllowUsers
 # so `ssh carbon` and `herdr --remote carbon` follow the node through address
 # changes with no IP written down anywhere. Empty = write nothing.
 SSH_PEERS="${SSH_PEERS:-}"
-# Stage 38: may the peers' keys (secrets ssh/pubkeys/<peer>.pub) go into THIS machine's
+# Stage 75 (tailnet): may the peers' keys (secrets ssh/pubkeys/<peer>.pub) go into THIS machine's
 # authorized_keys? "ask" prompts per peer, "no" never adds any. Set "no" on a host that must
 # not be reachable (micro, an outbound-only recovery box).
 AUTHORIZE_PEERS="${AUTHORIZE_PEERS:-ask}"
@@ -230,8 +230,10 @@ REDO=""
 # interactive, and on a raw TTY there is no KeePassXC to copy a password from and
 # no second window to work in. From a TTY it is DEFERRED -- not failed, not
 # marked done -- and the run ends by saying to resume it from X.
+# tailnet is deferred the same way when it would need `tailscale up`: that login is
+# a URL to open in a browser. Already on the tailnet, it runs from a TTY too.
 STAGES=(preflight ssh packages hardware aur toolchains dotfiles secrets
-        tailnet session xmonad services obsidian verify manual)
+        session xmonad services obsidian tailnet verify manual)
 
 # --------------------------------------------------------------------------- output
 
@@ -2168,7 +2170,7 @@ install_oh_my_zsh() {
   done
 }
 
-# --------------------------------------------------------------------------- 38
+# --------------------------------------------------------------------------- 75
 
 # Joins the tailnet and wires ssh between this machine and the others in SSH_PEERS.
 # Added 2026-10-03 after micro and media-center were each wired by hand: tailscale up,
@@ -2187,7 +2189,7 @@ install_oh_my_zsh() {
 # The tailnet POLICY (hosts + grants, admin console) is not touched; a new machine
 # must be added there by hand, or every port times out while `tailscale ping` works.
 stage_tailnet() {
-  stage_banner "38 tailnet -- join, sign, and ssh keys with the other machines"
+  stage_banner "75 tailnet -- join, sign, and ssh keys with the other machines (needs X to sign in)"
 
   if ! have tailscale; then
     info "tailscale not installed -- skipping"
@@ -2199,10 +2201,16 @@ stage_tailnet() {
     return 0
   fi
 
-  # 1. Join.
+  # 1. Join. `tailscale up` prints a login URL, i.e. it needs a browser: from a TTY,
+  # defer to the run from X (as obsidian does). Already Running needs no login.
   systemctl is-active --quiet tailscaled || run sudo systemctl enable --now tailscaled
   local backend
   backend="$(tailscale status --json 2>/dev/null | jq -r '.BackendState // empty' 2>/dev/null || true)"
+  if [[ $backend != Running && -z ${DISPLAY:-} ]]; then
+    info "not on the tailnet, and no X display to sign in from -- deferring"
+    STAGE_DEFERRED=1
+    return 0
+  fi
   if [[ $backend != Running ]]; then
     info "tailscale is '${backend:-unknown}' -- logging in (open the URL it prints)"
     run_interactive sudo tailscale up || { warn "tailscale up failed"; return 1; }
@@ -2222,6 +2230,19 @@ stage_tailnet() {
     pause_for "Run that on a trusted node, then press Enter." || true
     tailscale lock status 2>/dev/null | grep -q 'LOCKED OUT' && {
       warn "still locked out -- re-run:  $0 --redo tailnet"; return 1; }
+  fi
+
+  # sshd: on a first install stage 60 ran before there was a tailnet address, so it
+  # left sshd on every interface (and said so). Now there is one; rebind -- but only if
+  # sshd is not already on it. harden_sshd's own check needs sudo to read its 0600
+  # drop-in, so calling it unconditionally would ask for a password on every run.
+  if [[ $SSHD_LISTEN_ADDRESS == tailscale ]] && systemctl is-active --quiet sshd; then
+    local tip; tip="$(tailscale ip -4 2>/dev/null | head -n1 || true)"
+    if [[ -n $tip ]] && ss -ltnH 2>/dev/null | awk '{print $4}' | grep -qx "$tip:22"; then
+      ok "sshd already listens on the tailnet only ($tip:22)"
+    else
+      harden_sshd
+    fi
   fi
 
   [[ -n $SSH_PEERS ]] || { info "SSH_PEERS not set -- no peers to wire"; return 0; }
