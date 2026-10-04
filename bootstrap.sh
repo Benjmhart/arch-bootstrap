@@ -2289,6 +2289,15 @@ stage_tailnet() {
       && did "generated $PEER_KEY" || warn "ssh-keygen failed -- peers keep using the old key"
   fi
   ssh_tailnet_peers      # ~/.ssh/config stanzas (name $PEER_KEY once it exists); also stage 60
+  # A peer missing from SSH_PEERS gets no stanza, so ssh to it offers the GitHub key,
+  # which its tracked file no longer lists once this machine has a peer key.
+  local h
+  for h in "$keydir"/*.pub; do
+    h="${h##*/}"; h="${h%.pub}"
+    [[ -f $keydir/$h.pub && $h != "$self" && " $SSH_PEERS " != *" $h "* ]] || continue
+    grep -qx '# no-inbound' "$SECRETS_DIR/ssh/authorized_keys/$h" 2>/dev/null && continue
+    warn "$h has a key in secrets but is not in SSH_PEERS -- ssh to it will not use $PEER_KEY"
+  done
 
   # 3b. Publish this machine's public key to the secrets repo, for the others to read.
   # The peer key if there is one, else the old default. A changed key is swapped into
