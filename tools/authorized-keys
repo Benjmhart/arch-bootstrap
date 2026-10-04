@@ -24,7 +24,7 @@
 # an emptied file is far more likely a mistake than a decision.
 #
 # A key line passes only if it parses (ssh-keygen -l), carries from="<one tailnet IP>"
-# (100.64.0.0/10), and its key is one of ssh/pubkeys/*.pub. A file with no key lines
+# (100.64.0.0/10), and its key is one of ssh/pubkeys/*.pub or ssh/fleet/*.pub. A file with no key lines
 # is valid: no inbound ssh (micro). Lockout guard: inside an ssh session, apply
 # refuses unless the client's address is allowed by some from= line.
 #
@@ -104,7 +104,9 @@ fi
 blob_of() { awk '{for (i=1;i<=NF;i++) if ($i ~ /^(ssh-|ecdsa-|sk-)/) {print $(i+1); exit}}'; }
 keylines() { grep -vE '^[[:space:]]*(#|$)' "$1" 2>/dev/null || true; }
 
-registry=$(for f in "$SECRETS_DIR"/ssh/pubkeys/*.pub; do [[ -f $f ]] && blob_of < "$f"; done)
+# ssh/pubkeys: one peer key per host. ssh/fleet: micro's fleet key (task 80), authorized as a
+# forced command (from=...,command=fleet-apply,restrict), so it sits in its own directory.
+registry=$(for f in "$SECRETS_DIR"/ssh/pubkeys/*.pub "$SECRETS_DIR"/ssh/fleet/*.pub; do [[ -f $f ]] || continue; blob_of < "$f"; done)
 
 # ---- check
 allowed_ips=() seen=() bad=0 n=0

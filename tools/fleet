@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# fleet -- run one update across every machine from micro (station-maintenance beast-arch task 80).
+#
+#   fleet setup                     once, on micro: create ~/.ssh/id_ed25519_fleet (with a
+#                                   passphrase), publish it to secrets ssh/fleet/micro.pub, and
+#                                   authorize it on every other machine's tracked authorized_keys
+#                                   as a forced command (from= micro, command=fleet-apply, restrict).
+#   fleet status                    each machine's last applied commit
+#   fleet push [main|SHA] [stage ...]
+#                                   apply to every machine not already at that commit, micro
+#                                   included (locally). Asks ONCE for the fleet key passphrase
+#                                   (a temporary agent) and ONCE for the shared sudo password.
+#
+# Default target: main. After a security event, pass the last known safe SHA instead; each
+# machine refuses a SHA that origin/main does not contain. Stages default to fleet-apply's.
+#
+# Env: FLEET_HOSTS (default: the other machines), FLEET_KEY, FLEET_SELF_HOST (micro).
+set -uo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
+REPO=$(cd "$here/.." && pwd)
+SECRETS_DIR=${SECRETS_DIR:-$HOME/secrets}
+KEY=${FLEET_KEY:-$HOME/.ssh/id_ed25519_fleet}
+SELF=${FLEET_SELF_HOST:-micro}
+read -r -a hosts <<<"${FLEET_HOSTS:-beast-arch carbon media-center}"
+die() { echo "FAIL  $*" >&2; exit 1; }
+
+suffix() { tailscale status --json 2>/dev/null | jq -r '.MagicDNSSuffix // empty'; }
+# The fleet key only, never the peer key: a peer-key login would run the request as a shell
+# command instead of the forced fleet-apply. -F /dev/null drops ~/.ssh/config's peer stanzas;
+# HostKeyAlias keeps the pinned host keys.
+fssh() {
+  local h=$1; shift
+  ssh -F /dev/null -i "$KEY" -o IdentitiesOnly=yes -o ConnectTimeout=8 -o HostKeyAlias="$h" \
+      -o UserKnownHostsFile="$HOME/.ssh/known_hosts" "$h.${SUFFIX}" "$@"
+}
+
+cmd=${1:-status}; shift || true
+case $cmd in
+setup)
+  [[ $(uname -n) == "$SELF" ]] || die "run setup on $SELF"
+  [[ -f $KEY ]] || ssh-keygen -t ed25519 -f "$KEY" -C "ben@$SELF fleet" || die "ssh-keygen failed"
+  ssh-keygen -y -P '' -f "$KEY" >/dev/null 2>&1 && die "$KEY has no passphrase -- give it one (ssh-keygen -p -f $KEY)"
+  ip=$(tailscale ip -4 | head -n1); [[ -n $ip ]] || die "no tailnet IP"
+  mkdir -p "$SECRETS_DIR/ssh/fleet"
+  cp "$KEY.pub" "$SECRETS_DIR/ssh/fleet/$SELF.pub"
+  blob=$(awk '{print $2}' "$KEY.pub")
+  for h in "${hosts[@]}"; do
+    f=$SECRETS_DIR/ssh/authorized_keys/$h
+    [[ -f $f ]] || { echo "skip  $h: no tracked authorized_keys"; continue; }
+    grep -vF " $blob" "$f" > "$f.tmp" || true; mv "$f.tmp" "$f"   # drop an older line for this key
+    printf 'from="%s",command="%s/tools/fleet-apply",restrict %s\n' "$ip" "$REPO" "$(cat "$KEY.pub")" >> "$f"
+    echo "did   $h: fleet key authorized (forced command, from=$ip)"
+  done
+  echo "todo  git -C $SECRETS_DIR add ssh && git -C $SECRETS_DIR commit -m '$SELF: fleet key' && git -C $SECRETS_DIR push"
+  echo "todo  each machine's authorized-keys timer installs it within 15 min (media-center: tools/authorized-keys apply)"
+  ;;
+status)
+  SUFFIX=$(suffix)
+  printf '%-14s %s\n' "$SELF" "$("$here/fleet-apply" status)"
+  for h in "${hosts[@]}"; do printf '%-14s %s\n' "$h" "$(fssh "$h" status 2>&1 | tail -1)"; done
+  ;;
+push)
+  target=${1:-main}; shift || true
+  stages=("$@")
+  [[ $target == main || $target =~ ^[0-9a-f]{7,40}$ ]] || die "target must be main or a commit SHA"
+  git -C "$REPO" fetch -q origin || die "fetch failed"
+  if [[ $target == main ]]; then want=$(git -C "$REPO" rev-parse origin/main)
+  else want=$(git -C "$REPO" rev-parse -q --verify "$target^{commit}") || die "unknown commit $target"
+       git -C "$REPO" merge-base --is-ancestor "$want" origin/main || die "$target is not on origin/main"
+  fi
+  SUFFIX=$(suffix); [[ -n $SUFFIX ]] || die "not on the tailnet"
+  [[ -f $KEY ]] || die "no $KEY -- run: fleet setup"
+
+  # One passphrase: a private agent for this run only.
+  eval "$(ssh-agent -s)" >/dev/null
+  trap 'ssh-agent -k >/dev/null 2>&1' EXIT
+  ssh-add -t 3600 "$KEY" || die "fleet key not loaded"
+  # One sudo password, checked here first: a typo costs one attempt on this machine only.
+  IFS= read -r -s -p "sudo password (shared by every machine): " pw; echo
+  printf '%s\n' "$pw" | sudo -S -p '' -k -v 2>/dev/null || die "sudo password rejected here -- nothing sent anywhere"
+
+  declare -A result
+  run_one() {  # host -> result line
+    local h=$1 st rc
+    if [[ $h == "$SELF" ]]; then st=$("$here/fleet-apply" status); else st=$(fssh "$h" status 2>&1 | tail -1); fi
+    if [[ $st == "$want "*" rc=0 "* ]]; then result[$h]="skip (already at ${want:0:7})"; return; fi
+    echo; echo "=== $h"
+    if [[ $h == "$SELF" ]]; then printf '%s\n' "$pw" | "$here/fleet-apply" apply "$target" "${stages[@]}"
+    else printf '%s\n' "$pw" | fssh "$h" apply "$target" "${stages[@]}"; fi
+    rc=$?
+    result[$h]=$( ((rc == 0)) && echo "ok (${want:0:7})" || echo "FAILED rc=$rc -- see ~/.local/state/fleet/last.log on $h")
+  }
+  for h in "$SELF" "${hosts[@]}"; do run_one "$h"; done
+  unset pw
+  echo; echo "=== fleet push ${want:0:7}"
+  for h in "$SELF" "${hosts[@]}"; do printf '%-14s %s\n' "$h" "${result[$h]}"; done
+  ;;
+*) die "usage: fleet setup | status | push [main|SHA] [stage ...]" ;;
+esac

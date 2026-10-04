@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+# tests/fleet -- tools/fleet-apply and tools/fleet push in a temp HOME. Real git repos and a real
+# `script` pty; sudo, bootstrap.sh, ssh, ssh-agent/ssh-add and tailscale are stubs. The stub sudo
+# accepts the password "pw-ok" on stdin for -v and then answers -n from a "ticket" file, which
+# stands in for sudo's per-pty cache. Never touches ~/.ssh, real sudo or another machine.
+set -uo pipefail
+root=$(cd "$(dirname "$0")/.." && pwd)
+t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
+export HOME=$t/home GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
+mkdir -p "$HOME/projects" "$t/bin"
+
+# origin with two commits; the clone sits at the first
+git init -q --bare -b main "$t/origin.git"
+git clone -q "$t/origin.git" "$t/seed" 2>/dev/null
+cat > "$t/seed/bootstrap.sh" <<'EOF'
+#!/bin/sh
+# stub: record how it was run, and use sudo the way run() does
+{ echo "args: $*"; [ -t 0 ] && echo "tty: yes" || echo "tty: no"; sudo -n true && echo "sudo: cached" || echo "sudo: NOT cached"; } >> "$HOME/bootstrap.calls"
+EOF
+chmod +x "$t/seed/bootstrap.sh"; mkdir -p "$t/seed/tools"; cp "$root/tools/fleet-apply" "$root/tools/fleet" "$t/seed/tools/"
+git -C "$t/seed" add -A && git -C "$t/seed" commit -qm one && first=$(git -C "$t/seed" rev-parse HEAD)
+echo two > "$t/seed/two" && git -C "$t/seed" add -A && git -C "$t/seed" commit -qm two && second=$(git -C "$t/seed" rev-parse HEAD)
+git -C "$t/seed" push -q origin main
+repo=$HOME/projects/arch-bootstrap
+git clone -q "$t/origin.git" "$repo" && git -C "$repo" reset -q --hard "$first"
+git -C "$repo" branch -q --set-upstream-to=origin/main main
+offmain=$(git -C "$repo" commit -q --allow-empty -m local && git -C "$repo" rev-parse HEAD); git -C "$repo" reset -q --hard "$first"
+
+cat > "$t/bin/sudo" <<EOF
+#!/bin/bash
+# stub: -S ... -v reads a password from stdin; -n uses the ticket; -k clears it
+for a; do case \$a in -k) rm -f "$t/ticket" ;; esac; done
+if [[ " \$* " == *" -v "* ]]; then IFS= read -r p; [[ \$p == pw-ok ]] && touch "$t/ticket" && exit 0; echo "attempt" >> "$t/sudo.fail"; exit 1; fi
+if [[ " \$* " == *" -n "* ]]; then [[ -e "$t/ticket" ]]; exit; fi
+exit 0
+EOF
+chmod +x "$t/bin/sudo"; export PATH="$t/bin:$PATH"
+fa="$repo/tools/fleet-apply"
+
+pass=0 fail=0
+check() { if eval "$2"; then pass=$((pass+1)); echo "pass  $1"; else fail=$((fail+1)); echo "FAIL  $1"; fi; }
+
+check "status before any apply: none"         '[[ $("$fa" status) == none ]]'
+check "bad target refused"                    '! echo pw-ok | "$fa" apply "rm -rf" >/dev/null'
+check "stage outside the allowlist refused"   '! echo pw-ok | "$fa" apply main tailnet >/dev/null'
+check "request must be status or apply"       '! "$fa" bash >/dev/null'
+
+rm -f "$t/ticket" "$HOME/bootstrap.calls"
+out=$(echo pw-ok | SSH_ORIGINAL_COMMAND="apply main" "$fa" 2>&1); rc=$?
+check "apply main (via SSH_ORIGINAL_COMMAND): rc 0"  '(( rc == 0 ))'
+check "...arch-bootstrap fast-forwarded to main"      '[[ $(git -C "$repo" rev-parse HEAD) == "$second" ]]'
+check "...bootstrap ran the default stages"          'grep -qx "args: --only packages,aur,services,xmonad,verify" "$HOME/bootstrap.calls"'
+check "...on a tty, with sudo already cached"        'grep -qx "tty: yes" "$HOME/bootstrap.calls" && grep -qx "sudo: cached" "$HOME/bootstrap.calls"'
+check "...applied records sha and rc=0"              '[[ $("$fa" status) == "$second "*" rc=0 stages=packages aur services xmonad verify" ]]'
+check "...password nowhere on disk"                  '! grep -rq pw-ok "$HOME/.local/state" "$HOME/bootstrap.calls"'
+
+rm -f "$t/ticket" "$HOME/bootstrap.calls"
+out=$(echo pw-ok | "$fa" apply "${first:0:12}" services 2>&1); rc=$?
+check "pinned SHA on main: rc 0, detached at it"     '(( rc == 0 )) && [[ $(git -C "$repo" rev-parse HEAD) == "$first" ]]'
+check "...only the requested stage"                  'grep -qx "args: --only services" "$HOME/bootstrap.calls"'
+check "SHA not on origin/main refused"               '! echo pw-ok | "$fa" apply "$offmain" >/dev/null 2>&1'
+
+mkdir -p "$HOME/.config/fleet"; echo "packages: task 1 RAM window until 2026-10-11" > "$HOME/.config/fleet/hold"
+rm -f "$t/ticket" "$HOME/bootstrap.calls"
+out=$(echo pw-ok | "$fa" apply main 2>&1)
+check "hold: packages skipped and reported"          'grep -q "hold  packages: task 1 RAM window" <<<"$out" && grep -qx "args: --only aur,services,xmonad,verify" "$HOME/bootstrap.calls"'
+rm "$HOME/.config/fleet/hold"
+
+rm -f "$t/ticket" "$HOME/bootstrap.calls" "$t/sudo.fail"
+out=$(echo wrong | "$fa" apply main 2>&1); rc=$?
+check "wrong password: nonzero, bootstrap never ran" '(( rc != 0 )) && [[ ! -e $HOME/bootstrap.calls ]]'
+check "...exactly one sudo attempt"                  '[[ $(wc -l < "$t/sudo.fail") == 1 ]]'
+
+# ---- fleet push: stub ssh runs fleet-apply locally as the forced command, one state dir per host
+cat > "$t/bin/ssh" <<EOF
+#!/bin/bash
+host=\${@: -3:1}; host=\${host%%.*}; req="\${@: -2}"
+for a; do case \$a in *.ts.test) host=\${a%%.ts.test} ;; esac; done
+req=""; seen=0; for a; do if (( seen )); then req+="\$a "; fi; [[ \$a == *.ts.test ]] && seen=1; done
+echo "\$host" >> "$t/ssh.hosts"
+FLEET_STATE="$t/state-\$host" SSH_ORIGINAL_COMMAND="\${req% }" exec "$repo/tools/fleet-apply"
+EOF
+printf '#!/bin/sh\necho "SSH_AUTH_SOCK=/x; export SSH_AUTH_SOCK; SSH_AGENT_PID=1; export SSH_AGENT_PID;"\n' > "$t/bin/ssh-agent"
+printf '#!/bin/sh\nexit 0\n' > "$t/bin/ssh-add"
+printf '#!/bin/sh\necho "{\\"MagicDNSSuffix\\":\\"ts.test\\"}"\n' > "$t/bin/tailscale"
+chmod +x "$t/bin/"*; touch "$HOME/.ssh_dummy"; mkdir -p "$HOME/.ssh"; touch "$HOME/.ssh/id_ed25519_fleet"
+git -C "$repo" checkout -q main; git -C "$repo" reset -q --hard "$first"
+export FLEET_HOSTS="h1 h2" FLEET_SELF_HOST=self FLEET_STATE=$t/state-self
+mkdir -p "$t/state-h2"; echo "$second 2026-10-04T00:00:00 rc=0 stages=x" > "$t/state-h2/applied"   # h2 already has it
+rm -f "$t/ticket" "$t/ssh.hosts"
+out=$(echo pw-ok | "$repo/tools/fleet" push 2>&1); rc=$?
+check "push: self applied locally, h1 over ssh"      'grep -q "^self .*ok (${second:0:7})" <<<"$out" && grep -q "^h1 .*ok (${second:0:7})" <<<"$out"'
+check "...h2 skipped (already at main)"              'grep -q "^h2 .*skip (already at ${second:0:7})" <<<"$out"'
+check "...h1 now records main"                       '[[ $(cat "$t/state-h1/applied") == "$second "*" rc=0 "* ]]'
+rm -f "$t/ticket"; : > "$t/ssh.hosts"
+out=$(echo wrong | "$repo/tools/fleet" push 2>&1); rc=$?
+check "push with a wrong password: stops before any ssh" '(( rc != 0 )) && [[ ! -s "$t/ssh.hosts" ]]'
+
+# ---- the fleet line passes tools/authorized-keys check
+s=$t/secrets; mkdir -p "$s/ssh/pubkeys" "$s/ssh/fleet" "$s/ssh/authorized_keys"
+ssh-keygen -q -t ed25519 -N '' -C peer -f "$t/peer"; ssh-keygen -q -t ed25519 -N '' -C fleet -f "$t/fleetkey"
+cp "$t/peer.pub" "$s/ssh/pubkeys/micro.pub"; cp "$t/fleetkey.pub" "$s/ssh/fleet/micro.pub"
+{ printf 'from="100.64.0.9" %s\n' "$(cat "$t/peer.pub")"
+  printf 'from="100.64.0.9",command="%s/tools/fleet-apply",restrict %s\n' "$repo" "$(cat "$t/fleetkey.pub")"; } > "$s/ssh/authorized_keys/box"
+check "fleet forced-command line passes authorized-keys check" 'SECRETS_DIR=$s AK_HOST=box AK_LIVE=$t/live "$root/tools/authorized-keys" check >/dev/null'
+
+echo; echo "$pass passed, $fail failed"; (( fail == 0 ))

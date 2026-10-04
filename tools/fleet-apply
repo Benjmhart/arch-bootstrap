@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# fleet-apply -- the per-machine half of a fleet update driven from micro (tools/fleet;
+# station-maintenance beast-arch task 80). It is the forced command of micro's fleet key in
+# each machine's authorized_keys, so that key can run this and nothing else. On micro itself
+# tools/fleet runs it directly.
+#
+# Request (SSH_ORIGINAL_COMMAND over ssh, else the arguments):
+#   status                          print the last applied line ("<sha> <time> rc=<n> stages=...")
+#   apply <main|SHA> [stage ...]    update arch-bootstrap to latest main, or to SHA (which must be
+#                                   on origin/main -- the "last known safe commit" after a security
+#                                   event), fast-forward the dotfiles, then run the stages.
+#
+# For apply, the FIRST LINE OF STDIN is the shared sudo password. It is handed to `sudo -S -v`
+# on fd 3 inside a private pty (script), so sudo caches it for that pty and every sudo the
+# bootstrap runs there uses the ticket. It never goes to disk, argv or the environment. Prompts
+# inside the run read EOF and take their default (no): nothing unattended answers "yes".
+#
+# Stages are limited to ALLOWED. A stage named in ~/.config/fleet/hold ("stage: reason") is
+# skipped and reported -- e.g. beast-arch holds `packages` (it upgrades the kernel) while a
+# task-1 RAM window is open.
+set -euo pipefail
+umask 077
+REPO=${FLEET_REPO:-$HOME/projects/arch-bootstrap}
+STATE=${FLEET_STATE:-$HOME/.local/state/fleet}
+HOLD=${FLEET_HOLD:-$HOME/.config/fleet/hold}
+DOTDIR=${FLEET_DOTDIR:-$HOME/.dot}
+ALLOWED="packages aur toolchains services xmonad verify"
+DEFAULT="packages aur services xmonad verify"
+die() { echo "FAIL  $*"; exit 1; }
+
+read -r -a req <<<"${SSH_ORIGINAL_COMMAND:-$*}"
+case ${req[0]:-} in
+  status) cat "$STATE/applied" 2>/dev/null || echo "none"; exit 0 ;;
+  apply)  ;;
+  *)      die "request must be: status | apply <main|SHA> [stage ...]" ;;
+esac
+target=${req[1]:-}
+[[ $target == main || $target =~ ^[0-9a-f]{7,40}$ ]] || die "target must be main or a commit SHA: '$target'"
+stages=("${req[@]:2}")
+(( ${#stages[@]} )) || read -r -a stages <<<"$DEFAULT"
+for s in "${stages[@]}"; do [[ " $ALLOWED " == *" $s "* ]] || die "stage not allowed here: $s (allowed: $ALLOWED)"; done
+if [[ -f $HOLD ]]; then
+  keep=()
+  for s in "${stages[@]}"; do
+    reason=$(awk -v s="$s" -F': *' '$1 == s { sub(/^[^:]*: */, ""); print; exit }' "$HOLD")
+    if [[ -n $reason ]]; then echo "hold  $s: $reason"; else keep+=("$s"); fi
+  done
+  stages=(${keep[@]+"${keep[@]}"})
+fi
+IFS= read -r pw || die "no sudo password on stdin"
+
+# 1. Code: latest main, or a pinned commit that main contains.
+git -C "$REPO" fetch -q origin || die "arch-bootstrap fetch failed"
+if [[ $target == main ]]; then
+  git -C "$REPO" checkout -q main && git -C "$REPO" merge -q --ff-only origin/main \
+    || die "arch-bootstrap main cannot fast-forward (local commits?)"
+else
+  git -C "$REPO" rev-parse -q --verify "$target^{commit}" >/dev/null || die "unknown commit: $target"
+  git -C "$REPO" merge-base --is-ancestor "$target" origin/main || die "$target is not on origin/main"
+  git -C "$REPO" checkout -q --detach "$target"
+fi
+sha=$(git -C "$REPO" rev-parse HEAD)
+echo "ok    arch-bootstrap at ${sha:0:7}"
+
+# 2. Dotfiles: fast-forward when nothing local is in the way (a dirty file the update does not
+# touch is fine; git refuses otherwise, and that is reported, not forced).
+if [[ -d $DOTDIR ]]; then
+  dot=(git --git-dir="$DOTDIR" --work-tree="$HOME")
+  if "${dot[@]}" fetch -q origin && "${dot[@]}" merge -q --ff-only origin/master 2>/dev/null; then
+    echo "ok    dotfiles at $("${dot[@]}" rev-parse --short HEAD)"
+  else
+    echo "warn  dotfiles not fast-forwarded (local commits, or local changes in the way)"
+  fi
+fi
+
+# 3. Stages, in one pty so sudo's ticket covers the whole run.
+mkdir -p "$STATE"
+rc=0
+if (( ${#stages[@]} )); then
+  only=$(IFS=,; echo "${stages[*]}")
+  exec 3<<<"$pw"
+  unset pw
+  script -qfec "sudo -S -p '' -v <&3 && exec 3<&- && cd '$REPO' && ./bootstrap.sh --only $only" \
+    "$STATE/last.log" </dev/null || rc=$?
+  exec 3<&-
+else
+  unset pw
+  echo "info  no stages left to run"
+fi
+printf '%s %s rc=%s stages=%s\n' "$sha" "$(date -Iseconds)" "$rc" "${stages[*]:-none}" > "$STATE/applied"
+echo "done  rc=$rc (log: $STATE/last.log)"
+exit "$rc"
