@@ -3004,6 +3004,10 @@ ListenAddress $listen"
   # the box is unreachable in exactly the situation remote access is for.
   # RestartSec is here because the shipped unit already sets Restart=always --
   # what it lacks is a sane retry interval, not the restart itself.
+  # After= alone still lost the race at every boot: tailscaled is "started" seconds
+  # before it assigns the address, so sshd failed twice and logged errors before a
+  # retry bound (carbon task 11, 2026-10-04). ExecStartPre waits up to 60 s for the
+  # address; if it never comes, the start fails and Restart= tries again as before.
   local unitdir=/etc/systemd/system/sshd.service.d
   local unitfile="$unitdir/10-tailnet.conf"
   if [[ -z $listen ]]; then
@@ -3014,7 +3018,8 @@ After=tailscaled.service
 Wants=tailscaled.service
 
 [Service]
-RestartSec=5s"
+RestartSec=5s
+ExecStartPre=/usr/bin/timeout 60 /bin/sh -c 'until ip -o addr show | grep -qF \" $listen/\"; do sleep 1; done'"
   if [[ -f $unitfile ]] && [[ "$(cat "$unitfile")" == "$wantunit" ]]; then
     ok "sshd boot ordering already in place ($unitfile)"
   elif (( DRY_RUN )); then
