@@ -1825,6 +1825,21 @@ stage_dotfiles() {
   # a bare `pull`/`push` fails. Set it so new machines don't inherit that quirk.
   git_config_ensure "dotfiles" remote.origin.fetch \
     '+refs/heads/*:refs/remotes/origin/*' "${dot[@]}"
+  # Nor does a bare clone set an upstream, so a bare `pull` says "no tracking
+  # information" and `status -sb` shows no ahead/behind (beast-arch, 2026-10-03).
+  local br
+  if br="$("${dot[@]}" symbolic-ref --short HEAD 2>/dev/null)"; then
+    git_config_ensure "dotfiles" "branch.$br.remote" origin "${dot[@]}"
+    git_config_ensure "dotfiles" "branch.$br.merge" "refs/heads/$br" "${dot[@]}"
+    # The refspec above only takes effect at the next fetch; until origin/$br
+    # exists, status reports the upstream as gone.
+    "${dot[@]}" rev-parse -q --verify "refs/remotes/origin/$br" >/dev/null \
+      || run "${dot[@]}" fetch -q origin
+  elif (( DRY_RUN )); then
+    info "(dry run) would set the dotfiles branch upstream to origin"
+  else
+    warn "dotfiles HEAD is detached -- upstream not set"
+  fi
 
   if [[ -n $CONFIG_HOME_OVERRIDE ]]; then
     [[ -d $CONFIG_HOME_OVERRIDE ]] \
