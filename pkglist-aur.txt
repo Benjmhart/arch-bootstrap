@@ -8,5 +8,6 @@ otf-hasklig
 pacmixer
 rambox-pro-bin
 ventoy-bin
+xdg-desktop-portal-termfilechooser
 yay
 zoom
