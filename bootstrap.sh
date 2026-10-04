@@ -1741,7 +1741,16 @@ install_self_distributed_binaries() {
   # herdr -- terminal multiplexer. Referenced by xmonad's startup hook
   # (spawnOnOnce "2" "alacritty -e herdr"), so a machine without it fails at login
   # with "command not found".
-  [[ -n ${HERDR_MANIFEST:-} ]] || HERDR_MANIFEST="https://herdr.dev/latest.json"
+  # Pinned: the release publishes no checksum or attestation, so the sha256 here is
+  # the only integrity check (task 76). Bump both together; `herdr update` moves an
+  # installed copy past this pin, which only governs the first install.
+  local ver=0.9.3 arch sum asset
+  case "$(uname -m)" in
+    x86_64)         arch=linux-x86_64;  sum=18a8dc65f1c2fa485884344356dea1cfd911c6f06cf46fa78e193f4087f4dba7 ;;
+    aarch64|arm64)  arch=linux-aarch64; sum=4de7aa3e25678812e92960de64f7c2aaa1bca1f0f80a3c5e559837e231e1f5c0 ;;
+    *) warn "no herdr build for $(uname -m) -- skipping"; return 0 ;;
+  esac
+  asset="https://github.com/herdrdev/herdr/releases/download/v$ver/herdr-$arch"
 
   if have herdr; then
     ok "herdr present ($(herdr --version 2>/dev/null | head -1))"
@@ -1750,37 +1759,19 @@ install_self_distributed_binaries() {
   fi
 
   if (( DRY_RUN )); then
-    printf '%s  would run:%s install herdr from %s\n' "$C_DIM" "$C_RESET" "$HERDR_MANIFEST"
-    return 0
-  fi
-
-  local arch asset
-  case "$(uname -m)" in
-    x86_64)         arch=linux-x86_64  ;;
-    aarch64|arm64)  arch=linux-aarch64 ;;
-    *) warn "no herdr build for $(uname -m) -- skipping"; return 0 ;;
-  esac
-
-  info "resolving herdr $arch from $HERDR_MANIFEST"
-  # Deliberately no jq dependency -- this runs before much is installed.
-  asset="$(curl -fsSL "$HERDR_MANIFEST" 2>/dev/null \
-           | grep -o "\"$arch\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" \
-           | head -1 | sed 's/.*"\(https[^"]*\)".*/\1/' || true)"
-
-  if [[ -z $asset ]]; then
-    warn "could not resolve a herdr download URL -- install it by hand"
-    todo "see https://herdr.dev"
+    printf '%s  would run:%s install herdr %s from %s\n' "$C_DIM" "$C_RESET" "$ver" "$asset"
     return 0
   fi
 
   mkdir -p "$HOME/.local/bin"
-  if curl -fsSL "$asset" -o "$HOME/.local/bin/herdr.tmp"; then
+  if curl -fsSL "$asset" -o "$HOME/.local/bin/herdr.tmp" \
+     && echo "$sum  $HOME/.local/bin/herdr.tmp" | sha256sum -c --quiet; then
     chmod +x "$HOME/.local/bin/herdr.tmp"
     mv "$HOME/.local/bin/herdr.tmp" "$HOME/.local/bin/herdr"
     ok "herdr installed ($("$HOME/.local/bin/herdr" --version 2>/dev/null | head -1))"
   else
     rm -f "$HOME/.local/bin/herdr.tmp"
-    warn "herdr download failed from $asset"
+    warn "herdr download failed or checksum mismatch from $asset"
   fi
 
   case ":$PATH:" in
