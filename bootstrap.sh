@@ -3604,6 +3604,23 @@ LLMNR=no" "LLMNR off" && run sudo systemctl restart systemd-resolved
   return 0
 }
 
+# wireless-regdb's udev helper, set-wireless-regdom, exits 1 at every boot while no
+# country is uncommented in its conf file (carbon task 11, 2026-10-04). "00" is the
+# world domain: no fixed country, so right for a machine that travels, and Intel
+# cards with self-managed regulatory (LAR) pick the real country from nearby APs
+# anyway. A country already chosen by hand is left alone.
+set_wireless_regdom() {
+  local f=/etc/conf.d/wireless-regdom
+  [[ -f $f ]] || return 0
+  if grep -q '^WIRELESS_REGDOM=' "$f"; then
+    ok "wireless regdom: $(grep '^WIRELESS_REGDOM=' "$f" | tail -1)"
+  else
+    run sudo sh -c "echo 'WIRELESS_REGDOM=\"00\"   # arch-bootstrap: world domain' >> $f" \
+      && did "wireless regdom 00 (world) in $f, from the next boot"
+  fi
+  return 0
+}
+
 # Random-key encrypted swap on SWAP_PARTUUID. See the config comment for why
 # PARTUUID. Lines are appended to /etc/crypttab and /etc/fstab, never rewritten:
 # both hold this machine's other filesystems.
@@ -3756,6 +3773,7 @@ stage_services() {
   setup_kmscon
   setup_firewall
   disable_llmnr
+  set_wireless_regdom
   setup_encrypted_swap
   setup_media_drives
   configure_earlyoom
