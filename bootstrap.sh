@@ -2428,14 +2428,12 @@ stage_tailnet() {
   done
 
   # 7. Install this machine's tracked file as ~/.ssh/authorized_keys (checks it, backs
-  # up the live file, asks before dropping a live key), then the 15-minute user timer
-  # that keeps it in step with secrets from here on. Already enabled: just apply.
+  # up the live file, asks before dropping a live key), then the weekly user timer
+  # that keeps it in step with secrets from here on.
+  # Always enable, not just apply: it also rewrites the timer, so a schedule change
+  # in the tool reaches machines that already had it.
   if [[ -f $ak ]]; then
-    if systemctl --user is-enabled --quiet authorized-keys.timer 2>/dev/null; then
-      "$SCRIPT_DIR/tools/authorized-keys" apply || warn "authorized_keys not installed -- see above"
-    else
-      "$SCRIPT_DIR/tools/authorized-keys" enable || warn "authorized_keys not installed, no timer -- see above"
-    fi
+    "$SCRIPT_DIR/tools/authorized-keys" enable || warn "authorized_keys not installed, no timer -- see above"
   fi
   (( ak_changed )) && todo "commit and push the secrets repo (ssh/authorized_keys changed)"
   return 0

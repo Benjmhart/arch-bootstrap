@@ -84,8 +84,23 @@ expect 0  "enable: apply, then units + timer"  env AK_SYSTEMCTL=echo "$tool" ena
 [[ -f $HOME/.config/systemd/user/authorized-keys.timer ]] && grep -q 'enable --now authorized-keys.timer' <<<"$out" \
   && grep -q "ExecStart=$tool sync" "$HOME/.config/systemd/user/authorized-keys.service" \
   && { pass=$((pass+1)); echo "pass  ...unit files written, timer enabled"; } || { fail=$((fail+1)); echo "FAIL  enable units"; sed 's/^/        /' <<<"$out"; }
+tm=$HOME/.config/systemd/user/authorized-keys.timer
+grep -qx 'OnCalendar=weekly' "$tm" && grep -qx 'Persistent=true' "$tm" && ! grep -qE 'OnUnitActiveSec|OnBootSec' "$tm" \
+  && systemd-analyze calendar weekly >/dev/null \
+  && { pass=$((pass+1)); echo "pass  ...timer is weekly (no 15-min or boot trigger)"; } || { fail=$((fail+1)); echo "FAIL  timer schedule"; cat "$tm"; }
 rm -rf "$HOME/.config"; cat "$t/x.pub" >> "$src"     # now the check fails
 expect !0 "enable with a failing apply installs no timer"  env AK_SYSTEMCTL=echo "$tool" enable
 [[ ! -e $HOME/.config/systemd/user/authorized-keys.timer ]] && { pass=$((pass+1)); echo "pass  ...no unit written"; } || { fail=$((fail+1)); echo "FAIL  timer installed after failed apply"; }
+
+# ---- trigger: ssh stubbed on PATH; host "down" fails
+mkdir -p "$t/bin"
+printf '#!/bin/sh\necho "$@" >> "%s/ssh.log"\nfor a; do h=$a; case $a in -*|*=*) ;; *) break;; esac; done\n[ "$h" != down ]\n' "$t" > "$t/bin/ssh"
+sed -i 's/for a; do h=$a; case $a in -\*|\*=\*) ;; \*) break;; esac; done/h=$(printf "%s\\n" "$@" | grep -vE "^-|=" | head -1)/' "$t/bin/ssh"
+chmod +x "$t/bin/ssh"
+expect !0 "trigger with no host refuses"      env PATH="$t/bin:$PATH" "$tool" trigger
+expect 0  "trigger two reachable hosts"       env PATH="$t/bin:$PATH" "$tool" trigger up1 up2
+grep -c 'systemctl --user start authorized-keys.service' "$t/ssh.log" | grep -qx 2 \
+  && { pass=$((pass+1)); echo "pass  ...started the service on both"; } || { fail=$((fail+1)); echo "FAIL  trigger ssh calls"; cat "$t/ssh.log"; }
+expect !0 "trigger reports an unreachable host" env PATH="$t/bin:$PATH" "$tool" trigger up1 down
 
 echo; echo "$pass passed, $fail failed"; (( fail == 0 ))
