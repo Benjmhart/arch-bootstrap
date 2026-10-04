@@ -1,0 +1,223 @@
+#!/usr/bin/env python3
+"""xdg-migrate [--dry-run] -- move this machine's config from ~/.configure to ~/.config.
+
+Until 2026-10-04 every machine set XDG_CONFIG_HOME=~/.configure (CONFIG_HOME_OVERRIDE),
+while systemd user units and anything started without the shell's environment still
+read ~/.config. Apps ended up with a config in BOTH trees (deluge's daemon used one,
+deluge-console the other). Ben chose one tree for the fleet: ~/.config, the default.
+station-maintenance media-center task 3 has the reasoning.
+
+HOW (normal mode, ~/.configure is a real directory and the dotfiles are before the
+rename commit):
+  1. dotfiles fast-forward to the commit just before [xdg-migrate-rename].
+  2. Every entry of ~/.config is moved INTO ~/.configure (~/.config is small; the
+     GBs -- browser profiles -- live in ~/.configure, so they are never copied).
+     An app present in both trees is resolved WHOLE, never file-by-file (mixing two
+     browser profiles corrupts both): the dotfiles-tracked side wins, otherwise the
+     side written most recently. The loser is parked intact under
+     ~/.xdg-migrate-<stamp>/parked/, nothing is deleted.
+  3. ~/.config (now empty) is parked, ~/.configure is renamed to ~/.config, and
+     ~/.configure becomes a symlink to it. Renames keep inodes, so running programs
+     keep their open files, and anything that still names ~/.configure resolves
+     through the symlink.
+  4. dotfiles index reset to [xdg-migrate-rename] (a pure rename, so the work tree
+     already matches), then fast-forward to origin/master.
+
+REPAIR mode: the dotfiles already contain the rename commit (a plain pull happened)
+while ~/.configure is still a real directory. Tracked files are already in ~/.config;
+the leftovers in ~/.configure are merged into ~/.config by the same whole-entry rule.
+
+Same filesystem required (rename, not copy). Nothing needs root. Run it from a
+terminal inside the X session or over ssh; it prints every decision and writes them
+to ~/.xdg-migrate-<stamp>/report.txt.
+"""
+import os, subprocess, sys, time
+from pathlib import Path
+
+DRY = "--dry-run" in sys.argv
+HOME = Path(os.environ["HOME"])
+OLD, NEW = HOME / ".configure", HOME / ".config"
+STAMP = time.strftime("%Y%m%d-%H%M%S")
+WORK = HOME / f".xdg-migrate-{STAMP}"
+MARK = "[xdg-migrate-rename]"
+report = []
+
+def say(msg):
+    print(msg); report.append(msg)
+
+def die(msg):
+    say(f"FAIL  {msg}"); flush(); sys.exit(1)
+
+def flush():
+    if not DRY and WORK.exists():
+        (WORK / "report.txt").write_text("\n".join(report) + "\n")
+
+def git(*args, check=True):
+    r = subprocess.run(["git", f"--git-dir={HOME}/.dot", f"--work-tree={HOME}", *args],
+                       capture_output=True, text=True)
+    if check and r.returncode:
+        die(f"git {' '.join(args)}: {r.stderr.strip()}")
+    return r.stdout.strip()
+
+def newest(p: Path) -> float:
+    """Most recent mtime anywhere inside p (lstat, symlinks not followed)."""
+    best = p.lstat().st_mtime
+    if p.is_dir() and not p.is_symlink():
+        for root, dirs, files in os.walk(p, followlinks=False):
+            for n in dirs + files:
+                try:
+                    best = max(best, os.lstat(os.path.join(root, n)).st_mtime)
+                except FileNotFoundError:
+                    pass
+    return best
+
+def mv(src: Path, dst: Path):
+    say(f"  mv    {src} -> {dst}")
+    if not DRY:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        os.rename(src, dst)
+
+def park(p: Path, side: str):
+    mv(p, WORK / "parked" / side / p.name)
+
+def resolve(name, keep_dir: Path, other_dir: Path, tracked_in_keep: set, tracked_in_other: set):
+    """Entry `name` exists in both. Leave the winner at keep_dir/name."""
+    k, o = keep_dir / name, other_dir / name
+    if name in tracked_in_keep:
+        win, why = "keep", "tracked by dotfiles"
+    elif name in tracked_in_other:
+        win, why = "other", "tracked by dotfiles"
+    else:
+        nk, no = NEWEST[k], NEWEST[o]
+        win = "keep" if nk >= no else "other"
+        why = f"newest write {time.strftime('%F %T', time.localtime(max(nk, no)))}"
+    if win == "keep":
+        say(f"dual  {name}: {k} wins ({why}); {o} parked")
+        park(o, other_dir.name)
+    else:
+        say(f"dual  {name}: {o} wins ({why}); {k} parked")
+        park(k, keep_dir.name)
+        mv(o, k)
+
+NEWEST = {}
+def prescan(a: Path, b: Path):
+    """Walk every dual entry BEFORE any move, so the move loop is only renames and
+    no entry is absent from its path while a big browser profile is being walked."""
+    for name in sorted(set(os.listdir(a)) & set(os.listdir(b))):
+        for p in (a / name, b / name):
+            NEWEST[p] = newest(p)
+
+def top_tracked(rev, prefix):
+    out = git("ls-tree", "--name-only", rev, f"{prefix}/", check=False)
+    return {line.split("/", 1)[1] for line in out.splitlines() if "/" in line}
+
+# ---------------------------------------------------------------- preflight
+if OLD.is_symlink():
+    t = os.readlink(OLD)
+    say(f"ok    {OLD} is already a symlink -> {t}; nothing to do")
+    sys.exit(0 if Path(OLD).resolve() == NEW.resolve() else 1)
+if not OLD.is_dir():
+    die(f"{OLD} is neither a directory nor a symlink")
+NEW.mkdir(exist_ok=True)
+if OLD.stat().st_dev != NEW.stat().st_dev:
+    die(f"{OLD} and {NEW} are on different filesystems -- renames would copy; do it by hand")
+if git("status", "--porcelain", "--untracked-files=no"):
+    die("dotfiles have uncommitted changes to tracked files -- commit or discard them first:\n"
+        + git("status", "--short", "--untracked-files=no"))
+git("fetch", "-q", "origin")
+# The marker must be in the SUBJECT: a later commit's body may mention it.
+c1 = next((l.split(" ", 1)[0] for l in git("log", "origin/master", "--format=%H %s").splitlines()
+           if MARK in l.split(" ", 1)[1]), "")
+if not c1:
+    die(f"no commit marked {MARK} on origin/master yet")
+head = git("rev-parse", "HEAD")
+repair = subprocess.run(["git", f"--git-dir={HOME}/.dot", "merge-base", "--is-ancestor", c1, head]).returncode == 0
+say(f"{'DRY RUN -- ' if DRY else ''}xdg-migrate {STAMP}: {'REPAIR' if repair else 'normal'} mode, "
+    f"rename commit {c1[:7]}, dotfiles HEAD {head[:7]}")
+if not DRY:
+    WORK.mkdir()
+    (WORK / "before.txt").write_text(
+        f"{OLD}:\n" + "\n".join(sorted(os.listdir(OLD))) + f"\n\n{NEW}:\n" + "\n".join(sorted(os.listdir(NEW))) + "\n")
+
+# ---------------------------------------------------------------- move
+if not repair:
+    parent = git("rev-parse", f"{c1}^")
+    if subprocess.run(["git", f"--git-dir={HOME}/.dot", "merge-base", "--is-ancestor", head, parent]).returncode:
+        die(f"dotfiles HEAD {head[:7]} is not an ancestor of {parent[:7]} -- diverged; sort that out first")
+    if head != parent:
+        say(f"git   fast-forward dotfiles {head[:7]} -> {parent[:7]}")
+        if not DRY:
+            git("merge", "--ff-only", "-q", parent)
+    t_old, t_new = top_tracked(parent, ".configure"), top_tracked(parent, ".config")
+    prescan(OLD, NEW)
+    for name in sorted(os.listdir(NEW)):
+        if (OLD / name).exists() or (OLD / name).is_symlink():
+            resolve(name, OLD, NEW, t_old, t_new)
+        else:
+            mv(NEW / name, OLD / name)
+    left = os.listdir(NEW) if NEW.exists() and not DRY else []
+    if left:
+        die(f"{NEW} not empty after the merge: {left} (something wrote into it meanwhile?) -- re-run")
+    say(f"swap  {NEW} -> parked (empty); {OLD} -> {NEW}; {OLD} -> symlink")
+    if not DRY:
+        (WORK / "parked").mkdir(parents=True, exist_ok=True)
+        os.rename(NEW, WORK / "parked" / "empty-dot-config")
+        os.rename(OLD, NEW)
+        os.symlink(".config", OLD)
+        say(f"git   reset index to {c1[:7]} (pure rename: work tree already matches)")
+        git("reset", "-q", c1)
+else:
+    t_new = top_tracked("HEAD", ".config")
+    prescan(OLD, NEW)
+    for name in sorted(os.listdir(OLD)):
+        if not ((NEW / name).exists() or (NEW / name).is_symlink()):
+            mv(OLD / name, NEW / name)
+        elif name in t_new and (OLD / name).is_dir() and not (OLD / name).is_symlink():
+            # The pull moved this app's TRACKED files to ~/.config; its untracked state
+            # (sockets, tokens, caches) stayed in ~/.configure. Carry the tracked files
+            # back into the ~/.configure copy, keep that copy whole, park the rest.
+            say(f"dual  {name}: tracked files rejoin {OLD / name}, which wins (untracked state lives there)")
+            for rel in git("ls-files", f".config/{name}").splitlines():
+                src, dst = HOME / rel, OLD / name / rel.split("/", 2)[2]
+                if dst.exists() or dst.is_symlink():
+                    park(dst, f"dot-configure-shadowed/{name}")
+                mv(src, dst)
+            if any((NEW / name).iterdir()):
+                park(NEW / name, NEW.name)
+            elif not DRY:
+                (NEW / name).rmdir()
+            mv(OLD / name, NEW / name)
+        else:
+            resolve(name, NEW, OLD, t_new, set())
+    left = os.listdir(OLD) if not DRY else []
+    if left:
+        die(f"{OLD} not empty after the merge: {left} -- re-run")
+    say(f"swap  {OLD} (empty) -> parked; {OLD} -> symlink")
+    if not DRY:
+        (WORK / "parked").mkdir(parents=True, exist_ok=True)
+        os.rename(OLD, WORK / "parked" / "empty-dot-configure")
+        os.symlink(".config", OLD)
+
+# ---------------------------------------------------------------- finish
+if not DRY:
+    # A dual entry can have tracked files on BOTH sides (coc, fontconfig): the loser's
+    # are parked with it. Preflight required a clean tree, so the index copy is
+    # byte-identical to the parked one -- restore deletions from it.
+    gone = git("ls-files", "--deleted").splitlines()
+    if gone:
+        git("checkout", "--", *gone)
+        say(f"git   restored {len(gone)} tracked file(s) parked with a losing side: {' '.join(gone)}")
+    dirty = git("status", "--porcelain", "--untracked-files=no")
+    if dirty:
+        say("WARN  tracked files differ from the commit after the swap (left as is):\n" + dirty)
+    else:
+        say("ok    dotfiles work tree matches the index")
+        if git("merge", "--ff-only", "-q", "origin/master", check=False) == "" and \
+           git("rev-parse", "HEAD") == git("rev-parse", "origin/master"):
+            say(f"git   dotfiles fast-forwarded to origin/master {git('rev-parse', '--short', 'HEAD')}")
+        else:
+            say("WARN  dotfiles fast-forward to origin/master did not complete -- run it by hand")
+    say(f"done  {OLD} -> .config. Parked losers and report: {WORK}")
+    say("next  log out and back in (or reboot) so every process starts with XDG_CONFIG_HOME=~/.config;"
+        " until then the symlink keeps the old value working.")
+flush()

@@ -33,7 +33,8 @@ WALLPAPERS_REMOTE=""
 # stages (55 and the unit generation in 60) completely.
 OBSIDIAN_VAULT=""
 
-# Set ONLY if you use a non-standard config root, e.g. "$HOME/.configure".
+# Set ONLY if you use a non-standard config root. Ben's machines used
+# "$HOME/.configure" until 2026-10-04 (tools/xdg-migrate moved them to ~/.config).
 # Leave empty for the standard ~/.config.
 #
 # If you do set it, note that systemd user units still live in ~/.config/systemd/user

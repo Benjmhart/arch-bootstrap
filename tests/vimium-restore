@@ -38,7 +38,7 @@ except ImportError:
 REPO = Path(__file__).resolve().parent.parent
 TOOL = REPO / "tools" / "vimium-restore"
 BACKUP = Path(sys.argv[1]) if len(sys.argv) > 1 else \
-    Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".configure")) / "vimium-backup" / "vimium-options.json"
+    Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "vimium-backup" / "vimium-options.json"
 CHECKED = ["keyMappings", "linkHintCharacters", "searchUrl", "exclusionRules"]
 PORT = "9333"
 

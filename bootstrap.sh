@@ -2572,7 +2572,7 @@ EOF
   # Options -> Restore in every browser on every machine. It only needs the browser
   # CLOSED, which a first run from a TTY guarantees. From X with a browser open, it
   # says so and leaves a todo rather than failing the stage.
-  local vbackup="${XDG_CONFIG_HOME:-$HOME/.configure}/vimium-backup/vimium-options.json"
+  local vbackup="${XDG_CONFIG_HOME:-$HOME/.config}/vimium-backup/vimium-options.json"
   if [[ ! -f $vbackup ]]; then
     info "no Vimium backup at $vbackup -- skipping restore"
   elif (( DRY_RUN )); then

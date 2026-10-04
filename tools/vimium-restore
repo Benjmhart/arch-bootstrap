@@ -60,11 +60,11 @@ HOME = Path.home()
 
 
 def config_roots():
-    # The browsers honour XDG_CONFIG_HOME, which is ~/.configure on Ben's machines
-    # but is set by .zshrc, so it may be missing from this process. Check both
-    # spellings, and list each root only once.
+    # The browsers honour XDG_CONFIG_HOME, which may be missing from this process.
+    # ~/.configure was Ben's root until 2026-10-04 and is a symlink to ~/.config on
+    # migrated machines (tools/xdg-migrate); resolve() lists that root only once.
     roots = []
-    for r in (os.environ.get("XDG_CONFIG_HOME"), HOME / ".configure", HOME / ".config"):
+    for r in (os.environ.get("XDG_CONFIG_HOME"), HOME / ".config", HOME / ".configure"):
         if r and Path(r).is_dir() and Path(r).resolve() not in [x.resolve() for x in roots]:
             roots.append(Path(r))
     return roots
@@ -95,14 +95,14 @@ def targets(args):
                 yield (name, d, procs)
         elif browser_installed(name) and roots:
             # Not launched yet: prepare the dir it WILL use. The first root is
-            # XDG_CONFIG_HOME when set, otherwise ~/.configure if it exists.
+            # XDG_CONFIG_HOME when set, otherwise ~/.config.
             yield (name, roots[0] / subdir, procs)
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--backup", default=str(
-        Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".configure")) / "vimium-backup" / "vimium-options.json"))
+        Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config")) / "vimium-backup" / "vimium-options.json"))
     ap.add_argument("--browser", action="append", choices=sorted(BROWSERS))
     ap.add_argument("--profile", default="Default")
     ap.add_argument("--user-data-dir")
