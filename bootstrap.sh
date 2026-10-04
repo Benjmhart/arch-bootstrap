@@ -2277,7 +2277,20 @@ stage_tailnet() {
     fi
   fi
 
-  local peer fqdn ip pub body ak="$HOME/.ssh/authorized_keys" suffix
+  # Inbound access is the tracked file secrets ssh/authorized_keys/<host>, installed as
+  # ~/.ssh/authorized_keys by tools/authorized-keys (a checked copy). This stage edits
+  # the tracked files and then applies; it never appends to the live file. A file
+  # holding the line `# no-inbound` (micro) is never offered keys.
+  local akdir="$SECRETS_DIR/ssh/authorized_keys" ak_changed=0
+  local ak="$akdir/$self"
+  if [[ -d $SECRETS_DIR && ! -f $ak ]]; then
+    mkdir -p "$akdir"
+    printf '%s\n' "# $self: who may ssh in. Installed by arch-bootstrap tools/authorized-keys." \
+      '# Every line needs from="<peer tailnet IP>". Edit here, commit, then: tools/authorized-keys apply' > "$ak"
+    [[ $AUTHORIZE_PEERS == no ]] && echo '# no-inbound' >> "$ak"
+    did "created $ak"; ak_changed=1
+  fi
+  local peer fqdn ip pub body suffix
   suffix="$(tailscale status --json 2>/dev/null | jq -r '.MagicDNSSuffix // empty' 2>/dev/null || true)"
   for peer in $SSH_PEERS; do
     [[ $peer == "$self" ]] && continue
@@ -2302,44 +2315,47 @@ stage_tailnet() {
       info "$peer: not offered ssh access here (AUTHORIZE_PEERS=no)"
     elif [[ ! -f $pub ]]; then
       info "$peer: no key in secrets ($pub) -- cannot authorize it"
+    elif [[ ! -f $ak ]] || grep -qx '# no-inbound' "$ak"; then
+      info "$peer: not offered ssh access here (no tracked file, or # no-inbound)"
     else
       body="$(awk '{print $2}' "$pub")"
       if grep -qF "$body" "$ak" 2>/dev/null; then
-        ok "$peer may already ssh in here"
+        ok "$peer may ssh in here (tracked in $ak)"
       else
         ip="$(tailscale ip -4 "$peer" 2>/dev/null | head -n1 || true)"
         if [[ -n $ip ]] && confirm "let $peer ssh into this machine (from=\"$ip\" only)?"; then
-          install -d -m 700 "$HOME/.ssh"
           printf 'from="%s" %s\n' "$ip" "$(cat "$pub")" >> "$ak"
-          chmod 600 "$ak"
-          did "$peer authorized (from=$ip)"
+          did "$peer added to $ak (from=$ip)"; ak_changed=1
         elif [[ -z $ip ]]; then
           warn "$peer: no tailnet IP -- not authorized"
         fi
       fi
     fi
 
-    # 6. Outbound: can this machine ssh to $peer? If not, offer to carry the key there.
+    # 6. Outbound: can this machine ssh to $peer? If not, offer to add this machine to
+    # $peer's tracked file. It takes effect when $peer pulls secrets and applies.
+    local pak="$akdir/$peer"
     if ssh -o BatchMode=yes -o ConnectTimeout=8 "$peer" true 2>/dev/null; then
       ok "ssh to $peer works"
-    elif [[ -n ${mine:-} ]] && have wormhole \
-         && confirm "add this machine's key to $peer (wormhole; you run 'wormhole receive' there)?"; then
-      local script; script="$(mktemp --suffix=.sh)"
-      printf '%s\n' "K='from=\"$(tailscale ip -4 | head -n1)\" $mine'" \
-        'grep -qF "$(echo "$K" | awk "{print \$3}")" ~/.ssh/authorized_keys 2>/dev/null || { install -d -m 700 ~/.ssh; echo "$K" >> ~/.ssh/authorized_keys; chmod 600 ~/.ssh/authorized_keys; }' \
-        'grep -c "$(echo "$K" | awk "{print \$3}")" ~/.ssh/authorized_keys' > "$script"
-      info "on $peer:  wormhole receive <code>  &&  sh $(basename "$script")"
-      run_interactive wormhole send "$script" || true
-      rm -f "$script"
-      if ssh -o BatchMode=yes -o ConnectTimeout=8 "$peer" true 2>/dev/null; then
-        did "ssh to $peer works"
-      else
-        warn "ssh to $peer still fails -- check the tailnet policy grants this machine tcp:22 on $peer"
-      fi
-    else
-      info "ssh to $peer does not work; left alone"
+    elif [[ -z ${mine:-} || ! -f $pak ]] || grep -qx '# no-inbound' "$pak"; then
+      info "ssh to $peer does not work; left alone (no tracked file for it, or # no-inbound)"
+    elif grep -qF "$(awk '{print $2}' <<<"$mine")" "$pak"; then
+      info "ssh to $peer does not work yet, but $pak already lists this machine:"
+      info "  on $peer:  git -C ~/secrets pull && ~/projects/arch-bootstrap/tools/authorized-keys apply"
+    elif confirm "add this machine to $peer's authorized_keys (tracked in secrets)?"; then
+      printf 'from="%s" %s\n' "$(tailscale ip -4 | head -n1)" "$mine" >> "$pak"
+      did "this machine added to $pak"; ak_changed=1
+      todo "on $peer, after the secrets push:  git -C ~/secrets pull && ~/projects/arch-bootstrap/tools/authorized-keys apply"
     fi
   done
+
+  # 7. Install this machine's tracked file as ~/.ssh/authorized_keys (checks it, backs
+  # up the live file, asks before dropping a live key).
+  if [[ -f $ak ]]; then
+    "$SCRIPT_DIR/tools/authorized-keys" apply || warn "authorized_keys not installed -- see above"
+  fi
+  (( ak_changed )) && todo "commit and push the secrets repo (ssh/authorized_keys changed)"
+  return 0
 }
 
 stage_session() {

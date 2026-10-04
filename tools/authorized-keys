@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# authorized-keys [check|diff|apply] [--yes] -- this machine's ~/.ssh/authorized_keys,
+# installed from the secrets repo.
+#
+# The source of truth is $SECRETS_DIR/ssh/authorized_keys/<host>: tracked, so every
+# access change has history and is reviewed on push. ~/.ssh/authorized_keys is a
+# checked COPY of it, not a symlink. With a link, every `git pull` of secrets would
+# change who can log in without anything checking it, and sshd's StrictModes would
+# depend on the permissions of every directory above the secrets checkout.
+#
+#   check   validate the tracked file (the default)
+#   diff    check, then show what apply would change
+#   apply   check, back up the live file, install the copy (0600). Dropping a key
+#           that is live now asks first, unless --yes.
+#
+# A key line passes only if it parses (ssh-keygen -l), carries from="<one tailnet IP>"
+# (100.64.0.0/10), and its key is one of ssh/pubkeys/*.pub. A file with no key lines
+# is valid: no inbound ssh (micro). Lockout guard: inside an ssh session, apply
+# refuses unless the client's address is allowed by some from= line.
+#
+# Env for tests: SECRETS_DIR, AK_HOST (default: uname -n), AK_LIVE (default
+# ~/.ssh/authorized_keys).
+set -euo pipefail
+die() { printf 'FAIL  %s\n' "$*" >&2; exit 1; }
+
+cmd=check yes=0
+for a in "$@"; do
+  case $a in
+    check|diff|apply) cmd=$a ;;
+    --yes) yes=1 ;;
+    -h|--help) sed -n '2,/^set -euo/{/^set -euo/d;s/^# \{0,1\}//;p}' "$0"; exit 0 ;;
+    *) die "unknown argument: $a (check|diff|apply [--yes])" ;;
+  esac
+done
+
+SECRETS_DIR=${SECRETS_DIR:-$HOME/secrets}
+host=${AK_HOST:-$(uname -n)}
+src=$SECRETS_DIR/ssh/authorized_keys/$host
+live=${AK_LIVE:-$HOME/.ssh/authorized_keys}
+[[ -f $src ]] || die "no $src -- nothing tracked for $host"
+
+blob_of() { awk '{for (i=1;i<=NF;i++) if ($i ~ /^(ssh-|ecdsa-|sk-)/) {print $(i+1); exit}}'; }
+keylines() { grep -vE '^[[:space:]]*(#|$)' "$1" 2>/dev/null || true; }
+
+registry=$(for f in "$SECRETS_DIR"/ssh/pubkeys/*.pub; do [[ -f $f ]] && blob_of < "$f"; done)
+
+# ---- check
+allowed_ips=() seen=() bad=0 n=0
+while IFS= read -r line; do
+  n=$((n + 1))
+  blob=$(blob_of <<<"$line")
+  if [[ -z $blob ]] || ! ssh-keygen -lf - <<<"$line" >/dev/null 2>&1; then
+    echo "bad   line $n: not a public key line"; bad=1; continue
+  fi
+  if [[ $line =~ ^from=\"([0-9]+)\.([0-9]+)\.([0-9]+)\.([0-9]+)\"[[:space:],] ]] \
+     && (( BASH_REMATCH[1] == 100 && BASH_REMATCH[2] >= 64 && BASH_REMATCH[2] <= 127 )); then
+    allowed_ips+=("${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}.${BASH_REMATCH[4]}")
+  else
+    echo "bad   line $n: needs from=\"<one tailnet IP, 100.64.0.0/10>\" first"; bad=1
+  fi
+  grep -qxF "$blob" <<<"$registry" || { echo "bad   line $n: key not in ssh/pubkeys/"; bad=1; }
+  [[ " ${seen[*]} " == *" $blob "* ]] && { echo "bad   line $n: duplicate key"; bad=1; }
+  seen+=("$blob")
+done < <(keylines "$src")
+(( bad )) && die "$src failed the check -- nothing installed"
+echo "ok    $src: ${#seen[@]} key(s)${allowed_ips:+, from ${allowed_ips[*]}}"
+[[ $cmd == check ]] && exit 0
+
+# ---- diff
+dropped=()
+while IFS= read -r line; do
+  blob=$(blob_of <<<"$line"); [[ -n $blob ]] || continue
+  [[ " ${seen[*]} " == *" $blob "* ]] || dropped+=("$(awk '{print $NF}' <<<"$line")")
+done < <(keylines "$live")
+if cmp -s "$src" "$live"; then
+  echo "ok    $live already matches"; exit 0
+fi
+diff -u --label "$live (live)" --label "$src" <(keylines "$live") <(keylines "$src") || true
+[[ $cmd == diff ]] && exit 0
+
+# ---- apply
+client=${SSH_CONNECTION:-}; client=${client%% *}
+if [[ -n $client ]] && [[ " ${allowed_ips[*]} " != *" $client "* ]]; then
+  die "this ssh session comes from $client, which no from= line allows -- refusing (lockout)"
+fi
+if (( ${#dropped[@]} && ! yes )); then
+  [[ -t 0 ]] || die "would drop live key(s): ${dropped[*]} -- re-run with --yes, or from a terminal"
+  read -r -p "drop live key(s) ${dropped[*]}? [y/N] " ans
+  [[ $ans == [yY]* ]] || die "nothing installed"
+fi
+install -d -m 700 "$(dirname "$live")"
+[[ -f $live ]] && cp -p "$live" "$live.bak-$(date +%Y%m%d-%H%M%S)"
+tmp=$(mktemp "$live.XXXXXX")
+cat "$src" > "$tmp"
+chmod 600 "$tmp"
+mv -f "$tmp" "$live"
+echo "done  installed $src -> $live"

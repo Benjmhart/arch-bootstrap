@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# tests/authorized-keys -- exercises tools/authorized-keys against a fake secrets repo
+# and a fake live file in a temp dir. Never touches ~/.ssh. Run: tests/authorized-keys
+set -uo pipefail
+tool=$(cd "$(dirname "$0")/.." && pwd)/tools/authorized-keys
+t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
+export SECRETS_DIR=$t/secrets AK_HOST=box AK_LIVE=$t/ssh/authorized_keys
+unset SSH_CONNECTION
+mkdir -p "$SECRETS_DIR/ssh/pubkeys" "$SECRETS_DIR/ssh/authorized_keys"
+for h in a b c; do ssh-keygen -q -t ed25519 -N '' -C "ben@$h" -f "$t/$h"; cp "$t/$h.pub" "$SECRETS_DIR/ssh/pubkeys/$h.pub"; done
+ssh-keygen -q -t ed25519 -N '' -C stranger -f "$t/x"
+src=$SECRETS_DIR/ssh/authorized_keys/box
+line() { printf 'from="%s" %s\n' "$1" "$(cat "$t/$2.pub")"; }
+
+pass=0 fail=0
+expect() {  # expect <want-rc> <name> <cmd...>
+  local want=$1 name=$2; shift 2
+  out=$("$@" </dev/null 2>&1); rc=$?
+  if { [[ $want == 0 ]] && (( rc == 0 )); } || { [[ $want == !0 ]] && (( rc != 0 )); }; then
+    pass=$((pass+1)); echo "pass  $name"
+  else
+    fail=$((fail+1)); echo "FAIL  $name (rc=$rc)"; sed 's/^/        /' <<<"$out"
+  fi
+}
+
+{ echo '# header'; line 100.64.0.1 a; line 100.100.1.2 b; } > "$src"
+expect 0  "valid file checks"                "$tool" check
+expect 0  "apply to an absent live file"     "$tool" apply
+cmp -s "$src" "$AK_LIVE" && [[ $(stat -c %a "$AK_LIVE") == 600 ]] \
+  && { pass=$((pass+1)); echo "pass  live file is the copy, mode 600"; } \
+  || { fail=$((fail+1)); echo "FAIL  live file content or mode"; }
+expect 0  "second apply is a no-op"          "$tool" apply
+grep -q 'already matches' <<<"$out" && { pass=$((pass+1)); echo "pass  ...and says so"; } || { fail=$((fail+1)); echo "FAIL  no-op message"; }
+
+{ line 100.64.0.1 a; } > "$src"
+expect !0 "dropping a live key needs --yes without a tty" "$tool" apply
+grep -q 'ben@b' "$AK_LIVE" && { pass=$((pass+1)); echo "pass  ...and the live file is untouched"; } || { fail=$((fail+1)); echo "FAIL  live file changed"; }
+expect 0  "dropping with --yes"              "$tool" apply --yes
+ls "$t/ssh/" | grep -q 'authorized_keys.bak-' && { pass=$((pass+1)); echo "pass  backup written"; } || { fail=$((fail+1)); echo "FAIL  no backup"; }
+
+cat "$t/a.pub" > "$src";                       expect !0 "line without from= rejected"   "$tool" check
+line 192.168.1.5 a > "$src";                   expect !0 "non-tailnet from= rejected"    "$tool" check
+line 100.128.0.1 a > "$src";                   expect !0 "100.128/9 is not tailnet"      "$tool" check
+line 100.64.0.1 x > "$src";                    expect !0 "key not in registry rejected"  "$tool" check
+{ line 100.64.0.1 a; line 100.64.0.2 a; } > "$src"; expect !0 "duplicate key rejected" "$tool" check
+echo 'from="100.64.0.1" garbage' > "$src";     expect !0 "unparsable line rejected"      "$tool" check
+line 100.64.0.1 x > "$src"; cp "$AK_LIVE" "$t/before"
+"$tool" apply --yes >/dev/null 2>&1; cmp -s "$t/before" "$AK_LIVE" \
+  && { pass=$((pass+1)); echo "pass  a failed check installs nothing"; } || { fail=$((fail+1)); echo "FAIL  bad file was installed"; }
+
+echo '# no inbound' > "$src";                  expect 0  "empty file is valid (micro)"   "$tool" check
+
+{ line 100.64.0.1 a; line 100.64.0.3 c; } > "$src"   # differs from live, so apply reaches the guard
+expect !0 "lockout guard: session from an IP no line allows" env SSH_CONNECTION="100.64.0.9 5000 100.64.0.1 22" "$tool" apply --yes
+expect 0  "session from an allowed IP applies"               env SSH_CONNECTION="100.64.0.1 5000 100.64.0.2 22" "$tool" apply --yes
+rm "$src";                                     expect !0 "missing tracked file is an error" "$tool" check
+
+echo; echo "$pass passed, $fail failed"; (( fail == 0 ))
