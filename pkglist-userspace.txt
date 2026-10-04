@@ -70,6 +70,7 @@ obs-studio
 ollama
 openbsd-netcat
 openssh
+pacman-contrib
 pandoc-cli
 pango
 pastebinit

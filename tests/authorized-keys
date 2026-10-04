@@ -55,4 +55,37 @@ expect !0 "lockout guard: session from an IP no line allows" env SSH_CONNECTION=
 expect 0  "session from an allowed IP applies"               env SSH_CONNECTION="100.64.0.1 5000 100.64.0.2 22" "$tool" apply --yes
 rm "$src";                                     expect !0 "missing tracked file is an error" "$tool" check
 
+# ---- remove-everything guard
+line 100.64.0.1 a > "$src"; "$tool" apply --yes >/dev/null 2>&1
+echo '# emptied by mistake' > "$src"; expect !0 "refuses to remove every key"            "$tool" apply --yes
+printf '# x\n# no-inbound\n' > "$src";  expect 0  "...unless the file says # no-inbound"  "$tool" apply --yes
+
+# ---- sync: a real git origin and clone
+git init -q --bare "$t/origin.git"
+git -C "$SECRETS_DIR" init -q -b master; git -C "$SECRETS_DIR" add -A
+git -C "$SECRETS_DIR" -c user.name=t -c user.email=t@t commit -qm init
+git -C "$SECRETS_DIR" remote add origin "$t/origin.git"; git -C "$SECRETS_DIR" push -q -u origin master
+git clone -q "$t/origin.git" "$t/other"   # the machine where the change is made
+line 100.64.0.1 a > "$t/other/ssh/authorized_keys/box"
+git -C "$t/other" -c user.name=t -c user.email=t@t commit -qam "grant a"; git -C "$t/other" push -q
+echo vault-v1 > "$SECRETS_DIR/vault"   # an uncommitted local file, like Passwords.kdbx
+expect 0  "sync fast-forwards an ssh/-only change and applies it" "$tool" sync
+grep -q ben@a "$AK_LIVE" && { pass=$((pass+1)); echo "pass  ...key a now live"; } || { fail=$((fail+1)); echo "FAIL  sync did not apply"; }
+echo note > "$t/other/README"; line 100.64.0.2 b >> "$t/other/ssh/authorized_keys/box"
+git -C "$t/other" add -A; git -C "$t/other" -c user.name=t -c user.email=t@t commit -qm "readme + grant b"; git -C "$t/other" push -q
+expect 0  "sync with a change outside ssh/ does not pull"         "$tool" sync
+grep -q 'outside ssh/' <<<"$out" && ! grep -q ben@b "$AK_LIVE" \
+  && { pass=$((pass+1)); echo "pass  ...said so, and b is not live"; } || { fail=$((fail+1)); echo "FAIL  sync pulled a non-ssh change"; }
+
+# ---- enable: units written to the fake HOME, systemctl stubbed
+git -C "$SECRETS_DIR" pull -q --ff-only
+export HOME=$t/home; mkdir -p "$HOME"
+expect 0  "enable: apply, then units + timer"  env AK_SYSTEMCTL=echo "$tool" enable --yes
+[[ -f $HOME/.config/systemd/user/authorized-keys.timer ]] && grep -q 'enable --now authorized-keys.timer' <<<"$out" \
+  && grep -q "ExecStart=$tool sync" "$HOME/.config/systemd/user/authorized-keys.service" \
+  && { pass=$((pass+1)); echo "pass  ...unit files written, timer enabled"; } || { fail=$((fail+1)); echo "FAIL  enable units"; sed 's/^/        /' <<<"$out"; }
+rm -rf "$HOME/.config"; cat "$t/x.pub" >> "$src"     # now the check fails
+expect !0 "enable with a failing apply installs no timer"  env AK_SYSTEMCTL=echo "$tool" enable
+[[ ! -e $HOME/.config/systemd/user/authorized-keys.timer ]] && { pass=$((pass+1)); echo "pass  ...no unit written"; } || { fail=$((fail+1)); echo "FAIL  timer installed after failed apply"; }
+
 echo; echo "$pass passed, $fail failed"; (( fail == 0 ))

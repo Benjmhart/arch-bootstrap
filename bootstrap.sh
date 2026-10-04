@@ -2350,9 +2350,14 @@ stage_tailnet() {
   done
 
   # 7. Install this machine's tracked file as ~/.ssh/authorized_keys (checks it, backs
-  # up the live file, asks before dropping a live key).
+  # up the live file, asks before dropping a live key), then the 15-minute user timer
+  # that keeps it in step with secrets from here on. Already enabled: just apply.
   if [[ -f $ak ]]; then
-    "$SCRIPT_DIR/tools/authorized-keys" apply || warn "authorized_keys not installed -- see above"
+    if systemctl --user is-enabled --quiet authorized-keys.timer 2>/dev/null; then
+      "$SCRIPT_DIR/tools/authorized-keys" apply || warn "authorized_keys not installed -- see above"
+    else
+      "$SCRIPT_DIR/tools/authorized-keys" enable || warn "authorized_keys not installed, no timer -- see above"
+    fi
   fi
   (( ak_changed )) && todo "commit and push the secrets repo (ssh/authorized_keys changed)"
   return 0
@@ -2851,6 +2856,7 @@ SYSTEM_UNITS=(
   "earlyoom|earlyoom.service|kills a memory hog before the box livelocks"
   "tailscale|tailscaled.service|mesh VPN; joining a tailnet is a separate manual step"
   "openssh|sshd.service|remote shell; harden_sshd() writes the config it needs"
+  "pacman-contrib|paccache.timer|weekly: keeps 3 versions per package in /var/cache/pacman, which is on the root filesystem"
   "jellyfin-server|jellyfin.service|media server (profile media-center); web UI on port 8096"
 )
 
