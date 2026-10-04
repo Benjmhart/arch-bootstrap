@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# tests/deploy-keys -- tools/deploy-keys in a temp HOME. ssh is a stub that serves local bare
+# repos (real git protocol) only for aliases listed in $t/registered; gh is a stub that
+# records registrations. Never touches ~/.ssh or GitHub.
+set -uo pipefail
+tool=$(cd "$(dirname "$0")/.." && pwd)/tools/deploy-keys
+t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
+export HOME=$t/home SECRETS_DIR=$t/home/secrets DK_HOST=box DK_SSH_DIR=$t/home/.ssh
+export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
+export DEPLOY_REPOS="me/alpha me/beta" DK_CLONES="$t/home/.dot $t/home/secrets $t/home/projects/beta"
+mkdir -p "$HOME/projects" "$t/bin" "$t/remote/me"
+for r in alpha beta secrets; do git init -q --bare "$t/remote/me/$r.git"; done
+git init -q "$SECRETS_DIR"; git -C "$SECRETS_DIR" commit -q --allow-empty -m init
+git -C "$SECRETS_DIR" remote add origin git@github.com:me/secrets.git
+git init -q --bare "$HOME/.dot"; git --git-dir="$HOME/.dot" remote add origin git@github.com:me/alpha.git
+git init -q "$HOME/projects/beta"; git -C "$HOME/projects/beta" remote add origin git@github.com:me/beta.git
+touch "$t/registered"
+
+cat > "$t/bin/ssh" <<EOF
+#!/bin/bash
+# last two args: user@alias and the remote command, e.g. "git-upload-pack 'me/alpha.git'"
+dest=\${@: -2:1}; cmd=\${@: -1}; a=\${dest#*@}
+grep -qx "\$a" "$t/registered" || { echo "Permission denied (publickey)." >&2; exit 255; }
+path=\$(sed -E "s/^git-upload-pack '?([^']*)'?\$/\1/" <<<"\$cmd")
+exec git-upload-pack "$t/remote/\$path"
+EOF
+cat > "$t/bin/gh" <<EOF
+#!/bin/bash
+echo "\$*" >> "$t/gh.log"
+if [[ \$* == *"-X POST"* ]]; then exit 0; fi
+cat "$t/gh-keys" 2>/dev/null; exit 0
+EOF
+chmod +x "$t/bin/ssh" "$t/bin/gh"; export PATH="$t/bin:$PATH"
+
+pass=0 fail=0
+check() { if eval "$2"; then pass=$((pass+1)); echo "pass  $1"; else fail=$((fail+1)); echo "FAIL  $1"; fi; }
+
+out=$("$tool" setup 2>&1)
+check "setup: one key per repo, private 600"   '[[ -f $DK_SSH_DIR/deploy_alpha && -f $DK_SSH_DIR/deploy_beta && $(stat -c %a $DK_SSH_DIR/deploy_alpha) == 600 ]]'
+check "setup: keys differ"                      '! cmp -s $DK_SSH_DIR/deploy_alpha.pub $DK_SSH_DIR/deploy_beta.pub'
+check "setup: pubs published to the registry"   'cmp -s $DK_SSH_DIR/deploy_alpha.pub $SECRETS_DIR/ssh/deploy/box/alpha.pub'
+check "setup: no private key in secrets"        '! grep -rq PRIVATE $SECRETS_DIR/ssh'
+g=$(/usr/bin/ssh -G -F "$DK_SSH_DIR/config" github-beta)
+check "setup: stanza per repo, IdentitiesOnly"  'grep -qx "hostname github.com" <<<"$g" && grep -qx "identitiesonly yes" <<<"$g" && grep -qx "identityfile $DK_SSH_DIR/deploy_beta" <<<"$g"'
+check "setup: says commit + register"           'grep -q "tools/deploy-keys register" <<<"$out"'
+before=$(cat "$DK_SSH_DIR/config")
+"$tool" setup >/dev/null 2>&1
+check "setup again: idempotent"                 '[[ $(cat $DK_SSH_DIR/config) == "$before" ]]'
+
+"$tool" switch >/dev/null 2>&1; rc=$?
+check "switch before register: nonzero"         '(( rc != 0 ))'
+check "...and no remote changed"                '[[ $(git -C $HOME/projects/beta remote get-url origin) == git@github.com:me/beta.git ]]'
+
+"$tool" register > "$t/reg.out" 2>&1
+check "register: two write POSTs"               '[[ $(grep -c "X POST repos/me/.*/keys.*read_only=false" $t/gh.log) == 2 ]]'
+check "register: titled by host"                'grep -q "title=box (arch-bootstrap deploy-keys)" $t/gh.log'
+awk '{print $2}' "$SECRETS_DIR"/ssh/deploy/box/*.pub > "$t/gh-keys"; : > "$t/gh.log"
+"$tool" register >/dev/null 2>&1
+check "register again: skips known keys"        '! grep -q "X POST" $t/gh.log'
+
+echo github-alpha > "$t/registered"            # only alpha registered on "GitHub"
+"$tool" switch > "$t/sw.out" 2>&1
+check "switch: alpha (bare dotfiles) moved"     '[[ $(git --git-dir=$HOME/.dot remote get-url origin) == git@github-alpha:me/alpha.git ]]'
+check "switch: beta waits (not authenticated)"  '[[ $(git -C $HOME/projects/beta remote get-url origin) == git@github.com:me/beta.git ]] && grep -q "wait  me/beta" $t/sw.out'
+check "switch: secrets untouched (not listed)"  '[[ $(git -C $SECRETS_DIR remote get-url origin) == git@github.com:me/secrets.git ]]'
+echo github-beta >> "$t/registered"
+"$tool" switch >/dev/null 2>&1; rc=$?
+check "switch: all moved, exit 0"               '(( rc == 0 )) && [[ $(git -C $HOME/projects/beta remote get-url origin) == git@github-beta:me/beta.git ]]'
+check "...and the switched remote fetches"      'git -C $HOME/projects/beta fetch -q origin 2>/dev/null'
+
+echo; echo "$pass passed, $fail failed"; (( fail == 0 ))

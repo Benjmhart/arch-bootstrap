@@ -103,6 +103,10 @@ AUTHORIZE_PEERS="${AUTHORIZE_PEERS:-ask}"
 # This machine's own key for ssh to the peers (stage 75 generates it; never copied
 # between machines). The GitHub key stays separate.
 PEER_KEY="${PEER_KEY:-$HOME/.ssh/id_ed25519_peer}"
+# GitHub repos ("owner/repo ...") this machine pushes to with per-repo deploy keys instead
+# of a key on the GitHub account (stage 75, tools/deploy-keys). Set on micro and
+# media-center, so neither can reach anything else on the account. Empty = account key.
+DEPLOY_REPOS="${DEPLOY_REPOS:-}"
 
 # Chores to enable on this machine: names of directories under chores/, each with a
 # chore-NAME.timer. See chores/chore-run for the protocol. Empty = none.
@@ -2298,6 +2302,16 @@ stage_tailnet() {
     grep -qx '# no-inbound' "$SECRETS_DIR/ssh/authorized_keys/$h" 2>/dev/null && continue
     warn "$h has a key in secrets but is not in SSH_PEERS -- ssh to it will not use $PEER_KEY"
   done
+
+  # 3a'. Deploy keys: this machine's own key per repo in DEPLOY_REPOS. setup publishes
+  # the public halves to secrets; beast-arch/carbon register them (tools/deploy-keys
+  # register); switch then moves each clone's remote once its key authenticates.
+  if [[ -n $DEPLOY_REPOS && -d $SECRETS_DIR ]]; then
+    DEPLOY_REPOS=$DEPLOY_REPOS SECRETS_DIR=$SECRETS_DIR "$SCRIPT_DIR/tools/deploy-keys" setup \
+      || warn "deploy-keys setup failed -- see above"
+    DEPLOY_REPOS=$DEPLOY_REPOS SECRETS_DIR=$SECRETS_DIR "$SCRIPT_DIR/tools/deploy-keys" switch \
+      || info "some repos still on the account key until their deploy keys are registered"
+  fi
 
   # 3b. Publish this machine's public key to the secrets repo, for the others to read.
   # The peer key if there is one, else the old default. A changed key is swapped into

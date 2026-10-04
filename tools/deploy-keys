@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+# deploy-keys [setup|register|switch|status] -- per-repo GitHub deploy keys, for machines
+# that must not hold a key on the GitHub account (micro, media-center: station-maintenance
+# beast-arch task 76). A deploy key opens exactly one repo, so these machines can push to
+# the repos listed for them and nothing else -- never mlabs-haskell.
+#
+# Each machine generates its own key per repo; private halves never leave it. Only the
+# public halves are shared, through secrets ssh/deploy/<host>/<repo>.pub (history, review).
+#
+#   setup     on the machine. For each owner/repo in DEPLOY_REPOS: create ~/.ssh/deploy_<repo>
+#             if missing, publish its .pub to secrets, and write a `Host github-<repo>` stanza
+#             (IdentitiesOnly) to ~/.ssh/config. Then commit + push secrets (still on the old
+#             account key at this point), and run `register` on beast-arch or carbon.
+#   register  on beast-arch/carbon (needs `gh`, repo scope). Adds every ssh/deploy/*/*.pub
+#             to its repo as a WRITE deploy key, titled "<host> (arch-bootstrap deploy-keys)".
+#             Keys GitHub already has are skipped.
+#   switch    on the machine. Points each local clone whose origin is
+#             git@github.com:<owner>/<repo>.git at git@github-<repo>:<owner>/<repo>.git --
+#             only after `git ls-remote` through the alias works (i.e. the key is registered).
+#   status    on the machine: each repo's key, stanza, and whether the alias authenticates.
+#
+# Env: DEPLOY_REPOS ("owner/repo ..."), SECRETS_DIR (~/secrets), DK_HOST (uname -n),
+# DK_SSH_DIR (~/.ssh), DK_CLONES (where to look for clones: ~/.dot ~/secrets ~/projects/*).
+set -euo pipefail
+die() { printf 'FAIL  %s\n' "$*" >&2; exit 1; }
+
+cmd=${1:-status}
+SECRETS_DIR=${SECRETS_DIR:-$HOME/secrets}
+host=${DK_HOST:-$(uname -n)}
+sshdir=${DK_SSH_DIR:-$HOME/.ssh}
+reg=$SECRETS_DIR/ssh/deploy
+read -r -a repos <<<"${DEPLOY_REPOS:-}"
+
+need_repos() { (( ${#repos[@]} )) || die "DEPLOY_REPOS is empty -- nothing to do on $host"; }
+alias_of() { echo "github-${1#*/}"; }
+authenticates() {  # owner/repo -> 0 if the deploy key alone can read it
+  GIT_SSH_COMMAND="ssh -F $sshdir/config -o BatchMode=yes -o ConnectTimeout=8" \
+    git ls-remote -q "git@$(alias_of "$1"):$1.git" HEAD >/dev/null 2>&1
+}
+
+case $cmd in
+setup)
+  need_repos
+  install -d -m 700 "$sshdir"; touch "$sshdir/config"; chmod 600 "$sshdir/config"
+  mkdir -p "$reg/$host"
+  for r in "${repos[@]}"; do
+    name=${r#*/}; key=$sshdir/deploy_$name; a=$(alias_of "$r")
+    if [[ ! -f $key ]]; then
+      # Empty passphrase on purpose: `system push` and the authorized-keys timer run
+      # unattended, and the key opens one repo only.
+      ssh-keygen -q -t ed25519 -N '' -C "$host deploy $r" -f "$key"
+      echo "did   generated $key"
+    fi
+    pub=$reg/$host/$name.pub
+    if ! cmp -s "$key.pub" "$pub"; then cp "$key.pub" "$pub"; echo "did   published $pub"; fi
+    if ! grep -qx "Host $a" "$sshdir/config"; then
+      # Prepend: ssh takes the first value per keyword, so a later `Host *` cannot win.
+      { printf '# arch-bootstrap deploy-keys: %s\nHost %s\n    HostName github.com\n    User git\n    IdentityFile %s\n    IdentitiesOnly yes\n\n' "$r" "$a" "$key"
+        cat "$sshdir/config"; } > "$sshdir/config.tmp" && mv "$sshdir/config.tmp" "$sshdir/config"
+      chmod 600 "$sshdir/config"; echo "did   ssh stanza Host $a"
+    fi
+  done
+  if [[ -n $(git -C "$SECRETS_DIR" status --porcelain -- ssh/deploy 2>/dev/null) ]]; then
+    echo "todo  git -C $SECRETS_DIR add ssh/deploy && git -C $SECRETS_DIR commit -m '$host: deploy keys' && git -C $SECRETS_DIR push"
+    echo "todo  then on beast-arch or carbon: tools/deploy-keys register; then here: tools/deploy-keys switch"
+  fi
+  ;;
+register)
+  shopt -s nullglob
+  for pub in "$reg"/*/*.pub; do
+    h=$(basename "$(dirname "$pub")"); name=$(basename "$pub" .pub)
+    r=$(awk '{print $NF}' "$pub")            # comment is "<host> deploy <owner/repo>"
+    [[ $r == */"$name" ]] || { echo "skip  $pub: comment does not name owner/$name"; continue; }
+    blob=$(awk '{print $2}' "$pub")
+    if gh api "repos/$r/keys" -q '.[].key' | grep -qF "$blob"; then
+      echo "ok    $r: $h's key already registered"
+    else
+      gh api -X POST "repos/$r/keys" -f title="$h (arch-bootstrap deploy-keys)" \
+        -f key="$(awk '{print $1, $2}' "$pub")" -F read_only=false >/dev/null
+      echo "did   $r: registered $h's key (write)"
+    fi
+  done
+  ;;
+switch|status)
+  need_repos
+  read -r -a clones <<<"${DK_CLONES:-$HOME/.dot $SECRETS_DIR $(printf '%s ' "$HOME"/projects/*)}"
+  rc=0
+  for r in "${repos[@]}"; do
+    a=$(alias_of "$r"); old="git@github.com:$r.git"; new="git@$a:$r.git"
+    if authenticates "$r"; then auth=yes; else auth=no; rc=1; fi
+    found=0
+    for c in "${clones[@]}"; do
+      [[ -d $c/.git ]] && g=(git -C "$c") || g=(git --git-dir="$c")
+      url=$("${g[@]}" remote get-url origin 2>/dev/null) || continue
+      [[ $url == "$old" || $url == "$new" ]] || continue
+      found=1
+      if [[ $url == "$new" ]]; then echo "ok    $r: $c already uses $a"
+      elif [[ $cmd == status ]]; then echo "info  $r: $c on the account key; alias authenticates: $auth"
+      elif [[ $auth == yes ]]; then "${g[@]}" remote set-url origin "$new"; echo "did   $r: $c -> $new"
+      else echo "wait  $r: $a does not authenticate yet (registered? see: tools/deploy-keys register)"
+      fi
+    done
+    (( found )) || echo "info  $r: no clone here (auth via $a: $auth)"
+  done
+  exit $rc
+  ;;
+*) die "unknown command: $cmd (setup|register|switch|status)" ;;
+esac
