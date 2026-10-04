@@ -3344,6 +3344,17 @@ install_browser_search_policy() {
     put_etc_file "$d/policies/managed/search-duckduckgo.json" "$chromium_family" \
       "DuckDuckGo default search" || true
   done
+  # Vimium in Vivaldi, fetched from Google's update service by the browser itself on
+  # its next start -- no Web Store visit (task 22). normal_installed: installed and
+  # kept installed, but it can be disabled. Settings come from tools/vimium-restore.
+  put_etc_file /etc/vivaldi/policies/managed/extensions.json '{
+  "ExtensionSettings": {
+    "dbepggeogbaibhgnhhndojpepiihcmeb": {
+      "installation_mode": "normal_installed",
+      "update_url": "https://clients2.google.com/service/update2/crx"
+    }
+  }
+}' "Vimium for Vivaldi (installed by policy)" || true
   # Firefox reads one policies.json, not a directory; nothing else writes it yet.
   put_etc_file /etc/firefox/policies/policies.json \
     '{ "policies": { "SearchEngines": { "Default": "DuckDuckGo" } } }' \
