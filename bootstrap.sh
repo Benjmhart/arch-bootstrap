@@ -4086,6 +4086,20 @@ stage_verify() {
     check "lean: CPU governor rule present" "[ -f /etc/udev/rules.d/61-cpu-governor-ac.rules ]"
   fi
 
+  # Remote play target (media-system "Play on remote": ssh in, DISPLAY=:0 mpv). mpv comes
+  # from the package list; the desktop session cannot be installed -- it exists only while
+  # Ben is logged in on tty1 with X running. REPORTED, NOT COUNTED: a fleet push runs this
+  # stage over ssh, and nobody being logged in at that moment is not a broken machine.
+  # Skipped where sshd is not enabled (micro: no inbound by design, never a target).
+  if systemctl is-enabled --quiet sshd 2>/dev/null; then
+    command -v mpv >/dev/null && ok "remote play: mpv installed" || warn "remote play: mpv missing (packages stage)"
+    if [ -S /tmp/.X11-unix/X0 ]; then
+      ok "remote play: desktop session on :0"
+    else
+      warn "remote play: no X display :0 right now -- Play on remote needs Ben logged in on the desktop (not counted)"
+    fi
+  fi
+
   # Clock. install.sh sets the timezone and turns NTP on; the prompt's clock must then
   # FOLLOW the system rather than pin an offset. starship.toml pinned utc_time_offset
   # "-5" until 2026-10-03, which put the prompt an hour behind for all of daylight time

@@ -57,6 +57,9 @@ luarocks
 magic-wormhole
 make
 mise
+# "Play on remote" (media-system): a tailnet peer runs `ssh <host> DISPLAY=:0 mpv ...`, so every
+# machine that accepts ssh needs mpv and a logged-in desktop on :0 (verify reports the latter).
+mpv
 neovim
 networkmanager
 network-manager-applet
