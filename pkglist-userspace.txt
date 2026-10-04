@@ -88,6 +88,7 @@ python-gobject
 python-pip
 python-plyvel
 qemu-system-x86
+rclone
 ripgrep
 ruby
 rustup
@@ -119,6 +120,7 @@ vlc
 vlc-plugin-ffmpeg
 volumeicon
 wget
+wireless-regdb
 wireplumber
 x11-ssh-askpass
 xclip
