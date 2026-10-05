@@ -1,3 +1,4 @@
+7zip
 adsb_deku
 alacritty
 alsa-utils
