@@ -109,6 +109,10 @@ PEER_KEY="${PEER_KEY:-$HOME/.ssh/id_ed25519_peer}"
 # of a key on the GitHub account (stage 75, tools/deploy-keys). Set on micro and
 # media-center, so neither can reach anything else on the account. Empty = account key.
 DEPLOY_REPOS="${DEPLOY_REPOS:-}"
+# Packages the packages stage's `pacman -Syu` must not upgrade, comma-separated (pacman
+# --ignore). For holding a kernel inside a test window: beast-arch task 1's RAM watch. Set
+# from a machine's ~/.config/fleet/hold (`ignore-pkgs:`) by tools/fleet-apply. Empty = none.
+PACMAN_IGNORE="${PACMAN_IGNORE:-}"
 
 # Chores to enable on this machine: names of directories under chores/, each with a
 # chore-NAME.timer. See chores/chore-run for the protocol. Empty = none.
@@ -1077,7 +1081,8 @@ stage_packages() {
     # Installing against a stale sync database is Arch's partial-upgrade trap, so
     # the refresh has to happen; doing it unconditionally would mean a routine
     # re-run silently upgraded the whole system, which is not this script's job.
-    run sudo pacman -Syu --needed --noconfirm "${missing[@]}"
+    [[ -n $PACMAN_IGNORE ]] && info "holding back (PACMAN_IGNORE): $PACMAN_IGNORE"
+    run sudo pacman -Syu --needed --noconfirm ${PACMAN_IGNORE:+--ignore "$PACMAN_IGNORE"} "${missing[@]}"
     did "${#missing[@]} user-space package(s) installed"
   fi
 

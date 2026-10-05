@@ -15,9 +15,10 @@
 # bootstrap runs there uses the ticket. It never goes to disk, argv or the environment. Prompts
 # inside the run read EOF and take their default (no): nothing unattended answers "yes".
 #
-# Stages are limited to ALLOWED. A stage named in ~/.config/fleet/hold ("stage: reason") is
-# skipped and reported -- e.g. beast-arch holds `packages` (it upgrades the kernel) while a
-# task-1 RAM window is open.
+# Stages are limited to ALLOWED. ~/.config/fleet/hold, per machine:
+#   <stage>: <reason>                     skip that stage, and say why
+#   ignore-pkgs: <pkg>[,<pkg>] -- <reason>  keep those packages from upgrading (PACMAN_IGNORE)
+# e.g. beast-arch keeps `linux` while a task-1 RAM window is open, but still installs new packages.
 set -euo pipefail
 umask 077
 REPO=${FLEET_REPO:-$HOME/projects/arch-bootstrap}
@@ -46,6 +47,12 @@ if [[ -f $HOLD ]]; then
     if [[ -n $reason ]]; then echo "hold  $s: $reason"; else keep+=("$s"); fi
   done
   stages=(${keep[@]+"${keep[@]}"})
+fi
+ignore=""
+if [[ -f $HOLD ]]; then
+  ignore=$(awk -F': *' '$1 == "ignore-pkgs" { sub(/^[^:]*: */, ""); sub(/ *--.*$/, ""); print; exit }' "$HOLD")
+  [[ -z $ignore || $ignore =~ ^[a-z0-9@._+-]+(,[a-z0-9@._+-]+)*$ ]] || die "bad ignore-pkgs in $HOLD: $ignore"
+  [[ -n $ignore ]] && echo "hold  packages not upgraded: $ignore"
 fi
 IFS= read -r pw || die "no sudo password on stdin"
 
@@ -80,7 +87,7 @@ if (( ${#stages[@]} )); then
   only=$(IFS=,; echo "${stages[*]}")
   exec 3<<<"$pw"
   unset pw
-  script -qfec "sudo -S -p '' -v <&3 && exec 3<&- && cd '$REPO' && ./bootstrap.sh --only $only" \
+  script -qfec "sudo -S -p '' -v <&3 && exec 3<&- && cd '$REPO' && PACMAN_IGNORE='$ignore' ./bootstrap.sh --only $only" \
     "$STATE/last.log" </dev/null || rc=$?
   exec 3<&-
 else

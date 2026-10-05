@@ -114,6 +114,7 @@ tree-sitter-cli
 ttf-fira-code
 ttf-monoid
 udiskie
+ueberzugpp
 unzip
 uv
 vifm

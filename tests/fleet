@@ -15,7 +15,7 @@ git clone -q "$t/origin.git" "$t/seed" 2>/dev/null
 cat > "$t/seed/bootstrap.sh" <<'EOF'
 #!/bin/sh
 # stub: record how it was run, and use sudo the way run() does
-{ echo "args: $*"; [ -t 0 ] && echo "tty: yes" || echo "tty: no"; sudo -n true && echo "sudo: cached" || echo "sudo: NOT cached"; } >> "$HOME/bootstrap.calls"
+{ echo "args: $*"; echo "ignore: ${PACMAN_IGNORE:-}"; [ -t 0 ] && echo "tty: yes" || echo "tty: no"; sudo -n true && echo "sudo: cached" || echo "sudo: NOT cached"; } >> "$HOME/bootstrap.calls"
 EOF
 chmod +x "$t/seed/bootstrap.sh"; mkdir -p "$t/seed/tools"; cp "$root/tools/fleet-apply" "$root/tools/fleet" "$t/seed/tools/"
 git -C "$t/seed" add -A && git -C "$t/seed" commit -qm one && first=$(git -C "$t/seed" rev-parse HEAD)
@@ -64,6 +64,13 @@ mkdir -p "$HOME/.config/fleet"; echo "packages: task 1 RAM window until 2026-10-
 rm -f "$t/ticket" "$HOME/bootstrap.calls"
 out=$(echo pw-ok | "$fa" apply main 2>&1)
 check "hold: packages skipped and reported"          'grep -q "hold  packages: task 1 RAM window" <<<"$out" && grep -qx "args: --only aur,services,xmonad,verify" "$HOME/bootstrap.calls"'
+echo "ignore-pkgs: linux,linux-headers -- task 1 RAM window" > "$HOME/.config/fleet/hold"
+rm -f "$t/ticket" "$HOME/bootstrap.calls"
+out=$(echo pw-ok | "$fa" apply main 2>&1)
+check "hold ignore-pkgs: packages stage still runs"  'grep -qx "args: --only packages,aur,services,xmonad,verify" "$HOME/bootstrap.calls"'
+check "...with PACMAN_IGNORE passed through"         'grep -qx "ignore: linux,linux-headers" "$HOME/bootstrap.calls" && grep -q "hold  packages not upgraded: linux,linux-headers" <<<"$out"'
+echo "ignore-pkgs: linux;rm -rf /" > "$HOME/.config/fleet/hold"
+check "...a malformed ignore-pkgs is refused"        '! echo pw-ok | "$fa" apply main >/dev/null 2>&1'
 rm "$HOME/.config/fleet/hold"
 
 rm -f "$t/ticket" "$HOME/bootstrap.calls" "$t/sudo.fail"
