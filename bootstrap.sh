@@ -1606,7 +1606,28 @@ stage_toolchains() {
 
   install_self_distributed_binaries
   install_claude
+  install_herdr_integrations
   report_unmanaged_binaries
+}
+
+# herdr's agent-state hooks (station-maintenance beast-arch 67, 2026-10-06). The
+# dotfiles track ~/.claude/settings.json, which already points at
+# ~/.claude/hooks/herdr-agent-state.sh, but the script itself is herdr's to write and
+# deliberately untracked -- so a fresh machine had a hook entry for a missing file
+# (media-center: "claude: not installed"). `herdr integration install` is idempotent
+# and left the tracked settings.json byte-identical when run on media-center.
+install_herdr_integrations() {
+  have herdr || return 0
+  local agent
+  for agent in claude pi; do
+    have "$agent" || continue
+    if herdr integration status 2>/dev/null | grep -q "^$agent: current"; then
+      ok "herdr $agent integration current"
+    else
+      run herdr integration install "$agent"
+      did "herdr $agent integration installed"
+    fi
+  done
 }
 
 # Claude Code. Ben's call 2026-08-24 to install it, unlike nono and zed which are
@@ -3489,10 +3510,11 @@ set_console_font() {
 #
 # KMSCON_TTY1=yes moves tty1 too: kmsconvt@tty1 enabled, getty@tty1 disabled (the
 # unit Conflicts= with it). The dotfiles alias startx to kmscon-launch-gui on a
-# kmscon tty, so the login habit is unchanged. =no puts agetty back. Off by default
-# until it has been tried on a machine that can be rebooted freely (micro/carbon).
+# kmscon tty, so the login habit is unchanged. =no puts agetty back. On by default
+# fleet-wide since 2026-10-06 (Ben, station-maintenance beast-arch 71); no machine
+# autologins through getty@tty1, which this would silently drop.
 KMSCON_FONT="${KMSCON_FONT:-Fira Code}"   # Alacritty's font
-KMSCON_TTY1="${KMSCON_TTY1:-no}"
+KMSCON_TTY1="${KMSCON_TTY1:-yes}"
 setup_kmscon() {
   if ! pacman -Qq kmscon >/dev/null 2>&1; then
     (( DRY_RUN )) || warn "kmscon not installed -- console left on agetty"
@@ -4078,6 +4100,7 @@ stage_verify() {
   [[ -d $XMONAD_DIR ]]      && check "xmonad binary built"   "command -v xmonad"
   check "nvm present"                   "[ -s \"\${NVM_DIR:-\$HOME/.nvm}/nvm.sh\" ]"
   check "herdr installed"               "command -v herdr"
+  have claude && have herdr && check "herdr claude integration" "herdr integration status | grep -q '^claude: current'"
   check "arch-bootstrap origin is SSH"  "git -C '$SCRIPT_DIR' remote get-url origin | grep -q '^git@'"
   check "bfq rule for rotational disks"  "[ -f /etc/udev/rules.d/60-ioscheduler.rules ]"
   if zram_only_swap; then
