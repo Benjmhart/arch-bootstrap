@@ -140,6 +140,6 @@ xorg-xinit
 xorg-xrandr
 xorg-xsetroot
 yazi
-z
 zip
+zoxide
 zsh
