@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# tests/rescue-wifi -- chores/rescue-usb/make-rescue-iso bakes $SECRETS_DIR/wifi/*.psk into the
+# rescue ISO's /var/lib/iwd (root, 0600), and builds fine without any. Runs against a tiny fake
+# "official" ISO and a fake secrets dir in a temp dir; never reads ~/secrets. Needs xorriso and
+# squashfs-tools. Run: tests/rescue-wifi
+set -uo pipefail
+mk=$(cd "$(dirname "$0")/.." && pwd)/chores/rescue-usb/make-rescue-iso
+command -v xorriso >/dev/null || { echo "skip: xorriso not installed"; exit 0; }
+t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
+export SECRETS_DIR=$t/secrets
+
+# the fake official ISO: just what make-rescue-iso reads
+mkdir -p "$t/root/var/lib" "$t/root/usr/local/bin" "$t/root/usr/local/share" "$t/root/etc/profile.d" "$t/iso/loader/entries" "$t/iso/arch/x86_64"
+echo 'options archisobasedir=arch archisosearchuuid=2026-10-01-10-49-00-00' > "$t/iso/loader/entries/01-archiso-linux.conf"
+mksquashfs "$t/root" "$t/iso/arch/x86_64/airootfs.sfs" -quiet -no-progress -all-root >/dev/null
+xorriso -as mkisofs -quiet -o "$t/official.iso" -V ARCH_202610 "$t/iso" 2>/dev/null
+
+pass=0 fail=0
+check() {  # check <name> <bash expression>
+  if eval "$2"; then pass=$((pass+1)); echo "pass  $1"; else fail=$((fail+1)); echo "FAIL  $1"; fi
+}
+build() { rm -f "$t/out.iso" "$t/out.sfs"; out=$("$mk" "$t/official.iso" "$t/out.iso" 2>&1); rc=$?; [[ -n ${VERBOSE:-} ]] && echo "$out"
+  [[ -f $t/out.iso ]] && bsdtar -xOf "$t/out.iso" arch/x86_64/airootfs.sfs > "$t/out.sfs"; }
+ls_() { unsquashfs -lln "$t/out.sfs" | grep -F "squashfs-root/$1" | awk '{print $1, $2}'; }
+
+# ---- absent: no wifi dir at all
+build
+check "no wifi: build succeeds"                '(( rc == 0 ))'
+check "no wifi: says so with an info line"     'grep -q "^info: no .*wifi/\*.psk" <<<"$out"'
+check "no wifi: no /var/lib/iwd in the ISO"    '[[ -s $t/out.sfs ]] && ! unsquashfs -lln "$t/out.sfs" | grep -q var/lib/iwd'
+check "no wifi: banner gives the iwctl hint"   'unsquashfs -cat "$t/out.sfs" etc/profile.d/rescue-tools.sh | grep -q "iwctl station wlan0 connect"'
+
+# ---- present: an iwd profile whose SSID has a space (iwd names the file by the SSID)
+mkdir -p "$SECRETS_DIR/wifi"
+printf '[Security]\nPassphrase=dummy-not-a-real-passphrase\n' > "$SECRETS_DIR/wifi/Dummy Net.psk"
+build
+check "wifi: build succeeds"                   '(( rc == 0 ))'
+check "wifi: build output names the network"   'grep -q "wifi: Dummy Net" <<<"$out"'
+check "wifi: profile is root-owned 0600"       '[[ $(ls_ "var/lib/iwd/Dummy Net.psk") == "-rw------- 0/0" ]]'
+check "wifi: /var/lib/iwd is root-owned 0700"  '[[ $(ls_ "var/lib/iwd" | head -1) == "drwx------ 0/0" ]]'
+check "wifi: profile is the fixture, byte for byte (iwd [Security] Passphrase=)" \
+  'cmp -s <(unsquashfs -cat "$t/out.sfs" "var/lib/iwd/Dummy Net.psk") "$SECRETS_DIR/wifi/Dummy Net.psk"'
+check "wifi: banner says it joins at boot"     'unsquashfs -cat "$t/out.sfs" etc/profile.d/rescue-tools.sh | grep -q "joins Dummy Net at boot"'
+
+# ---- malformed profiles fail the build rather than ship a stick that silently has no wifi
+printf '[Security]\n' > "$SECRETS_DIR/wifi/Dummy Net.psk"
+build
+check "no Passphrase=/PreSharedKey=: build fails" '(( rc != 0 )) && [[ ! -f $t/out.iso ]]'
+printf '[Security]\nPassphrase=x\n' > "$SECRETS_DIR/wifi/Dummy Net.psk"
+printf '[Security]\nPassphrase=x\n' > "$SECRETS_DIR/wifi/bad'name.psk"
+build
+check "non-iwd file name: build fails"          '(( rc != 0 )) && grep -q "not an iwd profile name" <<<"$out"'
+
+echo "$pass passed, $fail failed"
+(( fail == 0 ))

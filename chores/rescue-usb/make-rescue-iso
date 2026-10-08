@@ -14,6 +14,11 @@
 # signature can only ever be Arch's. The boot entries ask for neither check
 # (no checksum=/verify=), so nothing relies on them at boot.
 #
+# Wi-Fi: every $SECRETS_DIR/wifi/*.psk (an iwd profile, named as iwd names it) is baked into
+# /var/lib/iwd, root 0600, so the live system's iwd joins at boot with no iwctl. That puts
+# the passphrase on the stick in cleartext -- accepted by Ben 2026-10-06. No such files: no
+# wifi, and the build goes on.
+#
 # Exit: 0 built; 1 failed; 75 cannot build here (xorriso missing).
 set -euo pipefail
 in=${1:?usage: make-rescue-iso OFFICIAL_ISO OUT_ISO}
@@ -43,9 +48,27 @@ tar -C "$tmp" -cf "$tmp/arch-bootstrap.tar" arch-bootstrap
 pseudo+=(-p "usr/local/share/arch-bootstrap.tar f 644 0 0 cat $tmp/arch-bootstrap.tar")
 commit=$(git -C "$repo" log -1 --format='%h %cs' -- tools install.sh)   # last change to either
 [[ -z $(git -C "$repo" status --porcelain -- tools install.sh) ]] || commit+=" + uncommitted changes"
+wifi=()
+for f in "${SECRETS_DIR:-$HOME/secrets}"/wifi/*.psk; do
+  [[ -f $f ]] || continue
+  n=$(basename "$f")
+  # iwd's own naming: the SSID if it is only [A-Za-z0-9 _-], else '=' + hex of the SSID
+  [[ $n =~ ^([A-Za-z0-9\ _-]+|=[0-9a-f]+)\.psk$ ]] || { echo "wifi: $n is not an iwd profile name"; exit 1; }
+  grep -qE '^(Passphrase|PreSharedKey)=.' "$f" || { echo "wifi: $n has no Passphrase= or PreSharedKey="; exit 1; }
+  (( ${#wifi[@]} )) || pseudo+=(-p "var/lib/iwd d 700 0 0")   # absent on the stock ISO
+  cp "$f" "$tmp/wifi${#wifi[@]}"       # pseudo-file commands go through sh: no spaces in paths
+  pseudo+=(-p "\"var/lib/iwd/$n\" f 600 0 0 cat $tmp/wifi${#wifi[@]}")
+  wifi+=("${n%.psk}")
+done
+if (( ${#wifi[@]} )); then
+  wifi_line="Wi-Fi:  joins ${wifi[*]} at boot (iwctl station list: state)"
+else
+  echo "info: no ${SECRETS_DIR:-$HOME/secrets}/wifi/*.psk -- rescue ISO built without wifi profiles"
+  wifi_line='Wi-Fi:  iwctl station wlan0 connect "<network>"   (iwctl device list: adapter name)'
+fi
 # Login shells (zsh -> /etc/profile -> profile.d) print this, on tty1 and on serial.
 cat > "$tmp/banner.sh" <<EOF
-printf '\n\033[1march-bootstrap rescue tools\033[0m (${commit}), on PATH:\n  ${tools[*]}\ninstall.sh also puts arch-bootstrap ($(git -C "$repo" log -1 --format=%h)) in the new user'"'"'s ~/projects\nWi-Fi:  iwctl station wlan0 connect "<network>"   (iwctl device list: adapter name)\n\n'
+printf '\n\033[1march-bootstrap rescue tools\033[0m (${commit}), on PATH:\n  ${tools[*]}\ninstall.sh also puts arch-bootstrap ($(git -C "$repo" log -1 --format=%h)) in the new user'"'"'s ~/projects\n${wifi_line}\n\n'
 EOF
 pseudo+=(-p "etc/profile.d/rescue-tools.sh f 644 0 0 cat $tmp/banner.sh")
 
@@ -64,4 +87,4 @@ xorriso -no_rc -indev "$in" -outdev "$tmp/out.iso" \
   -find /arch/x86_64 -name 'airootfs.sfs*.sig' -exec rm -- \
   2> "$tmp/xorriso.log" || { tail -n 20 "$tmp/xorriso.log"; echo "xorriso failed"; exit 1; }
 mv "$tmp/out.iso" "$out"
-echo "built $(basename "$out"): ${tools[*]} in /usr/local/bin ($commit)"
+echo "built $(basename "$out"): ${tools[*]} in /usr/local/bin ($commit)${wifi:+, wifi: ${wifi[*]}}"
