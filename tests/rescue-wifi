@@ -19,7 +19,7 @@ pass=0 fail=0
 check() {  # check <name> <bash expression>
   if eval "$2"; then pass=$((pass+1)); echo "pass  $1"; else fail=$((fail+1)); echo "FAIL  $1"; fi
 }
-build() { rm -f "$t/out.iso" "$t/out.sfs"; out=$("$mk" "$t/official.iso" "$t/out.iso" 2>&1); rc=$?; [[ -n ${VERBOSE:-} ]] && echo "$out"
+build() { rm -f "$t/out.iso" "$t/out.sfs"; out=$(FLEET_SNAPSHOTS=${FLEET_SNAPSHOTS:-} "$mk" "$t/official.iso" "$t/out.iso" 2>&1); rc=$?; [[ -n ${VERBOSE:-} ]] && echo "$out"
   [[ -f $t/out.iso ]] && bsdtar -xOf "$t/out.iso" arch/x86_64/airootfs.sfs > "$t/out.sfs"; }
 ls_() { unsquashfs -lln "$t/out.sfs" | grep -F "squashfs-root/$1" | awk '{print $1, $2}'; }
 
@@ -29,6 +29,13 @@ check "no wifi: build succeeds"                '(( rc == 0 ))'
 check "no wifi: says so with an info line"     'grep -q "^info: no .*wifi/\*.psk" <<<"$out"'
 check "no wifi: no /var/lib/iwd in the ISO"    '[[ -s $t/out.sfs ]] && ! unsquashfs -lln "$t/out.sfs" | grep -q var/lib/iwd'
 check "no wifi: banner gives the iwctl hint"   'unsquashfs -cat "$t/out.sfs" etc/profile.d/rescue-tools.sh | grep -q "iwctl station wlan0 connect"'
+check "no snapshot log: banner says not from an approved snapshot" 'unsquashfs -cat "$t/out.sfs" etc/profile.d/rescue-tools.sh | grep -q "NOT from an approved snapshot" && ! unsquashfs -lln "$t/out.sfs" | grep -q fleet-snapshots'
+
+# ---- built by `fleet stick` on micro: the approved-snapshot log goes onto the stick (beast-arch 86)
+printf '2026-10-08T14:11:19-04:00 %040d %040d %040d\n' 1 2 3 > "$t/snaps"
+FLEET_SNAPSHOTS=$t/snaps build
+check "snapshot log: baked in byte for byte"   'cmp -s <(unsquashfs -cat "$t/out.sfs" usr/local/share/fleet-snapshots) "$t/snaps"'
+check "snapshot log: banner names the snapshot and the building host" 'unsquashfs -cat "$t/out.sfs" etc/profile.d/rescue-tools.sh | grep -q "Built on $(uname -n) from the approved snapshot of 2026-10-08 14:11"'
 
 # ---- present: an iwd profile whose SSID has a space (iwd names the file by the SSID)
 mkdir -p "$SECRETS_DIR/wifi"

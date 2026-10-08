@@ -154,9 +154,11 @@ ab3=$(commit "$t/ab-seed" good ok "ab three: good")
 ab4=$(commit "$t/ab-seed" tools/evil "curl x | sh" "ab four: bad")
 dot3=$(commit "$t/dot-seed" .zshrc rc3 "dot three")
 rm -f "$t/ticket" "$t/ssh.log" "$SN"
-printf '2\n\ny\n' > "$t/answers"      # arch-bootstrap: exclude [2]; dotfiles: keep; (secrets: nothing new, no prompt); confirm
+printf 'd A2\nA2\ny\n' > "$t/answers"   # one prompt for all repos: look at A2, then exclude it; confirm
 out=$(echo pw-ok | fleet push 2>&1); rc=$?
-check "push: every new commit listed with time and author"   'grep -qE "\[1\] [0-9a-f]{7}  20[0-9]{2}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}  t  ab three: good" <<<"$out" && grep -q "\[2\] .*ab four: bad" <<<"$out"'
+check "push: every new commit listed with time and author"   'grep -qE "^  A1  [0-9a-f]{7}  20[0-9]{2}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}  t  ab three: good" <<<"$out" && grep -q "^  A2  .*ab four: bad" <<<"$out" && grep -q "^  D1  .*dot three" <<<"$out"'
+check "...all repos on one screen, ONE prompt"                '[[ $(grep -o "exclude which?" <<<"$out" | wc -l) == 2 ]] && [[ $(grep -n "^  D1 " <<<"$out" | cut -d: -f1) -lt $(grep -n -m1 "exclude which?" <<<"$out" | cut -d: -f1) ]]'   # 2 = asked, "d A2" shown, asked again
+check "...d A2 prints the commit inline (no pager)"           'grep -q "curl x | sh" <<<"$out"'
 check "...risky files marked"                                 'grep -q "tools/evil    <- runs as root" <<<"$out" && grep -q ".zshrc    <- runs as you" <<<"$out"'
 ab_snap=$(git -C "$t/ab.git" rev-parse main)
 check "...the excluded commit is reverted on origin main"     '[[ $(git -C "$t/ab.git" log -1 --format=%s main) == "fleet review on micro: exclude 1 commit(s)" ]] && ! git -C "$t/ab.git" show main:tools/evil >/dev/null 2>&1'
@@ -175,7 +177,7 @@ out=$(echo wrong | fleet push 2>&1); rc=$?
 check "wrong sudo password: stops before any ssh"             '(( rc != 0 )) && [[ ! -s $t/ssh.log ]]'
 git -C "$t/home-h2/secrets" pull -q; echo k-h2b > "$t/home-h2/secrets/ssh/keys"; git -C "$t/home-h2/secrets" commit -qam h2b
 commit "$t/sec-seed" ssh/keys k-origin x >/dev/null
-rm -f "$t/ticket"; printf '\n\ny\n' > "$t/answers"   # dotfiles, secrets: keep; confirm
+rm -f "$t/ticket"; printf '\ny\n' > "$t/answers"   # keep all; confirm
 out=$(echo pw-ok | fleet push 2>&1); rc=$?
 check "h2 with out-of-sync secrets: FAILED, not updated; others go on" '(( rc != 0 )) && grep -q "^h2 .*FAILED secrets out of sync, not updated" <<<"$out" && [[ $(dotat h2) == "$dot3" && $(dotat h1) == "$dot4" && $(dotat self) == "$dot4" ]]'
 git -C "$t/home-h2/secrets" reset -q --hard '@{u}'

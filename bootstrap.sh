@@ -1841,6 +1841,7 @@ stage_dotfiles() {
       "$C_DIM" "$C_RESET"
   else
     dotfiles_checkout "$fresh_clone" || return 1
+    (( fresh_clone )) && pin_fresh_clone dotfiles 2 master "${dot[@]}"
   fi
 
   # core.bare=true makes git ignore --work-tree for index operations, which is
@@ -2018,6 +2019,25 @@ dotfiles_checkout() {
 # Clone the secrets repo if it is not here yet. Shared by stage 05 (which needs
 # bootstrap.conf out of it) and stage 35 (which needs the vault). Remembers that
 # THIS run cloned it, so stage 35 still asks for the vault unlock.
+# A fresh install from a rescue stick built on micro (`fleet stick`) carries an approved fleet
+# snapshot; install.sh writes its three commit ids here (tools/snapshot-pick). A FRESH clone of the
+# dotfiles or of secrets is moved to that snapshot's commit, so a rebuild never starts from commits
+# nobody reviewed (station-maintenance beast-arch 86). Secrets is pinned right after its clone,
+# BEFORE bootstrap.conf is adopted from it -- that file is sourced, so it runs as root.
+INSTALL_SNAPSHOT="$HOME/.config/fleet/install-snapshot"
+pin_fresh_clone() {  # <label> <field: 2=dotfiles 3=secrets> <branch> <git cmd...>
+  local label=$1 field=$2 br=$3 sha; shift 3
+  [[ -f $INSTALL_SNAPSHOT ]] || return 0
+  sha=$(awk -v f="$field" '{print $f; exit}' "$INSTALL_SNAPSHOT")
+  [[ $sha =~ ^[0-9a-f]{40}$ ]] || { warn "$INSTALL_SNAPSHOT has no $label commit -- left at the clone's head"; return 0; }
+  if (( DRY_RUN )); then info "(dry run) would pin $label to the install snapshot ${sha:0:7}"; return 0; fi
+  if "$@" cat-file -e "$sha^{commit}" 2>/dev/null; then
+    run "$@" checkout -q -B "$br" "$sha" && did "$label pinned to the approved snapshot ${sha:0:7} (chosen at install)"
+  else
+    warn "$label: snapshot commit ${sha:0:7} is not in the clone -- left at the clone's head; review with fpush"
+  fi
+}
+
 SECRETS_CLONED_THIS_RUN=0
 clone_secrets() {
   if [[ -d $SECRETS_DIR ]]; then
@@ -2027,6 +2047,7 @@ clone_secrets() {
   run git clone "$SECRETS_REMOTE" "$SECRETS_DIR"
   did "cloned secrets repo"
   SECRETS_CLONED_THIS_RUN=1
+  pin_fresh_clone secrets 3 master git -C "$SECRETS_DIR"
 }
 
 # Replace bootstrap.conf with the copy kept in the secrets repo. The secrets copy

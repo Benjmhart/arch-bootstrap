@@ -350,6 +350,15 @@ bundle=/usr/local/share/arch-bootstrap.tar
 if [[ -f $bundle ]]; then
   install -d "/mnt/home/$user/projects"
   tar -C "/mnt/home/$user/projects" -xf "$bundle"
+  # Which commit to start from (station-maintenance beast-arch 86): a stick built on micro
+  # (`fleet stick`) carries the log of approved fleet snapshots. snapshot-pick shows them with
+  # their times -- newest is the default, an older one is a rollback -- plus any newer commits on
+  # GitHub, marked as not reviewed. Its answer pins the dotfiles and secrets too (bootstrap.sh).
+  if command -v snapshot-pick >/dev/null; then
+    snapshot-pick "/mnt/home/$user/projects/arch-bootstrap" /usr/local/share/fleet-snapshots \
+      "/mnt/home/$user/.config/fleet/install-snapshot" || die "no starting commit chosen"
+    arch-chroot /mnt chown -R "$user:$user" "/home/$user/.config" 2>/dev/null || true
+  fi
   arch-chroot /mnt chown -R "$user:$user" "/home/$user/projects"
 fi
 

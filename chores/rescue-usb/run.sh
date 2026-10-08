@@ -76,7 +76,9 @@ fi
 
 # ---- the rescue ISO, rebuilt when the ISO, the repo's HEAD (it carries a clone), tools/, install.sh or the builder changes
 rescue="rescue-archlinux-$ver.iso"
-stamp=$({ echo "$sha"; git -C "$repo" rev-parse HEAD; cat "$repo"/tools/* "$repo"/install.sh "$here/make-rescue-iso"; } | sha256sum | cut -d' ' -f1)
+# (and the approved-snapshot log and the building machine: a stick made on micro must never be
+# mistaken for an earlier build elsewhere -- station-maintenance beast-arch 86)
+stamp=$({ echo "$sha"; git -C "$repo" rev-parse HEAD; cat "$repo"/tools/* "$repo"/install.sh "$here/make-rescue-iso"; cat "${FLEET_SNAPSHOTS:-/dev/null}"; uname -n; } | sha256sum | cut -d' ' -f1)
 built=0
 if [[ ! -f $cache/$rescue || $(cut -d' ' -f3 "$cache/$rescue.sha256" 2>/dev/null) != "$stamp" ]]; then
   "$here/make-rescue-iso" "$cache/$iso" "$cache/$rescue" || built=$?

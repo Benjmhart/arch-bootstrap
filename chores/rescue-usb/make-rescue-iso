@@ -66,9 +66,19 @@ else
   echo "info: no ${SECRETS_DIR:-$HOME/secrets}/wifi/*.psk -- rescue ISO built without wifi profiles"
   wifi_line='Wi-Fi:  iwctl station wlan0 connect "<network>"   (iwctl device list: adapter name)'
 fi
+# The approved fleet snapshots, when built by `fleet stick` on micro (FLEET_SNAPSHOTS): install.sh's
+# snapshot-pick offers them, newest first (station-maintenance beast-arch 86).
+if [[ -n ${FLEET_SNAPSHOTS:-} && -s $FLEET_SNAPSHOTS ]]; then
+  cp "$FLEET_SNAPSHOTS" "$tmp/snapshots"
+  pseudo+=(-p "usr/local/share/fleet-snapshots f 644 0 0 cat $tmp/snapshots")
+  read -r st sab _ < <(tail -1 "$tmp/snapshots")
+  snap_line="Built on $(uname -n) from the approved snapshot of $(date -d "$st" '+%F %H:%M') (arch-bootstrap ${sab:0:7}); install.sh offers it first"
+else
+  snap_line="Built on $(uname -n), NOT from an approved snapshot: for a trusted rebuild, make the stick on micro (fleet stick)"
+fi
 # Login shells (zsh -> /etc/profile -> profile.d) print this, on tty1 and on serial.
 cat > "$tmp/banner.sh" <<EOF
-printf '\n\033[1march-bootstrap rescue tools\033[0m (${commit}), on PATH:\n  ${tools[*]}\ninstall.sh also puts arch-bootstrap ($(git -C "$repo" log -1 --format=%h)) in the new user'"'"'s ~/projects\n${wifi_line}\n\n'
+printf '\n\033[1march-bootstrap rescue tools\033[0m (${commit}), on PATH:\n  ${tools[*]}\ninstall.sh also puts arch-bootstrap ($(git -C "$repo" log -1 --format=%h)) in the new user'"'"'s ~/projects\n${snap_line}\n${wifi_line}\n\n'
 EOF
 pseudo+=(-p "etc/profile.d/rescue-tools.sh f 644 0 0 cat $tmp/banner.sh")
 

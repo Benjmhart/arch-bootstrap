@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# tests/snapshot-pick -- install-time snapshot choice, against real local git repos. Temp dir only.
+set -uo pipefail
+root=$(cd "$(dirname "$0")/.." && pwd)
+t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
+export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
+pass=0 fail=0
+check() { if eval "$2"; then pass=$((pass+1)); echo "pass  $1"; else fail=$((fail+1)); echo "FAIL  $1"; [[ -n ${DEBUG:-} ]] && sed 's/^/        /' <<<"${out:-}"; fi; }
+git init -q --bare -b main "$t/origin.git"; git clone -q "$t/origin.git" "$t/w" 2>/dev/null
+c() { echo "$2" > "$t/w/$1"; git -C "$t/w" add -A; git -C "$t/w" commit -qm "$3"; git -C "$t/w" rev-parse HEAD; }
+a1=$(c f 1 "snap one"); a2=$(c f 2 "snap two"); git -C "$t/w" push -q origin main
+mkdir -p "$t/stick"; git clone -q --no-local "$t/w" "$t/stick/arch-bootstrap"; git -C "$t/stick/arch-bootstrap" remote set-url origin "$t/origin.git"
+mkdir -p "$t/w/tools"; a3=$(c tools/x evil "newer: touches tools"); git -C "$t/w" push -q origin main
+printf '2026-10-01T10:00:00-04:00 %s d1 s1\n2026-10-08T14:11:00-04:00 %s d2 s2\n' "$a1" "$a2" > "$t/snaps"
+pick() { cp -r "$t/stick/arch-bootstrap" "$t/r$1"; printf "$2" > "$t/ans"; out=$(SNAPSHOT_PICK_INPUT=$t/ans "$root/tools/snapshot-pick" "$t/r$1" "$t/snaps" "$t/out$1" 2>&1); rc=$?; }
+pick 1 '\n'
+check "lists approved snapshots newest first, with times"   'grep -q "^  1  2026-10-08 14:11  arch-bootstrap ${a2:0:7}  snap two" <<<"$out" && grep -q "^  2  2026-10-01 10:00  arch-bootstrap ${a1:0:7}  snap one" <<<"$out"'
+check "lists newer GitHub commits as unreviewed, risky marked" 'grep -q "NOT reviewed on micro (1)" <<<"$out" && grep -qE "^  N1  [0-9a-f]{7}  20[0-9-]+ [0-9:]+  t  newer: touches tools" <<<"$out" && grep -q "tools/x    <- runs as root" <<<"$out"'
+check "Enter: the newest approved snapshot, on branch main"   '(( rc == 0 )) && [[ $(git -C "$t/r1" rev-parse HEAD) == "$a2" && $(git -C "$t/r1" symbolic-ref --short HEAD) == main ]]'
+check "...out file holds that snapshot's three ids"          '[[ $(cat "$t/out1") == "$a2 d2 s2" ]]'
+pick 2 '2\n'
+check "2: rollback to the earlier approved snapshot"         '(( rc == 0 )) && [[ $(git -C "$t/r2" rev-parse HEAD) == "$a1" && $(cat "$t/out2") == "$a1 d1 s1" ]]'
+pick 3 'n1\n'
+check "N1: takes the newer commit; dotfiles/secrets stay pinned to the approved snapshot" '(( rc == 0 )) && [[ $(git -C "$t/r3" rev-parse HEAD) == "$a3" && $(cat "$t/out3") == "$a3 d2 s2" ]]'
+pick 4 '9\nq\n'
+check "a bad number asks again; q stops with nothing changed" '(( rc != 0 )) && grep -q "no snapshot 9" <<<"$out" && [[ $(git -C "$t/r4" rev-parse HEAD) == "$a2" && ! -e $t/out4 ]]'
+cp -r "$t/stick/arch-bootstrap" "$t/r5"; printf '\n' > "$t/ans"; out=$(SNAPSHOT_PICK_INPUT=$t/ans "$root/tools/snapshot-pick" "$t/r5" "" "$t/out5" 2>&1); rc=$?
+check "no snapshots on the stick: says so, keeps what is there, no out file" '(( rc == 0 )) && grep -q "No approved snapshots on this stick" <<<"$out" && [[ $(git -C "$t/r5" rev-parse HEAD) == "$a2" && ! -e $t/out5 ]]'
+echo; echo "$pass passed, $fail failed"; (( fail == 0 ))

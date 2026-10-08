@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# snapshot-pick <arch-bootstrap dir> [snapshots file] [out file] -- choose which arch-bootstrap commit a
+# fresh install starts from, the way `fleet push` reviews an update (station-maintenance beast-arch 86).
+#
+# install.sh runs it on a rescue stick built on micro (`fleet stick`), which carries micro's log of
+# approved snapshots (/usr/local/share/fleet-snapshots) and a copy of arch-bootstrap with its history.
+# One screen, no pager:
+#   1, 2, ...   the approved snapshots on the stick, newest first. Enter = 1. A higher number is a
+#               rollback to an earlier approved snapshot -- for when the newest one is the problem.
+#   N1, N2, ... commits on GitHub newer than the chosen snapshot, NOT reviewed on micro, each with its
+#               time and files (risky ones marked). Only listed when the network works. Picking Nk
+#               takes everything up to Nk.
+#   q           stop: nothing is changed.
+# The copy is checked out at the choice (branch main). [out] gets "<ab> <dot> <sec>" of the snapshot,
+# which bootstrap.sh uses to pin its fresh dotfiles and secrets clones to the same snapshot.
+# Answers come from /dev/tty (SNAPSHOT_PICK_INPUT for tests).
+set -euo pipefail
+export GIT_PAGER=cat PAGER=cat
+repo=${1:?usage: snapshot-pick <arch-bootstrap dir> [snapshots file] [out file]}
+snaps=${2:-} out=${3:-}
+g=(git -C "$repo")
+die() { echo "FAIL  $*" >&2; exit 1; }
+"${g[@]}" rev-parse -q --verify HEAD >/dev/null || die "$repo is not a git checkout"
+risk() { case $1 in bootstrap.sh|install.sh|tools/*|chores/*|pkglist*) echo "runs as root" ;; esac; }
+when() { date -d "$1" '+%F %H:%M' 2>/dev/null || echo "$1"; }
+
+lines=()
+[[ -n $snaps && -s $snaps ]] && mapfile -t lines < <(tac "$snaps")
+if (( ${#lines[@]} )); then
+  echo "Approved fleet snapshots on this stick (newest first):"
+  for i in "${!lines[@]}"; do
+    read -r t ab _ _ note <<<"${lines[i]}"
+    subj=$("${g[@]}" log -1 --format=%s "$ab" 2>/dev/null) || subj="(not in this copy)"
+    printf '  %d  %s  arch-bootstrap %s  %s%s\n' $((i+1)) "$(when "$t")" "${ab:0:7}" "$subj" "${note:+  [$note]}"
+  done
+  read -r _ base _ <<<"${lines[0]}"
+else
+  base=$("${g[@]}" rev-parse HEAD)
+  echo "No approved snapshots on this stick (it was not built by 'fleet stick' on micro)."
+  echo "  arch-bootstrap here: $("${g[@]}" log -1 --date=format-local:'%F %H:%M' --format='%h  %ad  %s' HEAD)"
+fi
+
+newer=()
+if timeout 25 "${g[@]}" fetch -q origin 2>/dev/null && "${g[@]}" rev-parse -q --verify origin/main >/dev/null; then
+  mapfile -t newer < <("${g[@]}" rev-list --reverse "$base..origin/main" 2>/dev/null)
+  if (( ${#newer[@]} )); then
+    echo; echo "Newer on GitHub, NOT reviewed on micro (${#newer[@]}):"
+    for i in "${!newer[@]}"; do
+      "${g[@]}" log -1 --date=format-local:'%F %H:%M' --format="  N$((i+1))  %h  %ad  %an  %s" "${newer[i]}"
+      while IFS= read -r f; do r=$(risk "$f"); echo "        $f${r:+    <- $r}"; done \
+        < <("${g[@]}" show --format= --name-only "${newer[i]}" | head -6)
+    done
+  else echo; echo "GitHub has nothing newer."; fi
+else
+  echo; echo "(no network or no origin: newer commits on GitHub not checked)"
+fi
+
+exec 3<"${SNAPSHOT_PICK_INPUT:-/dev/tty}"
+while :; do
+  printf '\nstart from? Enter = %s; a number = an earlier snapshot; N<k> = take newer commits up to N<k>; q = stop: ' \
+    "$( (( ${#lines[@]} )) && echo "approved snapshot 1" || echo "what is here")"
+  IFS= read -r ans <&3 || die "no answer"
+  ans=${ans^^}
+  case $ans in
+    Q) die "stopped: nothing changed" ;;
+    "") pick=$base; line=${lines[0]:-} ;;
+    N*) k=${ans#N}; [[ $k =~ ^[0-9]+$ ]] && (( k >= 1 && k <= ${#newer[@]} )) || { echo "  no commit $ans"; continue; }
+        pick=${newer[k-1]}; line=${lines[0]:-} ;;
+    *)  [[ $ans =~ ^[0-9]+$ ]] && (( ans >= 1 && ans <= ${#lines[@]} )) || { echo "  no snapshot $ans"; continue; }
+        line=${lines[ans-1]}; read -r _ pick _ <<<"$line"
+        "${g[@]}" cat-file -e "$pick^{commit}" 2>/dev/null || { echo "  snapshot $ans's commit is not in this copy"; continue; } ;;
+  esac
+  break
+done
+
+"${g[@]}" checkout -q -B main "$pick" || die "cannot check out ${pick:0:7}"
+"${g[@]}" rev-parse -q --verify origin/main >/dev/null && "${g[@]}" branch -q --set-upstream-to=origin/main main
+echo "ok    arch-bootstrap at $("${g[@]}" log -1 --format='%h %s' HEAD)"
+if [[ -n $out && -n $line ]]; then
+  read -r _ _ dot sec _ <<<"$line"
+  mkdir -p "$(dirname "$out")"; echo "$pick $dot $sec" > "$out"
+  echo "ok    dotfiles ${dot:0:7} and secrets ${sec:0:7} will be pinned by bootstrap.sh ($out)"
+fi

@@ -23,6 +23,11 @@
 #                                 machine. Code and dotfiles go back; secrets never do (the vault).
 #                                 It cannot undo what a bad commit already did as root -- after
 #                                 that, reinstall.
+#   fleet stick                   make the rescue stick HERE, on micro, from the approved snapshot
+#                                 (for a rebuild: never trust a stick a dirty machine wrote). Refuses
+#                                 unless arch-bootstrap and secrets are at the last approved snapshot.
+#                                 The stick carries the snapshot log; install.sh offers it (snapshot-pick).
+#                                 micro has no KVM, so the stick is written but not VM boot-tested.
 #   fleet setup                   once, on micro: the fleet key (see below)
 #
 # Approved snapshots: ~/.local/state/fleet/snapshots, one line each, "<time> <ab> <dot> <sec> [note]".
@@ -74,55 +79,72 @@ risk() {
   esac
 }
 
-# review <repo> <base>: list origin's commits since <base>; Ben may exclude some. Sets $picked.
-review() {
-  local r=$1 base=$2 head n ans i c t out tmp; local -a commits excl files
+# The review: every repo's new commits on ONE screen, numbered A1.. (arch-bootstrap), D1..
+# (dotfiles), S1.. (secrets), then ONE prompt. Never a pager (Ben: one commit per screen breaks
+# the flow): every git call here runs with GIT_PAGER=cat.
+export GIT_PAGER=cat PAGER=cat
+declare -A HEADS=() CMT=()    # HEADS[ab]=sha; CMT[A2]=sha
+letter() { case $1 in ab) echo A ;; dot) echo D ;; sec) echo S ;; esac; }
+repo_of() { case $1 in A) echo ab ;; D) echo dot ;; S) echo sec ;; esac; }
+
+list_repo() {  # list_repo <repo> <base>: print its new commits; fills HEADS and CMT
+  local r=$1 base=$2 head i c t L; local -a commits files
   gitr "$r" fetch -q origin || die "$(title "$r"): fetch failed"
-  head=$(gitr "$r" rev-parse "origin/$(branch "$r")")
+  head=$(gitr "$r" rev-parse "origin/$(branch "$r")"); HEADS[$r]=$head
   gitr "$r" merge-base --is-ancestor "$base" "$head" \
     || die "$(title "$r"): origin/$(branch "$r") no longer contains the last approved commit ${base:0:7} -- history was rewritten (a force push?). Stop and look before anything is applied."
   mapfile -t commits < <(gitr "$r" rev-list --reverse "$base..$head")
-  n=${#commits[@]}
-  echo
-  if (( n == 0 )); then echo "== $(title "$r"): nothing new (at ${head:0:7})"; picked=$head; return; fi
-  echo "== $(title "$r"): $n new commit(s) since ${base:0:7}"
+  L=$(letter "$r")
+  if (( ${#commits[@]} == 0 )); then printf '\n== %s: nothing new (at %s)\n' "$(title "$r")" "${head:0:7}"; return; fi
+  printf '\n== %s: %d new since %s\n' "$(title "$r")" "${#commits[@]}" "${base:0:7}"
   for i in "${!commits[@]}"; do
-    c=${commits[i]}
-    gitr "$r" log -1 --date=format-local:'%F %H:%M' --format="  [$((i+1))] %h  %ad  %an  %s" "$c"
+    c=${commits[i]}; CMT[$L$((i+1))]=$c
+    gitr "$r" log -1 --date=format-local:'%F %H:%M' --format="  $L$((i+1))  %h  %ad  %an  %s" "$c"
     mapfile -t files < <(gitr "$r" show --format= --name-only "$c")
-    for f in "${files[@]:0:8}"; do t=$(risk "$r" "$f"); echo "        $f${t:+    <- $t}"; done
-    (( ${#files[@]} > 8 )) && echo "        ... and $(( ${#files[@]} - 8 )) more"
+    for f in "${files[@]:0:6}"; do t=$(risk "$r" "$f"); echo "        $f${t:+    <- $t}"; done
+    (( ${#files[@]} > 6 )) && echo "        ... and $(( ${#files[@]} - 6 )) more"
   done
-  while :; do
-    printf '  exclude which? numbers (e.g. 2 5), "d N" to see one, Enter = keep all, q = abort: '
-    IFS= read -r ans <&3 || die "no answer -- aborted, nothing applied"
-    case $ans in
-      q) die "aborted at review, nothing applied" ;;
-      d\ *) i=${ans#d }; [[ $i =~ ^[0-9]+$ ]] && (( i >= 1 && i <= n )) && gitr "$r" show --stat -p "${commits[i-1]}" | head -300; continue ;;
-    esac
-    excl=(); for i in $ans; do
-      [[ $i =~ ^[0-9]+$ ]] && (( i >= 1 && i <= n )) || { echo "  not a commit number: $i"; continue 2; }
-      excl+=("${commits[i-1]}")
-    done
-    break
-  done
-  if (( ${#excl[@]} == 0 )); then picked=$head; echo "ok    $(title "$r"): all $n kept"; return; fi
-  # Revert the excluded commits in a throwaway checkout (nothing unreviewed is checked out where
-  # it would run -- micro's home IS the dotfiles work tree) and push the revert to origin.
+}
+
+exclude() {  # exclude <repo> <sha...>: revert them in a throwaway worktree, push; sets $picked
+  local r=$1; shift; local tmp head=${HEADS[$r]} out
   tmp=$(mktemp -d)
   gitr "$r" worktree add -q --detach "$tmp" "$head" || die "$(title "$r"): worktree failed"
-  out=$(printf '%s\n' "${excl[@]}" | tac)
+  out=$(printf '%s\n' "$@" | tac)
   if ! git -C "$tmp" revert --no-commit $out >/dev/null 2>&1; then
     git -C "$tmp" revert --abort 2>/dev/null; gitr "$r" worktree remove --force "$tmp"
     die "$(title "$r"): excluding those conflicts with later commits -- exclude the later ones too, or keep them"
   fi
-  git -C "$tmp" commit -q -m "fleet review on micro: exclude ${#excl[@]} commit(s)" \
-    -m "$(for c in ${excl[@]}; do gitr "$r" log -1 --format='%h %s' "$c"; done)" || die "$(title "$r"): revert commit failed"
+  git -C "$tmp" commit -q -m "fleet review on micro: exclude $# commit(s)" \
+    -m "$(for c in "$@"; do gitr "$r" log -1 --format='%h %s' "$c"; done)" || die "$(title "$r"): revert commit failed"
   git -C "$tmp" push -q origin "HEAD:refs/heads/$(branch "$r")" \
     || { gitr "$r" worktree remove --force "$tmp"; die "$(title "$r"): pushing the revert failed (origin moved during the review? re-run)"; }
   picked=$(git -C "$tmp" rev-parse HEAD)
   gitr "$r" worktree remove --force "$tmp"; gitr "$r" fetch -q origin
-  echo "did   $(title "$r"): excluded ${#excl[@]}, revert ${picked:0:7} pushed"
+  echo "did   $(title "$r"): excluded $#, revert ${picked:0:7} pushed"
+}
+
+review_all() {  # review_all <base-ab> <base-dot> <base-sec>: one screen, one prompt; sets ab dot sec
+  local ans tok r k; local -A ex=()
+  list_repo ab "$1"; list_repo dot "$2"; list_repo sec "$3"
+  if (( ${#CMT[@]} == 0 )); then echo; ab=${HEADS[ab]} dot=${HEADS[dot]} sec=${HEADS[sec]}; return; fi
+  while :; do
+    printf '\nexclude which? e.g. "A2 S1"; "d A2" shows one (no pager); Enter = keep all; q = abort: '
+    IFS= read -r ans <&3 || die "no answer -- aborted, nothing applied"
+    case $ans in
+      q) die "aborted at review, nothing applied" ;;
+      d\ *) k=${ans#d }; k=${k^^}; if [[ -n ${CMT[$k]:-} ]]; then gitr "$(repo_of "${k:0:1}")" show --stat -p "${CMT[$k]}" | head -200; else echo "  no commit $k"; fi; continue ;;
+    esac
+    ex=(); for tok in ${ans^^}; do
+      [[ -n ${CMT[$tok]:-} ]] || { echo "  no commit $tok"; continue 2; }
+      ex[$(repo_of "${tok:0:1}")]+="${CMT[$tok]} "
+    done
+    break
+  done
+  for r in ab dot sec; do
+    if [[ -n ${ex[$r]:-} ]]; then exclude "$r" ${ex[$r]}; else picked=${HEADS[$r]}; fi
+    printf -v "$r" '%s' "$picked"
+  done
 }
 
 # apply_all <ab> <dot> <sec> <hosts...> -- stages in $stages, password in $pw. Fills result[].
@@ -203,9 +225,7 @@ push)
   if [[ -s $SNAPS ]]; then read -r _ b_ab b_dot b_sec _ < <(tail -1 "$SNAPS")
   else b_ab=$(gitr ab rev-parse HEAD); b_dot=$(gitr dot rev-parse HEAD); b_sec=$(gitr sec rev-parse HEAD)
        echo; echo "note  no approved snapshot yet: reviewing from what $SELF has checked out now"; fi
-  review ab "$b_ab";   ab=$picked
-  review dot "$b_dot"; dot=$picked
-  review sec "$b_sec"; sec=$picked
+  review_all "$b_ab" "$b_dot" "$b_sec"
   echo
   printf 'apply snapshot  arch-bootstrap %s  dotfiles %s  secrets %s  to %s, then %s? [y/N] ' \
     "${ab:0:7}" "${dot:0:7}" "${sec:0:7}" "$SELF" "${hosts[*]}"
@@ -240,5 +260,17 @@ rollback)
   unset pw
   table "fleet rollback ($scope) to $t"
   ;;
-*) die "usage: fleet status | push [stage ...|keys] | rollback [all] | setup" ;;
+stick)
+  [[ $(uname -n) == "$SELF" ]] || die "make the recovery stick on $SELF -- a stick written by a dirty machine is what this avoids"
+  [[ -s $SNAPS ]] || die "no approved snapshot yet -- run fpush first"
+  read -r t ab dot sec _ < <(tail -1 "$SNAPS")
+  [[ $(gitr ab rev-parse HEAD) == "$ab" && -z $(gitr ab status --porcelain) ]] \
+    || die "arch-bootstrap here is not exactly the approved snapshot ${ab:0:7} (or has local changes) -- run fpush first"
+  [[ $(gitr sec rev-parse HEAD) == "$sec" ]] || die "secrets here is not at the approved snapshot ${sec:0:7} -- run fpush first"
+  serial=$(bash -c 'source "$1" >/dev/null 2>&1; echo "${RESCUE_USB_SERIAL:-}"' _ "$REPO/bootstrap.conf")
+  [[ -n $serial ]] || die "RESCUE_USB_SERIAL is not set in bootstrap.conf"
+  echo "making the rescue stick on $SELF from the snapshot approved $t (arch-bootstrap ${ab:0:7})"
+  RESCUE_USB_SERIAL=$serial FLEET_SNAPSHOTS=$SNAPS SECRETS_DIR=$SECRETS "$REPO/chores/rescue-usb/run.sh"
+  ;;
+*) die "usage: fleet status | push [stage ...|keys] | rollback [all] | stick | setup" ;;
 esac
