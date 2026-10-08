@@ -1,29 +1,48 @@
 #!/usr/bin/env bash
-# fleet -- run one update across every machine from micro (station-maintenance beast-arch task 80).
+# fleet -- reviewed updates for every machine, run from micro (station-maintenance beast-arch task 80).
 #
-#   fleet setup                     once, on micro: create ~/.ssh/id_ed25519_fleet (with a
-#                                   passphrase), publish it to secrets ssh/fleet/micro.pub, and
-#                                   authorize it on every other machine's tracked authorized_keys
-#                                   as a forced command (from= micro, command=fleet-apply, restrict).
-#   fleet status                    each machine's last applied commit
-#   fleet push [main|SHA] [stage ...]
-#                                   first bring every machine's ~/secrets in line (fleet-apply
-#                                   secrets; beast-arch first, it is the vault's source of truth),
-#                                   then apply to every machine not already at that commit, micro
-#                                   included (locally). A machine whose secrets are out of sync is
-#                                   reported FAILED and not updated. Asks ONCE for the fleet key
-#                                   passphrase (a temporary agent) and ONCE for the sudo password.
+# Trust model (Ben, 2026-10-08): beast-arch, carbon and media-center are "dirty" -- a compromise may
+# happen there, and each can push to GitHub. micro is the trusted place for a fleet push or a
+# recovery. So nothing is applied unseen: a push shows every commit since the last approved
+# snapshot, with its time and the files it touches, and Ben can exclude any of them. The machines
+# then move to exactly the approved commits (fleet-apply), micro first.
 #
-# Default target: main. After a security event, pass the last known safe SHA instead; each
-# machine refuses a SHA that origin/main does not contain. Stages default to fleet-apply's.
+#   fleet status                  each machine's applied snapshot, and the last approved one
+#   fleet push [stage ...|keys]   1. every machine pushes its own secrets commits (beast-arch first:
+#                                    it is the vault's source of truth); out-of-sync machines are
+#                                    reported and skipped
+#                                 2. review, per repo (arch-bootstrap, dotfiles, secrets): every new
+#                                    commit with its time, author, subject and files, the risky files
+#                                    marked. Exclude any by number: micro reverts them in a throwaway
+#                                    checkout and pushes the revert, so they are gone from main too
+#                                 3. confirm, then apply the snapshot: micro first; if micro fails,
+#                                    nothing else is touched
+#                                 "keys" = move to the snapshot and install authorized_keys only
+#                                 (an urgent revocation); no bootstrap stages.
+#   fleet rollback [all]          re-apply the previous approved snapshot: micro only, or every
+#                                 machine. Code and dotfiles go back; secrets never do (the vault).
+#                                 It cannot undo what a bad commit already did as root -- after
+#                                 that, reinstall.
+#   fleet setup                   once, on micro: the fleet key (see below)
 #
-# Env: FLEET_HOSTS (default: the other machines), FLEET_KEY, FLEET_SELF_HOST (micro).
+# Approved snapshots: ~/.local/state/fleet/snapshots, one line each, "<time> <ab> <dot> <sec> [note]".
+# Asks ONCE for the fleet key passphrase (a temporary agent) and ONCE for the shared sudo password
+# (stdin), checked here before anything is sent. Review answers come from the terminal.
+#
+# Env: FLEET_HOSTS (default: the other machines), FLEET_KEY, FLEET_SELF_HOST (micro),
+# FLEET_VAULT_HOST (beast-arch), FLEET_INPUT (review answers; default /dev/tty), FLEET_STATE,
+# FLEET_DOTDIR, FLEET_SECRETS.
 set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$here/.." && pwd)
-SECRETS_DIR=${SECRETS_DIR:-$HOME/secrets}
+SECRETS=${FLEET_SECRETS:-${SECRETS_DIR:-$HOME/secrets}}
+DOTDIR=${FLEET_DOTDIR:-$HOME/.dot}
+STATE=${FLEET_STATE:-$HOME/.local/state/fleet}
+SNAPS=$STATE/snapshots
 KEY=${FLEET_KEY:-$HOME/.ssh/id_ed25519_fleet}
 SELF=${FLEET_SELF_HOST:-micro}
+VAULT_HOST=${FLEET_VAULT_HOST:-beast-arch}
+IN=${FLEET_INPUT:-/dev/tty}
 read -r -a hosts <<<"${FLEET_HOSTS:-beast-arch carbon media-center}"
 die() { echo "FAIL  $*" >&2; exit 1; }
 
@@ -36,6 +55,106 @@ fssh() {
   ssh -F /dev/null -i "$KEY" -o IdentitiesOnly=yes -o ConnectTimeout=8 -o HostKeyAlias="$h" \
       -o UserKnownHostsFile="$HOME/.ssh/known_hosts" "$h.${SUFFIX}" "$@"
 }
+on() { local h=$1; shift; if [[ $h == "$SELF" ]]; then "$here/fleet-apply" "$@"; else fssh "$h" "$@"; fi; }
+
+# The three repos of a snapshot.
+gitr() { local r=$1; shift
+  case $r in ab) git -C "$REPO" "$@" ;; dot) git --git-dir="$DOTDIR" "$@" ;; sec) git -C "$SECRETS" "$@" ;; esac; }
+title()  { case $1 in ab) echo arch-bootstrap ;; dot) echo dotfiles ;; sec) echo secrets ;; esac; }
+branch() { case $1 in ab) echo main ;; *) echo master ;; esac; }
+# Files whose change runs code or changes access, marked in the review.
+risk() {
+  case $1:$2 in
+    ab:bootstrap.sh|ab:install.sh|ab:tools/*|ab:chores/*|ab:pkglist*) echo "runs as root" ;;
+    sec:arch-bootstrap/bootstrap.conf) echo "runs as root (sourced by bootstrap.sh)" ;;
+    sec:ssh/*) echo "who can log in / push" ;;
+    sec:Passwords.kdbx) echo "the vault" ;;
+    dot:.zshrc|dot:.zshenv|dot:.zprofile|dot:.xinitrc|dot:.xprofile|dot:bin/*|dot:.local/bin/*|dot:.config/systemd/*|dot:.claude/*|dot:.config/xmonad/*|dot:.xmonad/*)
+      echo "runs as you" ;;
+  esac
+}
+
+# review <repo> <base>: list origin's commits since <base>; Ben may exclude some. Sets $picked.
+review() {
+  local r=$1 base=$2 head n ans i c t out tmp; local -a commits excl files
+  gitr "$r" fetch -q origin || die "$(title "$r"): fetch failed"
+  head=$(gitr "$r" rev-parse "origin/$(branch "$r")")
+  gitr "$r" merge-base --is-ancestor "$base" "$head" \
+    || die "$(title "$r"): origin/$(branch "$r") no longer contains the last approved commit ${base:0:7} -- history was rewritten (a force push?). Stop and look before anything is applied."
+  mapfile -t commits < <(gitr "$r" rev-list --reverse "$base..$head")
+  n=${#commits[@]}
+  echo
+  if (( n == 0 )); then echo "== $(title "$r"): nothing new (at ${head:0:7})"; picked=$head; return; fi
+  echo "== $(title "$r"): $n new commit(s) since ${base:0:7}"
+  for i in "${!commits[@]}"; do
+    c=${commits[i]}
+    gitr "$r" log -1 --date=format-local:'%F %H:%M' --format="  [$((i+1))] %h  %ad  %an  %s" "$c"
+    mapfile -t files < <(gitr "$r" show --format= --name-only "$c")
+    for f in "${files[@]:0:8}"; do t=$(risk "$r" "$f"); echo "        $f${t:+    <- $t}"; done
+    (( ${#files[@]} > 8 )) && echo "        ... and $(( ${#files[@]} - 8 )) more"
+  done
+  while :; do
+    printf '  exclude which? numbers (e.g. 2 5), "d N" to see one, Enter = keep all, q = abort: '
+    IFS= read -r ans <&3 || die "no answer -- aborted, nothing applied"
+    case $ans in
+      q) die "aborted at review, nothing applied" ;;
+      d\ *) i=${ans#d }; [[ $i =~ ^[0-9]+$ ]] && (( i >= 1 && i <= n )) && gitr "$r" show --stat -p "${commits[i-1]}" | head -300; continue ;;
+    esac
+    excl=(); for i in $ans; do
+      [[ $i =~ ^[0-9]+$ ]] && (( i >= 1 && i <= n )) || { echo "  not a commit number: $i"; continue 2; }
+      excl+=("${commits[i-1]}")
+    done
+    break
+  done
+  if (( ${#excl[@]} == 0 )); then picked=$head; echo "ok    $(title "$r"): all $n kept"; return; fi
+  # Revert the excluded commits in a throwaway checkout (nothing unreviewed is checked out where
+  # it would run -- micro's home IS the dotfiles work tree) and push the revert to origin.
+  tmp=$(mktemp -d)
+  gitr "$r" worktree add -q --detach "$tmp" "$head" || die "$(title "$r"): worktree failed"
+  out=$(printf '%s\n' "${excl[@]}" | tac)
+  if ! git -C "$tmp" revert --no-commit $out >/dev/null 2>&1; then
+    git -C "$tmp" revert --abort 2>/dev/null; gitr "$r" worktree remove --force "$tmp"
+    die "$(title "$r"): excluding those conflicts with later commits -- exclude the later ones too, or keep them"
+  fi
+  git -C "$tmp" commit -q -m "fleet review on micro: exclude ${#excl[@]} commit(s)" \
+    -m "$(for c in ${excl[@]}; do gitr "$r" log -1 --format='%h %s' "$c"; done)" || die "$(title "$r"): revert commit failed"
+  git -C "$tmp" push -q origin "HEAD:refs/heads/$(branch "$r")" \
+    || { gitr "$r" worktree remove --force "$tmp"; die "$(title "$r"): pushing the revert failed (origin moved during the review? re-run)"; }
+  picked=$(git -C "$tmp" rev-parse HEAD)
+  gitr "$r" worktree remove --force "$tmp"; gitr "$r" fetch -q origin
+  echo "did   $(title "$r"): excluded ${#excl[@]}, revert ${picked:0:7} pushed"
+}
+
+# apply_all <ab> <dot> <sec> <hosts...> -- stages in $stages, password in $pw. Fills result[].
+apply_all() {
+  local ab=$1 dot=$2 sec=$3; shift 3; local h st rc micro_ok=1
+  for h in "$@"; do
+    if (( ! micro_ok )); then result[$h]="not attempted ($SELF failed)"; continue; fi
+    if [[ -n ${secrets_bad[$h]:-} ]]; then result[$h]="FAILED secrets out of sync, not updated: ${secrets_bad[$h]#FAIL  secrets: }"; continue; fi
+    st=$(on "$h" status 2>&1 | tail -1)
+    if [[ ${stages[*]:-} != keys && $st == "$ab $dot $sec "*" rc=0 "* ]]; then result[$h]="skip (already at this snapshot)"; continue; fi
+    echo; echo "=== $h"
+    printf '%s\n' "$pw" | on "$h" apply "$ab" "$dot" "$sec" "${stages[@]}"; rc=$?
+    if (( rc == 0 )); then result[$h]="ok"; else result[$h]="FAILED rc=$rc -- see ~/.local/state/fleet/last.log on $h"; fi
+    [[ $h == "$SELF" ]] && (( rc != 0 )) && micro_ok=0
+  done
+}
+
+unlock() {  # the fleet key (one passphrase) and the sudo password (stdin), both checked first
+  SUFFIX=$(suffix); [[ -n $SUFFIX ]] || die "not on the tailnet"
+  [[ -f $KEY ]] || die "no $KEY -- run: fleet setup"
+  eval "$(ssh-agent -s)" >/dev/null
+  trap 'ssh-agent -k >/dev/null 2>&1' EXIT
+  ssh-add -t 3600 "$KEY" || die "fleet key not loaded"
+  IFS= read -r -s -p "sudo password (shared by every machine): " pw; echo
+  printf '%s\n' "$pw" | sudo -S -p '' -k -v 2>/dev/null || die "sudo password rejected here -- nothing sent anywhere"
+}
+
+table() {  # print results; nonzero if anything failed
+  local h bad=0; echo; echo "=== $1"
+  for h in "$SELF" "${hosts[@]}"; do printf '%-14s %s\n' "$h" "${result[$h]:-}"; [[ ${result[$h]:-} == ok || ${result[$h]:-} == skip* || ${result[$h]:-} == "not touched"* ]] || bad=1; done
+  return $bad
+}
 
 cmd=${1:-status}; shift || true
 case $cmd in
@@ -44,72 +163,82 @@ setup)
   [[ -f $KEY ]] || ssh-keygen -t ed25519 -f "$KEY" -C "ben@$SELF fleet" || die "ssh-keygen failed"
   ssh-keygen -y -P '' -f "$KEY" >/dev/null 2>&1 && die "$KEY has no passphrase -- give it one (ssh-keygen -p -f $KEY)"
   ip=$(tailscale ip -4 | head -n1); [[ -n $ip ]] || die "no tailnet IP"
-  mkdir -p "$SECRETS_DIR/ssh/fleet"
-  cp "$KEY.pub" "$SECRETS_DIR/ssh/fleet/$SELF.pub"
+  mkdir -p "$SECRETS/ssh/fleet"
+  cp "$KEY.pub" "$SECRETS/ssh/fleet/$SELF.pub"
   blob=$(awk '{print $2}' "$KEY.pub")
   for h in "${hosts[@]}"; do
-    f=$SECRETS_DIR/ssh/authorized_keys/$h
+    f=$SECRETS/ssh/authorized_keys/$h
     [[ -f $f ]] || { echo "skip  $h: no tracked authorized_keys"; continue; }
     grep -vF " $blob" "$f" > "$f.tmp" || true; mv "$f.tmp" "$f"   # drop an older line for this key
     printf 'from="%s",command="%s/tools/fleet-apply",restrict %s\n' "$ip" "$REPO" "$(cat "$KEY.pub")" >> "$f"
     echo "did   $h: fleet key authorized (forced command, from=$ip)"
   done
-  echo "todo  git -C $SECRETS_DIR add ssh && git -C $SECRETS_DIR commit -m '$SELF: fleet key' && git -C $SECRETS_DIR push"
-  echo "todo  after the push: $REPO/tools/authorized-keys trigger ${hosts[*]}   (the timer alone takes up to a week)"
+  echo "todo  git -C $SECRETS add ssh && git -C $SECRETS commit -m '$SELF: fleet key' && git -C $SECRETS push"
+  echo "todo  then on each machine, once, by hand: tools/authorized-keys apply (keys otherwise arrive with the next fleet push)"
   ;;
 status)
   SUFFIX=$(suffix)
-  printf '%-14s %s\n' "$SELF" "$("$here/fleet-apply" status)"
-  for h in "${hosts[@]}"; do printf '%-14s %s\n' "$h" "$(fssh "$h" status 2>&1 | tail -1)"; done
+  for h in "$SELF" "${hosts[@]}"; do
+    st=$(on "$h" status 2>&1 | tail -1)
+    [[ $st =~ ^([0-9a-f]{40})\ ([0-9a-f]{40})\ ([0-9a-f]{40})\ (.*)$ ]] && st="${BASH_REMATCH[1]:0:7} ${BASH_REMATCH[2]:0:7} ${BASH_REMATCH[3]:0:7} ${BASH_REMATCH[4]}"
+    printf '%-14s %s\n' "$h" "$st"
+  done
+  if [[ -s $SNAPS ]]; then read -r t a d s _ < <(tail -1 "$SNAPS"); echo "approved       ${a:0:7} ${d:0:7} ${s:0:7} $t"; else echo "approved       none yet"; fi
   ;;
 push)
-  target=${1:-main}; shift || true
   stages=("$@")
-  [[ $target == main || $target =~ ^[0-9a-f]{7,40}$ ]] || die "target must be main or a commit SHA"
-  git -C "$REPO" fetch -q origin || die "fetch failed"
-  if [[ $target == main ]]; then want=$(git -C "$REPO" rev-parse origin/main)
-  else want=$(git -C "$REPO" rev-parse -q --verify "$target^{commit}") || die "unknown commit $target"
-       git -C "$REPO" merge-base --is-ancestor "$want" origin/main || die "$target is not on origin/main"
-  fi
-  SUFFIX=$(suffix); [[ -n $SUFFIX ]] || die "not on the tailnet"
-  [[ -f $KEY ]] || die "no $KEY -- run: fleet setup"
-
-  # One passphrase: a private agent for this run only.
-  eval "$(ssh-agent -s)" >/dev/null
-  trap 'ssh-agent -k >/dev/null 2>&1' EXIT
-  ssh-add -t 3600 "$KEY" || die "fleet key not loaded"
-  # One sudo password, checked here first: a typo costs one attempt on this machine only.
-  IFS= read -r -s -p "sudo password (shared by every machine): " pw; echo
-  printf '%s\n' "$pw" | sudo -S -p '' -k -v 2>/dev/null || die "sudo password rejected here -- nothing sent anywhere"
-
+  exec 3<"$IN" || die "no terminal for the review ($IN)"
+  unlock
   declare -A result secrets_bad
-  # Secrets before anything else, the vault's source of truth first, so its pushes are in
-  # origin before the others fast-forward.
-  vault_host=${FLEET_VAULT_HOST:-beast-arch}
-  order=(); for h in "$SELF" "${hosts[@]}"; do [[ $h == "$vault_host" ]] && order=("$h" "${order[@]}") || order+=("$h"); done
-  echo "=== secrets"
+
+  # 1. Each machine hands its own secrets commits to origin, the vault's source of truth first.
+  order=(); for h in "$SELF" "${hosts[@]}"; do [[ $h == "$VAULT_HOST" ]] && order=("$h" "${order[@]}") || order+=("$h"); done
+  echo "=== secrets: each machine pushes its own commits"
   for h in "${order[@]}"; do
-    if [[ $h == "$SELF" ]]; then out=$("$here/fleet-apply" secrets 2>&1); else out=$(fssh "$h" secrets 2>&1); fi
-    rc=$?; echo "$out"
+    out=$(on "$h" secrets-push 2>&1); rc=$?; echo "$out"
     (( rc == 0 )) || secrets_bad[$h]=$(tail -1 <<<"$out")
   done
 
-  run_one() {  # host -> result line
-    local h=$1 st rc
-    if [[ -n ${secrets_bad[$h]:-} ]]; then result[$h]="FAILED secrets out of sync, not updated: ${secrets_bad[$h]#FAIL  secrets: }"; return; fi
-    if [[ $h == "$SELF" ]]; then st=$("$here/fleet-apply" status); else st=$(fssh "$h" status 2>&1 | tail -1); fi
-    if [[ $st == "$want "*" rc=0 "* ]]; then result[$h]="skip (already at ${want:0:7})"; return; fi
-    echo; echo "=== $h"
-    if [[ $h == "$SELF" ]]; then printf '%s\n' "$pw" | "$here/fleet-apply" apply "$target" "${stages[@]}"
-    else printf '%s\n' "$pw" | fssh "$h" apply "$target" "${stages[@]}"; fi
-    rc=$?
-    result[$h]=$( ((rc == 0)) && echo "ok (${want:0:7})" || echo "FAILED rc=$rc -- see ~/.local/state/fleet/last.log on $h")
-  }
-  for h in "$SELF" "${hosts[@]}"; do run_one "$h"; done
+  # 2. Review against the last approved snapshot (the first time: what micro has checked out).
+  if [[ -s $SNAPS ]]; then read -r _ b_ab b_dot b_sec _ < <(tail -1 "$SNAPS")
+  else b_ab=$(gitr ab rev-parse HEAD); b_dot=$(gitr dot rev-parse HEAD); b_sec=$(gitr sec rev-parse HEAD)
+       echo; echo "note  no approved snapshot yet: reviewing from what $SELF has checked out now"; fi
+  review ab "$b_ab";   ab=$picked
+  review dot "$b_dot"; dot=$picked
+  review sec "$b_sec"; sec=$picked
+  echo
+  printf 'apply snapshot  arch-bootstrap %s  dotfiles %s  secrets %s  to %s, then %s? [y/N] ' \
+    "${ab:0:7}" "${dot:0:7}" "${sec:0:7}" "$SELF" "${hosts[*]}"
+  IFS= read -r ans <&3; [[ $ans == y || $ans == Y ]] || die "not applied"
+
+  # 3. micro first; it records the snapshot once it holds it.
+  apply_all "$ab" "$dot" "$sec" "$SELF" "${hosts[@]}"
+  # Record the snapshot once micro holds it -- unless it is the one already recorded (a push with
+  # nothing new must not make `fleet rollback` "roll back" to the same snapshot).
+  if [[ ${result[$SELF]} == ok || ${result[$SELF]} == skip* ]]; then
+    mkdir -p "$STATE"; last=$(tail -1 "$SNAPS" 2>/dev/null | cut -d' ' -f2-4)
+    [[ $last == "$ab $dot $sec" ]] || echo "$(date -Iseconds) $ab $dot $sec" >> "$SNAPS"
+  fi
   unset pw
-  echo; echo "=== fleet push ${want:0:7}"
-  for h in "$SELF" "${hosts[@]}"; do printf '%-14s %s\n' "$h" "${result[$h]}"; done
-  (( ${#secrets_bad[@]} == 0 ))
+  table "fleet push: arch-bootstrap ${ab:0:7}  dotfiles ${dot:0:7}  secrets ${sec:0:7}"
   ;;
-*) die "usage: fleet setup | status | push [main|SHA] [stage ...]" ;;
+rollback)
+  scope=${1:-micro}; [[ $scope == micro || $scope == all ]] || die "usage: fleet rollback [all]"
+  [[ $(wc -l < "$SNAPS" 2>/dev/null || echo 0) -ge 2 ]] || die "no earlier approved snapshot to roll back to"
+  read -r t ab dot sec _ < <(tail -2 "$SNAPS" | head -1)
+  exec 3<"$IN" || die "no terminal ($IN)"
+  printf 'roll %s back to the snapshot approved %s (arch-bootstrap %s, dotfiles %s; secrets stay)? [y/N] ' \
+    "$( [[ $scope == all ]] && echo "every machine" || echo "$SELF")" "$t" "${ab:0:7}" "${dot:0:7}"
+  IFS= read -r ans <&3; [[ $ans == y || $ans == Y ]] || die "not rolled back"
+  declare -A result secrets_bad; stages=()
+  if [[ $scope == all ]]; then unlock; targets=("$SELF" "${hosts[@]}")
+  else IFS= read -r -s -p "sudo password: " pw; echo
+       printf '%s\n' "$pw" | sudo -S -p '' -k -v 2>/dev/null || die "sudo password rejected"
+       targets=("$SELF"); for h in "${hosts[@]}"; do result[$h]="not touched (rollback micro)"; done; fi
+  apply_all "$ab" "$dot" "$sec" "${targets[@]}"
+  [[ ${result[$SELF]} == ok ]] && echo "$(date -Iseconds) $ab $dot $sec rollback-of-$(tail -1 "$SNAPS" | cut -d' ' -f1)" >> "$SNAPS"
+  unset pw
+  table "fleet rollback ($scope) to $t"
+  ;;
+*) die "usage: fleet status | push [stage ...|keys] | rollback [all] | setup" ;;
 esac

@@ -4,30 +4,32 @@
 # each machine's authorized_keys, so that key can run this and nothing else. On micro itself
 # tools/fleet runs it directly.
 #
-# Request (SSH_ORIGINAL_COMMAND over ssh, else the arguments):
-#   status                          print the last applied line ("<sha> <time> rc=<n> stages=...")
-#   apply <main|SHA> [stage ...]    update arch-bootstrap to latest main, or to SHA (which must be
-#                                   on origin/main -- the "last known safe commit" after a security
-#                                   event), fast-forward the dotfiles, then run the stages.
-#   secrets                         bring ~/secrets in line with origin (fleet push runs this on
-#                                   every machine first, beast-arch first). Rules (Ben, 2026-10-08):
-#                                   beast-arch is the source of truth, above all for the KeePassXC
-#                                   vault, whose merges are destructive -- so nothing is ever merged:
-#                                     in sync               ok
-#                                     vault saved, not committed, on beast-arch
-#                                                           committed ("Passwords.kdbx: saved <time>
-#                                                           on beast-arch"), then as below. KeePassXC
-#                                                           saves by rename, so the file is whole
-#                                     ahead only            pushed; a vault commit anywhere but
-#                                                           beast-arch is an error instead
-#                                     behind only           fast-forwarded; an error if the incoming
-#                                                           commits touch the vault while KeePassXC
-#                                                           runs here (it would overwrite them)
-#                                     diverged              rebased onto origin and pushed, but only
-#                                                           when the incoming commits leave the vault
-#                                                           alone; a conflict aborts. Otherwise an error
-#                                     any other uncommitted change   an error: a human sorts it out
-#                                   Exit 0 in line, 1 out of sync (fleet push then skips this machine).
+# Trust model (Ben, 2026-10-08): beast-arch, carbon and media-center are "dirty" -- a compromise
+# may happen there, and each can push to GitHub. micro is the trusted place. So a machine never
+# applies "whatever is on GitHub": it applies a SNAPSHOT -- one commit per repo -- that Ben
+# reviewed on micro. A git commit id names its whole tree and history, so a commit pushed after
+# the review, or one Ben excluded, cannot ride along.
+#
+# Requests (SSH_ORIGINAL_COMMAND over ssh, else the arguments):
+#   status                         the last applied line: "<ab> <dot> <sec> <time> rc=<n> stages=..."
+#   secrets-push                   phase 1 of a push: hand this machine's own secrets commits to
+#                                  origin, so the review sees them. Never pulls. beast-arch is the
+#                                  source of truth for the KeePassXC vault, whose merges are
+#                                  destructive, so nothing is ever merged:
+#                                    vault saved, not committed, on beast-arch -> committed, pushed
+#                                    ahead -> pushed; a vault commit off beast-arch is an error
+#                                    diverged -> rebased + pushed only if origin left the vault
+#                                      alone and nothing conflicts (a conflict aborts); else error
+#                                    any other uncommitted change -> error
+#                                  Exit 1 = out of sync: the push skips this machine.
+#   apply <ab> <dot> <sec> [stage ...|keys]
+#                                  move arch-bootstrap, the dotfiles and secrets to exactly those
+#                                  commits (each must be on its origin branch), install
+#                                  authorized_keys from that secrets commit, then run the stages
+#                                  ("keys": only the moves and the keys -- an urgent revocation).
+#                                  Forward moves fast-forward the branch; an OLDER commit (a
+#                                  rollback) is checked out detached. Secrets only ever move forward:
+#                                  rolling the vault back would lose passwords.
 #
 # For apply, the FIRST LINE OF STDIN is the shared sudo password. It is handed to `sudo -S -v`
 # on fd 3 inside a private pty (script), so sudo caches it for that pty and every sudo the
@@ -35,9 +37,8 @@
 # inside the run read EOF and take their default (no): nothing unattended answers "yes".
 #
 # Stages are limited to ALLOWED. ~/.config/fleet/hold, per machine:
-#   <stage>: <reason>                     skip that stage, and say why
+#   <stage>: <reason>                       skip that stage, and say why
 #   ignore-pkgs: <pkg>[,<pkg>] -- <reason>  keep those packages from upgrading (PACMAN_IGNORE)
-# e.g. beast-arch keeps `linux` while a task-1 RAM window is open, but still installs new packages.
 set -euo pipefail
 umask 077
 REPO=${FLEET_REPO:-$HOME/projects/arch-bootstrap}
@@ -51,11 +52,10 @@ HOST=${FLEET_HOST:-$(uname -n)}
 ALLOWED="packages aur toolchains services xmonad verify"
 DEFAULT="packages aur services xmonad verify"
 die() { echo "FAIL  $*"; exit 1; }
+touches() { [[ $'\n'$1$'\n' == *$'\n'"$VAULT"$'\n'* ]]; }   # a file list names the vault
 
-read -r -a req <<<"${SSH_ORIGINAL_COMMAND:-$*}"
-sync_secrets() {
+secrets_push() {
   local g=(git -C "$SECRETS") ahead behind dirty incoming outgoing
-  touches() { [[ $'\n'$1$'\n' == *$'\n'"$VAULT"$'\n'* ]]; }   # a file list names the vault
   [[ -d $SECRETS/.git ]] || die "secrets: no checkout at $SECRETS"
   "${g[@]}" fetch -q origin || die "secrets: fetch failed"
   dirty=$("${g[@]}" status --porcelain | awk '{print $2}')
@@ -75,35 +75,64 @@ sync_secrets() {
     touches "$incoming" && die "secrets: diverged on $HOST ($ahead ahead, $behind behind) and origin changed $VAULT -- the vault is never merged; sort it out by hand"
     "${g[@]}" rebase -q '@{u}' >/dev/null 2>&1 || { "${g[@]}" rebase --abort 2>/dev/null
       die "secrets: diverged on $HOST ($ahead ahead, $behind behind) and the rebase conflicts -- nothing changed; sort it out by hand"; }
-    echo "did   secrets: rebased $ahead local commit(s) onto $behind from origin on $HOST"
-    behind=0
+    echo "did   secrets: rebased $ahead local commit(s) onto origin on $HOST"
   fi
   if (( ahead )); then
     "${g[@]}" push -q origin HEAD || die "secrets: push failed on $HOST"
     echo "did   secrets: pushed $ahead commit(s) from $HOST"
-  elif (( behind )); then
-    if touches "$incoming" && pgrep -x keepassxc >/dev/null; then
-      die "secrets: $HOST is $behind behind with $VAULT changes, and KeePassXC is running -- close it, then re-run"
-    fi
-    "${g[@]}" merge -q --ff-only '@{u}' || die "secrets: fast-forward failed on $HOST"
-    echo "did   secrets: fast-forwarded $behind commit(s) on $HOST"
   else
-    echo "ok    secrets in sync on $HOST"
+    echo "ok    secrets: nothing to push from $HOST"
   fi
 }
 
+# move <label> <branch> <sha> <forward-only 0|1> <git cmd...>: put a checkout at exactly <sha>,
+# which must be on origin/<branch>. Forward: fast-forward the branch (detached if the branch has
+# other commits). Older (a rollback): detached, unless forward-only.
+move() {
+  local label=$1 branch=$2 sha=$3 fwd_only=$4; shift 4
+  local g=("$@") cur
+  "${g[@]}" fetch -q origin || die "$label: fetch failed"
+  "${g[@]}" cat-file -e "$sha^{commit}" 2>/dev/null || die "$label: unknown commit $sha"
+  "${g[@]}" merge-base --is-ancestor "$sha" "origin/$branch" || die "$label: ${sha:0:7} is not on origin/$branch"
+  cur=$("${g[@]}" rev-parse HEAD)
+  if "${g[@]}" merge-base --is-ancestor "$cur" "$sha"; then
+    if [[ $label == secrets ]] && touches "$("${g[@]}" diff --name-only "$cur" "$sha")" && pgrep -x keepassxc >/dev/null; then
+      die "secrets: the snapshot changes $VAULT and KeePassXC is running on $HOST -- close it, then re-run"
+    fi
+    if "${g[@]}" checkout -q "$branch" 2>/dev/null && "${g[@]}" merge-base --is-ancestor HEAD "$sha"; then
+      "${g[@]}" merge -q --ff-only "$sha" || die "$label: cannot fast-forward to ${sha:0:7} (local changes in the way?)"
+    else
+      "${g[@]}" checkout -q --detach "$sha" || die "$label: cannot check out ${sha:0:7} (local changes in the way?)"
+    fi
+    echo "ok    $label at ${sha:0:7}"
+  elif "${g[@]}" merge-base --is-ancestor "$sha" "$cur"; then
+    if (( fwd_only )); then echo "ok    $label: already past the snapshot (at ${cur:0:7}), left as is"; return; fi
+    "${g[@]}" checkout -q --detach "$sha" || die "$label: cannot check out ${sha:0:7} (local changes in the way?)"
+    echo "note  $label: rolled back to ${sha:0:7}, detached (was ${cur:0:7})"
+  else
+    die "$label: ${cur:0:7} has local commits that are not in the snapshot -- push or drop them first"
+  fi
+}
+
+read -r -a req <<<"${SSH_ORIGINAL_COMMAND:-$*}"
 case ${req[0]:-} in
-  status)  cat "$STATE/applied" 2>/dev/null || echo "none"; exit 0 ;;
-  secrets) sync_secrets; exit 0 ;;
-  apply)   ;;
-  *)       die "request must be: status | secrets | apply <main|SHA> [stage ...]" ;;
+  status)       cat "$STATE/applied" 2>/dev/null || echo "none"; exit 0 ;;
+  secrets-push) secrets_push; exit 0 ;;
+  apply)        ;;
+  *)            die "request must be: status | secrets-push | apply <ab> <dot> <sec> [stage ...|keys]" ;;
 esac
-target=${req[1]:-}
-[[ $target == main || $target =~ ^[0-9a-f]{7,40}$ ]] || die "target must be main or a commit SHA: '$target'"
-stages=("${req[@]:2}")
-(( ${#stages[@]} )) || read -r -a stages <<<"$DEFAULT"
-for s in "${stages[@]}"; do [[ " $ALLOWED " == *" $s "* ]] || die "stage not allowed here: $s (allowed: $ALLOWED)"; done
-if [[ -f $HOLD ]]; then
+ab=${req[1]:-} dot=${req[2]:-} sec=${req[3]:-}
+for s in "$ab" "$dot" "$sec"; do
+  [[ $s =~ ^[0-9a-f]{40}$ ]] || die "apply needs three full commit ids (arch-bootstrap dotfiles secrets): '$s'"
+done
+stages=("${req[@]:4}")
+keys_only=0
+if [[ ${stages[*]:-} == keys ]]; then keys_only=1; stages=()
+else
+  (( ${#stages[@]} )) || read -r -a stages <<<"$DEFAULT"
+  for s in "${stages[@]}"; do [[ " $ALLOWED " == *" $s "* ]] || die "stage not allowed here: $s (allowed: $ALLOWED, or keys)"; done
+fi
+if [[ -f $HOLD ]] && (( ${#stages[@]} )); then
   keep=()
   for s in "${stages[@]}"; do
     reason=$(awk -v s="$s" -F': *' '$1 == s { sub(/^[^:]*: */, ""); print; exit }' "$HOLD")
@@ -119,28 +148,16 @@ if [[ -f $HOLD ]]; then
 fi
 IFS= read -r pw || die "no sudo password on stdin"
 
-# 1. Code: latest main, or a pinned commit that main contains.
-git -C "$REPO" fetch -q origin || die "arch-bootstrap fetch failed"
-if [[ $target == main ]]; then
-  git -C "$REPO" checkout -q main && git -C "$REPO" merge -q --ff-only origin/main \
-    || die "arch-bootstrap main cannot fast-forward (local commits?)"
-else
-  git -C "$REPO" rev-parse -q --verify "$target^{commit}" >/dev/null || die "unknown commit: $target"
-  git -C "$REPO" merge-base --is-ancestor "$target" origin/main || die "$target is not on origin/main"
-  git -C "$REPO" checkout -q --detach "$target"
-fi
-sha=$(git -C "$REPO" rev-parse HEAD)
-echo "ok    arch-bootstrap at ${sha:0:7}"
-
-# 2. Dotfiles: fast-forward when nothing local is in the way (a dirty file the update does not
-# touch is fine; git refuses otherwise, and that is reported, not forced).
+# 1. The snapshot: exactly these three commits.
+move arch-bootstrap "${FLEET_AB_BRANCH:-main}" "$ab" 0 git -C "$REPO"
 if [[ -d $DOTDIR ]]; then
-  dot=(git --git-dir="$DOTDIR" --work-tree="$HOME")
-  if "${dot[@]}" fetch -q origin && "${dot[@]}" merge -q --ff-only origin/master 2>/dev/null; then
-    echo "ok    dotfiles at $("${dot[@]}" rev-parse --short HEAD)"
-  else
-    echo "warn  dotfiles not fast-forwarded (local commits, or local changes in the way)"
-  fi
+  move dotfiles "${FLEET_DOT_BRANCH:-master}" "$dot" 0 git --git-dir="$DOTDIR" --work-tree="$HOME"
+fi
+move secrets "${FLEET_SEC_BRANCH:-master}" "$sec" 1 git -C "$SECRETS"
+
+# 2. Who may log in: only from the reviewed secrets commit (the weekly sync timer is gone).
+if [[ -x $REPO/tools/authorized-keys && -f $SECRETS/ssh/authorized_keys/$HOST ]]; then
+  SECRETS_DIR=$SECRETS AK_HOST=$HOST "$REPO/tools/authorized-keys" enable --yes || die "authorized_keys not installed"
 fi
 
 # 3. Stages, in one pty so sudo's ticket covers the whole run.
@@ -155,8 +172,9 @@ if (( ${#stages[@]} )); then
   exec 3<&-
 else
   unset pw
-  echo "info  no stages left to run"
+  if (( keys_only )); then echo "info  keys only: no stages run"; else echo "info  no stages left to run"; fi
 fi
-printf '%s %s rc=%s stages=%s\n' "$sha" "$(date -Iseconds)" "$rc" "${stages[*]:-none}" > "$STATE/applied"
+printf '%s %s %s %s rc=%s stages=%s\n' "$ab" "$dot" "$sec" "$(date -Iseconds)" "$rc" \
+  "$( ((keys_only)) && echo keys || echo "${stages[*]:-none}")" > "$STATE/applied"
 echo "done  rc=$rc (log: $STATE/last.log)"
 exit "$rc"

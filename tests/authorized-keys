@@ -60,47 +60,16 @@ line 100.64.0.1 a > "$src"; "$tool" apply --yes >/dev/null 2>&1
 echo '# emptied by mistake' > "$src"; expect !0 "refuses to remove every key"            "$tool" apply --yes
 printf '# x\n# no-inbound\n' > "$src";  expect 0  "...unless the file says # no-inbound"  "$tool" apply --yes
 
-# ---- sync: a real git origin and clone
-git init -q --bare "$t/origin.git"
-git -C "$SECRETS_DIR" init -q -b master; git -C "$SECRETS_DIR" add -A
-git -C "$SECRETS_DIR" -c user.name=t -c user.email=t@t commit -qm init
-git -C "$SECRETS_DIR" remote add origin "$t/origin.git"; git -C "$SECRETS_DIR" push -q -u origin master
-git clone -q "$t/origin.git" "$t/other"   # the machine where the change is made
-line 100.64.0.1 a > "$t/other/ssh/authorized_keys/box"
-git -C "$t/other" -c user.name=t -c user.email=t@t commit -qam "grant a"; git -C "$t/other" push -q
-echo vault-v1 > "$SECRETS_DIR/vault"   # an uncommitted local file, like Passwords.kdbx
-expect 0  "sync fast-forwards an ssh/-only change and applies it" "$tool" sync
-grep -q ben@a "$AK_LIVE" && { pass=$((pass+1)); echo "pass  ...key a now live"; } || { fail=$((fail+1)); echo "FAIL  sync did not apply"; }
-echo note > "$t/other/README"; line 100.64.0.2 b >> "$t/other/ssh/authorized_keys/box"
-git -C "$t/other" add -A; git -C "$t/other" -c user.name=t -c user.email=t@t commit -qm "readme + grant b"; git -C "$t/other" push -q
-expect 0  "sync with a change outside ssh/ does not pull"         "$tool" sync
-grep -q 'outside ssh/' <<<"$out" && ! grep -q ben@b "$AK_LIVE" \
-  && { pass=$((pass+1)); echo "pass  ...said so, and b is not live"; } || { fail=$((fail+1)); echo "FAIL  sync pulled a non-ssh change"; }
-
-# ---- enable: units written to the fake HOME, systemctl stubbed
-git -C "$SECRETS_DIR" pull -q --ff-only
-export HOME=$t/home; mkdir -p "$HOME"
-expect 0  "enable: apply, then units + timer"  env AK_SYSTEMCTL=echo "$tool" enable --yes
-[[ -f $HOME/.config/systemd/user/authorized-keys.timer ]] && grep -q 'enable --now authorized-keys.timer' <<<"$out" \
-  && grep -q "ExecStart=$tool sync" "$HOME/.config/systemd/user/authorized-keys.service" \
-  && { pass=$((pass+1)); echo "pass  ...unit files written, timer enabled"; } || { fail=$((fail+1)); echo "FAIL  enable units"; sed 's/^/        /' <<<"$out"; }
-tm=$HOME/.config/systemd/user/authorized-keys.timer
-grep -qx 'OnCalendar=weekly' "$tm" && grep -qx 'Persistent=true' "$tm" && ! grep -qE 'OnUnitActiveSec|OnBootSec' "$tm" \
-  && systemd-analyze calendar weekly >/dev/null \
-  && { pass=$((pass+1)); echo "pass  ...timer is weekly (no 15-min or boot trigger)"; } || { fail=$((fail+1)); echo "FAIL  timer schedule"; cat "$tm"; }
-rm -rf "$HOME/.config"; cat "$t/x.pub" >> "$src"     # now the check fails
-expect !0 "enable with a failing apply installs no timer"  env AK_SYSTEMCTL=echo "$tool" enable
-[[ ! -e $HOME/.config/systemd/user/authorized-keys.timer ]] && { pass=$((pass+1)); echo "pass  ...no unit written"; } || { fail=$((fail+1)); echo "FAIL  timer installed after failed apply"; }
-
-# ---- trigger: ssh stubbed on PATH; host "down" fails
-mkdir -p "$t/bin"
-printf '#!/bin/sh\necho "$@" >> "%s/ssh.log"\nfor a; do h=$a; case $a in -*|*=*) ;; *) break;; esac; done\n[ "$h" != down ]\n' "$t" > "$t/bin/ssh"
-sed -i 's/for a; do h=$a; case $a in -\*|\*=\*) ;; \*) break;; esac; done/h=$(printf "%s\\n" "$@" | grep -vE "^-|=" | head -1)/' "$t/bin/ssh"
-chmod +x "$t/bin/ssh"
-expect !0 "trigger with no host refuses"      env PATH="$t/bin:$PATH" "$tool" trigger
-expect 0  "trigger two reachable hosts"       env PATH="$t/bin:$PATH" "$tool" trigger up1 up2
-grep -c 'systemctl --user start authorized-keys.service' "$t/ssh.log" | grep -qx 2 \
-  && { pass=$((pass+1)); echo "pass  ...started the service on both"; } || { fail=$((fail+1)); echo "FAIL  trigger ssh calls"; cat "$t/ssh.log"; }
-expect !0 "trigger reports an unreachable host" env PATH="$t/bin:$PATH" "$tool" trigger up1 down
+# ---- sync / trigger are gone; enable applies and removes an old timer (systemctl stubbed)
+expect !0 "sync is refused (no unreviewed pulls)"     "$tool" sync
+expect !0 "trigger is refused"                         "$tool" trigger up1
+export HOME=$t/home; ud=$HOME/.config/systemd/user; mkdir -p "$ud"
+printf '[Timer]\nOnCalendar=weekly\n' > "$ud/authorized-keys.timer"; printf '[Service]\nExecStart=x sync\n' > "$ud/authorized-keys.service"
+expect 0  "enable: applies, removes the old timer"    env AK_SYSTEMCTL=echo "$tool" enable --yes
+[[ ! -e $ud/authorized-keys.timer && ! -e $ud/authorized-keys.service ]] && grep -q 'removed the old authorized-keys timer' <<<"$out" \
+  && { pass=$((pass+1)); echo "pass  ...timer and service removed"; } || { fail=$((fail+1)); echo "FAIL  old timer left"; sed 's/^/        /' <<<"$out"; }
+expect 0  "enable with no old timer: just applies"    env AK_SYSTEMCTL=echo "$tool" enable --yes
+cat "$t/x.pub" >> "$src"     # now the check fails
+expect !0 "enable with a failing apply fails"          env AK_SYSTEMCTL=echo "$tool" enable --yes
 
 echo; echo "$pass passed, $fail failed"; (( fail == 0 ))

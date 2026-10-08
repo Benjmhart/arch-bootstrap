@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tests/peer-key -- stage 75's publish_host_key: a machine switching to its own peer key
 # rewrites the registry and every peer's tracked authorized_keys, and the result still
-# passes tools/authorized-keys check (what each peer's timer runs). Temp dir only.
+# passes tools/authorized-keys check (what fleet-apply runs before installing it). Temp dir only.
 set -uo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 eval "$(awk '/^publish_host_key\(\) \{/,/^\}/' "$root/bootstrap.sh")"

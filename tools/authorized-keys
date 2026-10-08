@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# authorized-keys [check|diff|apply|sync|enable] [--yes] -- this machine's
+# authorized-keys [check|diff|apply|enable] [--yes] -- this machine's
 # ~/.ssh/authorized_keys, installed from the secrets repo.
 #
 # The source of truth is $SECRETS_DIR/ssh/authorized_keys/<host>: tracked, so every
@@ -12,18 +12,14 @@
 #   diff    check, then show what apply would change
 #   apply   check, back up the live file, install the copy (0600). Dropping a key
 #           that is live now asks first, unless --yes.
-#   sync    what the timer runs: fetch secrets, fast-forward it ONLY if every incoming
-#           change is under ssh/ (never pull the vault under a running KeePassXC),
-#           then apply --yes. The timer runs it WEEKLY, so a pushed change (or a
-#           poisoned push to secrets) reaches a machine within a week unless forced.
-#   enable  run once per machine (the bootstrap does): sync secrets (ssh/ only), an
-#           interactive apply,
-#           and only if that succeeds, install + start the weekly user timer
-#           (authorized-keys.timer). A "no" at the prompt installs no timer.
-#           Re-running it rewrites the units (how a schedule change reaches a machine).
-#   trigger HOST...  on-demand: sync each HOST now, over ssh. For a revocation that
-#           cannot wait a week: push the edit to secrets, then trigger every machine
-#           (from one you trust -- not the one being cut off).
+#   enable  apply, then remove the old weekly timer if this machine still has one.
+#
+# This tool never pulls secrets. Since 2026-10-08 (station-maintenance beast-arch 80) the only
+# path by which a key reaches a machine is a fleet push from micro: Ben reviews the commits,
+# the machine checks out exactly the approved secrets commit, and fleet-apply runs `apply --yes`.
+# The weekly `sync` timer and `trigger` are gone: each installed whatever secrets held, so one
+# poisoned push from a compromised machine granted itself ssh everywhere within a week.
+# Urgent revocation: commit the edit, then `fpush keys` from micro.
 #
 # No run, automatic or not, removes EVERY key unless the file says `# no-inbound`:
 # an emptied file is far more likely a mistake than a decision.
@@ -38,15 +34,14 @@
 set -euo pipefail
 die() { printf 'FAIL  %s\n' "$*" >&2; exit 1; }
 
-cmd=check yes=0 hosts=()
+cmd=check yes=0
 for a in "$@"; do
   case $a in
-    check|diff|apply|sync|enable) cmd=$a ;;
-    trigger) cmd=trigger ;;
+    check|diff|apply|enable) cmd=$a ;;
     --yes) yes=1 ;;
     -h|--help) sed -n '2,/^set -euo/{/^set -euo/d;s/^# \{0,1\}//;p}' "$0"; exit 0 ;;
-    *) [[ $cmd == trigger ]] && hosts+=("$a") && continue
-       die "unknown argument: $a (check|diff|apply [--yes]|sync|enable|trigger HOST...)" ;;
+    sync|trigger) die "'$a' is gone: keys now reach a machine only through a reviewed fleet push (fpush keys)" ;;
+    *) die "unknown argument: $a (check|diff|apply [--yes]|enable)" ;;
   esac
 done
 
@@ -57,67 +52,16 @@ live=${AK_LIVE:-$HOME/.ssh/authorized_keys}
 SYSTEMCTL=${AK_SYSTEMCTL:-systemctl}
 
 # Fetch secrets and fast-forward it only when every incoming change is under ssh/.
-pull_ssh_only() {
-  git -C "$SECRETS_DIR" fetch -q origin || die "secrets fetch failed"
-  local incoming; incoming=$(git -C "$SECRETS_DIR" diff --name-only 'HEAD...@{u}')
-  if [[ -z $incoming ]]; then
-    :
-  elif grep -qv '^ssh/' <<<"$incoming"; then
-    echo "skip  secrets has incoming changes outside ssh/ -- pull it by hand"
-  elif git -C "$SECRETS_DIR" merge --ff-only -q '@{u}'; then
-    echo "ok    secrets fast-forwarded (ssh/ only)"
-  else
-    echo "skip  secrets cannot fast-forward (local commits?) -- pull it by hand"
-  fi
-}
-
-if [[ $cmd == trigger ]]; then
-  (( ${#hosts[@]} )) || die "trigger needs at least one host"
-  rc=0
-  for h in "${hosts[@]}"; do
-    if ssh -o BatchMode=yes -o ConnectTimeout=8 "$h" systemctl --user start authorized-keys.service; then
-      echo "ok    $h synced ($h: journalctl --user -u authorized-keys)"
-    else
-      echo "FAIL  $h: not synced (offline, no timer there, or ssh refused)"; rc=1
-    fi
-  done
-  exit $rc
-fi
-
 if [[ $cmd == enable ]]; then
-  pull_ssh_only
-  "$0" apply || die "apply did not complete -- timer NOT installed"
-  ud=$HOME/.config/systemd/user; mkdir -p "$ud"
-  self=$(readlink -f "$0")
-  cat > "$ud/authorized-keys.service" <<EOF
-# Written by arch-bootstrap tools/authorized-keys enable.
-[Unit]
-Description=Install ~/.ssh/authorized_keys from secrets ssh/authorized_keys/%H
-[Service]
-Type=oneshot
-Environment=SECRETS_DIR=$SECRETS_DIR
-ExecStart=$self sync
-EOF
-  cat > "$ud/authorized-keys.timer" <<EOF
-# Written by arch-bootstrap tools/authorized-keys enable.
-[Unit]
-Description=authorized_keys from secrets, weekly (on demand: authorized-keys trigger HOST)
-[Timer]
-OnCalendar=weekly
-Persistent=true
-RandomizedDelaySec=1h
-[Install]
-WantedBy=timers.target
-EOF
-  $SYSTEMCTL --user daemon-reload
-  $SYSTEMCTL --user enable --now authorized-keys.timer
-  echo "done  authorized-keys.timer enabled (journalctl --user -u authorized-keys)"
+  "$0" apply ${yes:+$( ((yes)) && echo --yes)} || die "apply did not complete"
+  ud=$HOME/.config/systemd/user
+  if [[ -e $ud/authorized-keys.timer || -e $ud/authorized-keys.service ]]; then
+    $SYSTEMCTL --user disable --now authorized-keys.timer >/dev/null 2>&1 || true
+    rm -f "$ud/authorized-keys.timer" "$ud/authorized-keys.service"
+    $SYSTEMCTL --user daemon-reload || true
+    echo "did   removed the old authorized-keys timer (keys now change only through a reviewed fleet push)"
+  fi
   exit 0
-fi
-
-if [[ $cmd == sync ]]; then
-  pull_ssh_only
-  cmd=apply yes=1
 fi
 
 [[ -f $src ]] || die "no $src -- nothing tracked for $host"

@@ -2428,12 +2428,10 @@ stage_tailnet() {
   done
 
   # 7. Install this machine's tracked file as ~/.ssh/authorized_keys (checks it, backs
-  # up the live file, asks before dropping a live key), then the weekly user timer
-  # that keeps it in step with secrets from here on.
-  # Always enable, not just apply: it also rewrites the timer, so a schedule change
-  # in the tool reaches machines that already had it.
+  # up the live file, asks before dropping a live key). `enable` also removes the old
+  # weekly sync timer: since 2026-10-08 keys change only through a reviewed fleet push.
   if [[ -f $ak ]]; then
-    "$SCRIPT_DIR/tools/authorized-keys" enable || warn "authorized_keys not installed, no timer -- see above"
+    "$SCRIPT_DIR/tools/authorized-keys" enable || warn "authorized_keys not installed -- see above"
   fi
   (( ak_changed )) && todo "commit and push the secrets repo (ssh/authorized_keys changed)"
   return 0
