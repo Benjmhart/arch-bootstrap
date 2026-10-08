@@ -3474,11 +3474,12 @@ compression-algorithm = zstd" "zram sized to RAM (lean)"; then
   fi
 }
 
-# A readable kernel-console font. default8x16 at 1920x1080 is tiny; ter-v24n
-# (terminus-font, 12x24) gives about 160x45. vconsole.conf also holds KEYMAP, so
+# A readable kernel-console font. default8x16 at 1920x1080 is tiny; Terminus 12x24
+# gives about 160x45. Bold (ter-v24b) since 2026-10-08: crisper on micro's 1366x768
+# (Ben chose plain-console improvements over a greeter, station-maintenance beast-arch 71). vconsole.conf also holds KEYMAP, so
 # only its FONT= line is touched. The `consolefont` mkinitcpio hook copies the font
 # into the initramfs, so the LUKS passphrase prompt only changes after a rebuild.
-CONSOLE_FONT=ter-v24n
+CONSOLE_FONT="${CONSOLE_FONT:-ter-v24b}"
 set_console_font() {
   local f=/etc/vconsole.conf
   if grep -qx "FONT=$CONSOLE_FONT" "$f" 2>/dev/null; then
@@ -3495,6 +3496,45 @@ set_console_font() {
   did "console font $CONSOLE_FONT in $f"
   # Used from the next boot. The rebuild is what reaches the passphrase prompt.
   grep -Eq '^HOOKS=.*\<consolefont\>' /etc/mkinitcpio.conf && run sudo mkinitcpio -P
+}
+
+# Dracula on the kernel console (tty1 and wherever agetty runs; kmscon draws its own).
+# Alacritty's palette (dotfiles alacritty.toml) with two console substitutions: the VT
+# uses colour 0 as its background and 7 as its foreground, so those take Alacritty's
+# primary background/foreground (282a36, f8f8f2) instead of its black/white.
+# setvtrgb rewrites the kernel's default palette, so every VT gets it, from the
+# console-palette unit at boot. The LUKS prompt runs before that and keeps the stock
+# colours (only vt.default_* on the kernel command line would reach it).
+CONSOLE_PALETTE=(282a36 ff5555 50fa7b f1fa8c bd93f9 ff79c6 8be9fd f8f8f2
+                 4d4d4d ff6e67 5af78e f4f99d 40a29d ff92d0 9aedfe e6e6e6)
+set_console_palette() {
+  local i c r=() g=() b=()
+  for c in "${CONSOLE_PALETTE[@]}"; do
+    r+=($((16#${c:0:2}))); g+=($((16#${c:2:2}))); b+=($((16#${c:4:2})))
+  done
+  local IFS=,
+  put_etc_file /etc/vtrgb "${r[*]}
+${g[*]}
+${b[*]}" "console palette (Dracula)" || true
+  unset IFS
+  put_etc_file /etc/systemd/system/console-palette.service "# Written by arch-bootstrap.
+[Unit]
+Description=Dracula palette for the kernel console (setvtrgb /etc/vtrgb)
+DefaultDependencies=no
+After=systemd-vconsole-setup.service
+Before=sysinit.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/setvtrgb /etc/vtrgb
+
+[Install]
+WantedBy=sysinit.target" "console palette unit" && run sudo systemctl daemon-reload
+  if ! systemctl is-enabled --quiet console-palette.service 2>/dev/null; then
+    run sudo systemctl enable --now console-palette.service \
+      && did "console palette on (every VT now; from boot on)"
+  fi
+  return 0
 }
 
 # kmscon on tty2-6: a userspace console that draws with real fonts (pango, so
@@ -3809,6 +3849,7 @@ stage_services() {
   tune_storage_and_swap
   apply_lean_profile
   set_console_font
+  set_console_palette
   setup_kmscon
   setup_firewall
   disable_llmnr
