@@ -29,7 +29,10 @@ HTTP), answering its prompts. Task 68's rehearsal:
   ... boot   (all ok, and one passphrase only)
 
 ISO: $ISO, default the newest verified one in the rescue-usb chore's cache.
-INSTALL_URL: default main on GitHub, i.e. what is pushed, not the working tree.
+INSTALL_URL: default main on GitHub, i.e. what is pushed, not the working tree. Empty: the
+install.sh the ISO carries. With a rescue ISO built by `fleet stick` (it carries approved
+snapshots), PICK answers snapshot-pick's "start from?" ("" = newest approved, "2" = roll back one,
+"N1" = a newer GitHub commit) and EXPECT_AB makes the boot phase check the result (task 86).
 Work files (a sparse 70 GiB disk) live in ~/.cache/vm-rehearsal/<fw>-<bus>, on disk, because
 /tmp can be RAM. Passwords are throwaway; the disk is never used for anything real.
 
@@ -44,6 +47,8 @@ if len(sys.argv) < 2:
 PHASE = sys.argv[1]
 ISO = os.environ.get("ISO") or (sorted(glob.glob(os.path.expanduser(
     "~/.cache/rescue-usb/archlinux-*-x86_64.iso"))) or [""])[-1]
+PICK = os.environ.get("PICK", "")            # answer to snapshot-pick (rescue ISO from `fleet stick`)
+EXPECT_AB = os.environ.get("EXPECT_AB", "")  # boot: the arch-bootstrap commit it must have picked
 URL = os.environ.get("INSTALL_URL",
                      "https://raw.githubusercontent.com/Benjmhart/arch-bootstrap/main/install.sh")
 FW = os.environ.get("FIRMWARE", "uefi")
@@ -201,7 +206,11 @@ if PHASE == "install":
          run(f"curl -fsSL -o install.sh {URL}" if URL else "cp /usr/local/bin/install.sh ."))
     send(f"LUKS_PASSWORD={PW} USER_PASSWORD={PW} bash install.sh {INSTALL_ARGS} --disk {GUEST_DISK} rehearsal ben; echo __RC_$?__")
     expect(r"Type WIPE to continue", 300); send("WIPE")
-    rc = step("install.sh", int(expect(r"__RC_(\d+)__", 3600).group(1)))
+    while True:   # a rescue ISO from `fleet stick` asks which snapshot to start from (snapshot-pick)
+        m = expect(r"start from\?[^\n]*:\s*$|__RC_(\d+)__", 3600)
+        if m.group(1) is not None:
+            rc = step("install.sh", int(m.group(1))); break
+        print(f"     snapshot-pick asked; answering {PICK!r}", flush=True); send(PICK)
     run(f"grep -E '^GRUB_CMDLINE_LINUX=' /mnt/etc/default/grub; cat /mnt/etc/crypttab; lsblk -f {GUEST_DISK}")
     if rc == 0 and SHAPE == "beast-arch":
         step("reshape into beast-arch's layout (UKI, cmdline, HOOKS, /home by passphrase)",
@@ -239,6 +248,12 @@ else:  # boot
     step("/etc is 755", run('[ "$(stat -c %a /etc)" = 755 ]'))
     step("system bus up (systemctl as a user)", run("systemctl is-active --quiet dbus.socket"))
     step("no failed units", run('[ -z "$(systemctl --failed --no-legend)" ]'))
+    if EXPECT_AB:   # the snapshot snapshot-pick was told to choose (beast-arch task 86)
+        step(f"~/projects/arch-bootstrap at {EXPECT_AB[:7]} (the picked snapshot)",
+             run(f'[ "$(git -C ~/projects/arch-bootstrap rev-parse HEAD)" = {EXPECT_AB} ]'))
+        step("...on branch main", run('[ "$(git -C ~/projects/arch-bootstrap symbolic-ref --short HEAD)" = main ]'))
+        step("~/.config/fleet/install-snapshot names it, for bootstrap.sh's pins",
+             run(f'grep -Eq "^{EXPECT_AB} [0-9a-f]{{40}} [0-9a-f]{{40}}$" ~/.config/fleet/install-snapshot'))
     for c in sys.argv[2:]:
         send(f"echo {PW} | sudo -S -p '' sh -c '{c}' 2>&1; echo __RC_$?__"); expect(r"__RC_(\d+)__", 120)
     run(f"lsblk -f; findmnt / /home; cat /etc/crypttab; echo {PW} | sudo -S -p '' ls -l /etc/cryptsetup-keys.d; "

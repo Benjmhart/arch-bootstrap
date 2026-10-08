@@ -8,16 +8,24 @@
 # Config (bootstrap.conf): RESCUE_USB_SERIAL -- the stick's USB serial, from
 #   lsblk -dno PATH,SERIAL,TRAN | grep usb
 set -euo pipefail
-: "${RESCUE_USB_SERIAL:?set RESCUE_USB_SERIAL in bootstrap.conf}"
+# RESCUE_USB_DISK (a /dev path, picked interactively by `fleet stick` on micro: any stick will do
+# for a recovery) overrides the weekly chore's fixed stick, RESCUE_USB_SERIAL.
+[[ -n ${RESCUE_USB_DISK:-} || -n ${RESCUE_USB_SERIAL:-} ]] || { echo "set RESCUE_USB_SERIAL in bootstrap.conf"; exit 1; }
 here="$(dirname "$(readlink -f "$0")")"
 repo="$here/../.."
 cache="${XDG_CACHE_HOME:-$HOME/.cache}/rescue-usb"
 keyring=/usr/share/pacman/keyrings/archlinux.gpg
 mkdir -p "$cache"
 
-# ---- the stick: by USB serial, never by /dev name (that changes with plug order)
-disk=$(lsblk -dno PATH,SERIAL | awk -v s="$RESCUE_USB_SERIAL" '$2==s {print $1}')
-[[ -n $disk ]] || { echo "rescue stick (serial $RESCUE_USB_SERIAL) is not plugged in"; exit 75; }
+# ---- the stick: by USB serial, never by /dev name (that changes with plug order) -- unless a
+# person just picked it by name (RESCUE_USB_DISK), in which case it must still be a USB disk
+if [[ -n ${RESCUE_USB_DISK:-} ]]; then
+  [[ $(lsblk -dno TRAN "$RESCUE_USB_DISK" 2>/dev/null) == usb ]] || { echo "$RESCUE_USB_DISK is not a USB disk"; exit 1; }
+  disk=$RESCUE_USB_DISK
+else
+  disk=$(lsblk -dno PATH,SERIAL | awk -v s="$RESCUE_USB_SERIAL" '$2==s {print $1}')
+  [[ -n $disk ]] || { echo "rescue stick (serial $RESCUE_USB_SERIAL) is not plugged in"; exit 75; }
+fi
 part() { lsblk -lno PATH,LABEL "$disk" | awk -v l="$1" '$2==l {print $1}'; }
 data=$(part Ventoy); efi=$(part VTOYEFI)
 [[ -n $data && -n $efi ]] || { echo "$disk has no Ventoy partitions: sudo ventoy -i $disk (ERASES it)"; exit 75; }
