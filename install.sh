@@ -354,9 +354,15 @@ if [[ -f $bundle ]]; then
   # (`fleet stick`) carries the log of approved fleet snapshots. snapshot-pick shows them with
   # their times -- newest is the default, an older one is a rollback -- plus any newer commits on
   # GitHub, marked as not reviewed. Its answer pins the dotfiles and secrets too (bootstrap.sh).
-  if command -v snapshot-pick >/dev/null; then
-    snapshot-pick "/mnt/home/$user/projects/arch-bootstrap" /usr/local/share/fleet-snapshots \
-      "/mnt/home/$user/.config/fleet/install-snapshot" || die "no starting commit chosen"
+  # It runs INSIDE the new system: the live ISO has no git (found by tests/rehearse-install,
+  # 2026-10-08), the installed one does (EXTRA_PACKAGES), and arch-chroot gives it the
+  # network and this terminal.
+  if pick=$(command -v snapshot-pick); then
+    install -m 755 "$pick" /mnt/tmp/snapshot-pick
+    [[ -f /usr/local/share/fleet-snapshots ]] && install -m 644 /usr/local/share/fleet-snapshots /mnt/tmp/fleet-snapshots
+    arch-chroot /mnt /tmp/snapshot-pick "/home/$user/projects/arch-bootstrap" /tmp/fleet-snapshots \
+      "/home/$user/.config/fleet/install-snapshot" || die "no starting commit chosen"
+    rm -f /mnt/tmp/snapshot-pick /mnt/tmp/fleet-snapshots
     arch-chroot /mnt chown -R "$user:$user" "/home/$user/.config" 2>/dev/null || true
   fi
   arch-chroot /mnt chown -R "$user:$user" "/home/$user/projects"
