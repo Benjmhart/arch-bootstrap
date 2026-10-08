@@ -264,8 +264,7 @@ stick)
   [[ $(uname -n) == "$SELF" ]] || die "make the recovery stick on $SELF -- a stick written by a dirty machine is what this avoids"
   [[ -s $SNAPS ]] || die "no approved snapshot yet -- run fpush first"
   read -r t ab dot sec _ < <(tail -1 "$SNAPS")
-  [[ $(gitr ab rev-parse HEAD) == "$ab" && -z $(gitr ab status --porcelain) ]] \
-    || die "arch-bootstrap here is not exactly the approved snapshot ${ab:0:7} (or has local changes) -- run fpush first"
+  gitr ab cat-file -e "$ab^{commit}" 2>/dev/null || die "the approved commit ${ab:0:7} is not in this checkout -- run fpush first"
   [[ $(gitr sec rev-parse HEAD) == "$sec" ]] || die "secrets here is not at the approved snapshot ${sec:0:7} -- run fpush first"
   # Any USB stick with room will do (Ben, 2026-10-08): list them, the weekly stick's serial first.
   usual=$(bash -c 'source "$1" >/dev/null 2>&1; echo "${RESCUE_USB_SERIAL:-}"' _ "$REPO/bootstrap.conf")
@@ -290,7 +289,12 @@ stick)
     sudo ventoy -i "$disk" || die "ventoy install failed on $disk"
   fi
   echo "making the rescue stick on $SELF from the snapshot approved $t (arch-bootstrap ${ab:0:7}) on $disk"
-  RESCUE_USB_DISK=$disk FLEET_SNAPSHOTS=$SNAPS SECRETS_DIR=$SECRETS "$REPO/chores/rescue-usb/run.sh"
+  # Build from a throwaway worktree AT the approved commit, never from the live checkout: on
+  # 2026-10-08 a commit made in micro's checkout mid-build put an unreviewed install.sh onto the
+  # stick (the guard above had passed at the start). A worktree of a commit id cannot change.
+  wt=$(mktemp -d); trap 'gitr ab worktree remove --force "$wt" 2>/dev/null; rm -rf "$wt"' EXIT
+  gitr ab worktree add -q --detach "$wt" "$ab" || die "worktree at ${ab:0:7} failed"
+  RESCUE_USB_DISK=$disk FLEET_SNAPSHOTS=$SNAPS SECRETS_DIR=$SECRETS "$wt/chores/rescue-usb/run.sh"
   ;;
 *) die "usage: fleet status | push [stage ...|keys] | rollback [all] | stick | setup" ;;
 esac
