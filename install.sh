@@ -358,15 +358,16 @@ if [[ -f $bundle ]]; then
   # 2026-10-08), the installed one does (EXTRA_PACKAGES), and arch-chroot gives it the
   # network and this terminal. Staged in /var/tmp: arch-chroot mounts a fresh tmpfs over
   # /tmp, which hid a copy put in /mnt/tmp (the second rehearsal, same day).
+  # As the new user, after the chown: run as root, git refuses a checkout another user owns
+  # ("dubious ownership" -- the third rehearsal), and what it writes should be the user's anyway.
+  arch-chroot /mnt chown -R "$user:$user" "/home/$user/projects"
   if pick=$(command -v snapshot-pick); then
     install -m 755 "$pick" /mnt/var/tmp/snapshot-pick
     [[ -f /usr/local/share/fleet-snapshots ]] && install -m 644 /usr/local/share/fleet-snapshots /mnt/var/tmp/fleet-snapshots
-    arch-chroot /mnt /var/tmp/snapshot-pick "/home/$user/projects/arch-bootstrap" /var/tmp/fleet-snapshots \
-      "/home/$user/.config/fleet/install-snapshot" || die "no starting commit chosen"
+    arch-chroot /mnt runuser -u "$user" -- /var/tmp/snapshot-pick "/home/$user/projects/arch-bootstrap" \
+      /var/tmp/fleet-snapshots "/home/$user/.config/fleet/install-snapshot" || die "no starting commit chosen"
     rm -f /mnt/var/tmp/snapshot-pick /mnt/var/tmp/fleet-snapshots
-    arch-chroot /mnt chown -R "$user:$user" "/home/$user/.config" 2>/dev/null || true
   fi
-  arch-chroot /mnt chown -R "$user:$user" "/home/$user/projects"
 fi
 
 # ---- verify ----------------------------------------------------------------
