@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# vm-boot-test IMAGE [bios|uefi] -- boot a copy of the cloud image the way a provider
+# would and pass if ben can SSH in with a key that only cloud-init could have put there.
+# NO ROOT. The copy is grown to 8 GiB first, so growpart/resize_rootfs are tested too.
+#
+# The provider is faked with a NoCloud seed (an ISO labelled CIDATA: meta-data with a
+# hostname, user-data with a throwaway public key made just for this run), which is the
+# datasource cloud-init falls back to when no metadata service answers. Network is
+# user-mode NAT; SSH goes through a forwarded localhost port. Then, as ben in an
+# interactive zsh with -e: the tools must run, and the system must be `running`
+# (not degraded), or the test fails.
+#
+# Exit: 0 passed; 1 failed; 75 cannot test here (no qemu, /dev/kvm or xorriso).
+set -euo pipefail
+img=${1:?usage: vm-boot-test IMAGE [bios|uefi]}
+fw=${2:-bios}
+limit=${VM_BOOT_TIMEOUT:-240}
+for c in qemu-system-x86_64 xorriso ssh-keygen; do command -v $c >/dev/null || { echo "$c not installed -- cannot boot-test"; exit 75; }; done
+[[ -r /dev/kvm && -w /dev/kvm ]] || { echo "/dev/kvm not usable -- cannot boot-test"; exit 75; }
+
+tmp=$(mktemp -d -p "$(dirname "$(readlink -f "$img")")"); pid=
+trap '[[ -n $pid ]] && kill "$pid" 2>/dev/null; rm -rf "$tmp"' EXIT
+cp --sparse=always "$img" "$tmp/disk.img"; truncate -s 8G "$tmp/disk.img"
+ssh-keygen -q -t ed25519 -N '' -C vm-boot-test -f "$tmp/key"
+mkdir "$tmp/seed"
+printf 'instance-id: vm-boot-test-%s\nlocal-hostname: cloudtest\n' "$$" > "$tmp/seed/meta-data"
+printf '#cloud-config\nssh_authorized_keys:\n  - %s\n' "$(cat "$tmp/key.pub")" > "$tmp/seed/user-data"
+xorriso -as mkisofs -quiet -V CIDATA -J -r -o "$tmp/seed.iso" "$tmp/seed" 2>/dev/null
+
+fwopts=()
+if [[ $fw == uefi ]]; then
+  cp /usr/share/edk2/x64/OVMF_VARS.4m.fd "$tmp/vars.fd"
+  fwopts=(-drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.4m.fd
+          -drive "if=pflash,format=raw,file=$tmp/vars.fd")
+fi
+port=$(( 20000 + RANDOM % 10000 ))
+qemu-system-x86_64 -enable-kvm -cpu host -m 2048 -smp 2 "${fwopts[@]}" \
+  -display none -monitor none -serial "file:$tmp/serial" -no-reboot \
+  -nic "user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$port-:22" \
+  -drive "file=$tmp/disk.img,format=raw,if=virtio" \
+  -drive "file=$tmp/seed.iso,media=cdrom,readonly=on" &
+pid=$!
+
+s=(ssh -q -i "$tmp/key" -p "$port" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+   -o ConnectTimeout=5 -o BatchMode=yes ben@127.0.0.1)
+for (( t = 0; t < limit; t += 5 )); do
+  if "${s[@]}" true 2>/dev/null; then
+    echo "boot test ($fw): ssh as ben after ~${t}s"
+    "${s[@]}" 'cloud-init status --wait >/dev/null; zsh -eic "
+      print shell: \$SHELL; print host: \$(uname -n); cat /etc/cloud-image-release
+      print -n \"root fs: \"; df -h / | tail -1
+      cloud-init status; nvim --version | head -1; git --version; gh --version | head -1
+      print herdr: \$(herdr --version); print claude: \$(claude --version)
+      tailscale version | head -1; command -v starship zoxide yazi fzf rg
+      sudo -n true && print sudo: ok
+      sudo -n pacman-key --list-keys >/dev/null 2>&1 && print pacman keyring: initialised on this boot
+      print -n \"ssh host key: \"; ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub | cut -d\" \" -f2
+      print machine-id: \$(cat /etc/machine-id)
+      systemctl is-system-running" 2>&1' | sed 's/^/  | /'
+    exit 0
+  fi
+  kill -0 "$pid" 2>/dev/null || break
+  sleep 5
+done
+echo "boot test ($fw) FAILED: no ssh in ${t}s. Last console lines:"
+tr -d '\r' < "$tmp/serial" | grep -av '^\s*$' | tail -n 15 | sed 's/^/  | /'
+exit 1

@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# make-cloud-image ISO OUT.img [GiB] -- build a headless Arch cloud disk image (raw,
+# sparse, default 4 GiB) from an official Arch ISO. NO ROOT on this host.
+#
+# Root is needed to partition, pacstrap and install GRUB, so all of that happens as
+# root INSIDE a throwaway KVM guest booted from the ISO (the same kernel+initrd-direct
+# boot as rescue-usb/vm-boot-test). The guest sees two disks: /dev/vda, the empty
+# image file it builds onto, and /dev/vdb, a tar of build-in-guest and its inputs.
+# This script logs in on the serial console, runs build-in-guest, and powers off.
+# The guest has user-mode NAT (pacstrap needs a mirror), nothing else of this host.
+#
+# Inputs, none secret: build-in-guest, pkglist-headless.txt, this host's mirrorlist,
+# a clean clone of this repo's HEAD (never the gitignored bootstrap.conf), the herdr
+# pin read out of bootstrap.sh, and DOTFILES_REMOTE (from bootstrap.conf, rewritten to
+# its public https form -- the image has no GitHub key).
+#
+# BUILD_DEBUG=1 traces build-in-guest (set -x) into the log, OUT.img.log.
+#
+# Exit: 0 built; 1 failed; 75 cannot build here (no qemu or /dev/kvm).
+set -euo pipefail
+iso=${1:?usage: make-cloud-image ISO OUT.img [GiB]}
+out=${2:?usage: make-cloud-image ISO OUT.img [GiB]}
+size=${3:-4}
+here="$(dirname "$(readlink -f "$0")")"
+repo="$here/../.."
+limit=${BUILD_TIMEOUT:-1800}   # seconds; a build took ~130s on beast-arch (2026-10-08)
+
+command -v qemu-system-x86_64 >/dev/null || { echo "qemu-system-x86_64 not installed -- cannot build"; exit 75; }
+[[ -r /dev/kvm && -w /dev/kvm ]] || { echo "/dev/kvm not usable -- cannot build"; exit 75; }
+: "${DOTFILES_REMOTE:?set DOTFILES_REMOTE (bootstrap.conf)}"
+
+tmp=$(mktemp -d -p "$(dirname "$(readlink -f "$out")")"); pid=
+trap '[[ -n $pid ]] && kill "$pid" 2>/dev/null; rm -rf "$tmp"' EXIT
+
+# ---- the input disk
+mkdir "$tmp/in"
+cp "$here/build-in-guest" "$repo/pkglist-headless.txt" /etc/pacman.d/mirrorlist "$tmp/in/"
+git clone -q --no-local "$repo" "$tmp/arch-bootstrap"
+git -C "$tmp/arch-bootstrap" remote set-url origin https://github.com/Benjmhart/arch-bootstrap
+tar -C "$tmp" -cf "$tmp/in/arch-bootstrap.tar" arch-bootstrap
+herdr_ver=$(sed -n 's/^ *local ver=\([0-9.]*\) arch sum asset$/\1/p' "$repo/bootstrap.sh")
+herdr_sum=$(sed -n 's/^ *x86_64) .*sum=\([0-9a-f]\{64\}\) ;;$/\1/p' "$repo/bootstrap.sh")
+[[ -n $herdr_ver && -n $herdr_sum ]] || { echo "could not read the herdr pin from bootstrap.sh"; exit 1; }
+dot_url=$DOTFILES_REMOTE
+[[ $dot_url =~ ^git@github\.com:(.*)$ ]] && dot_url="https://github.com/${BASH_REMATCH[1]}"
+commit=$(git -C "$repo" log -1 --format=%h)
+[[ -z $(git -C "$repo" status --porcelain) ]] || commit+="+uncommitted"
+printf '%s\n' "BUILD_DEBUG=${BUILD_DEBUG:-}" "HERDR_VER=$herdr_ver" "HERDR_SUM=$herdr_sum" "DOTFILES_URL=$dot_url" \
+  "BOOTSTRAP_COMMIT=$commit" > "$tmp/in/build.env"
+tar -cf "$tmp/in.tar" -C "$tmp/in" .
+
+# ---- the guest
+truncate -s "${size}G" "$tmp/disk.img"
+opts=$(bsdtar -xOf "$iso" loader/entries/01-archiso-linux.conf | sed -n 's/^options *//p')
+[[ $opts == *archisosearchuuid=* ]] || { echo "no archiso boot entry in $iso"; exit 1; }
+bsdtar -xOf "$iso" arch/boot/x86_64/vmlinuz-linux > "$tmp/vmlinuz"
+bsdtar -xOf "$iso" arch/boot/x86_64/initramfs-linux.img > "$tmp/initrd"
+mkfifo "$tmp/s.in" "$tmp/s.out"
+cat "$tmp/s.out" > "$tmp/serial" &
+
+qemu-system-x86_64 -enable-kvm -cpu host -m 4096 -smp 4 \
+  -nic user,model=virtio-net-pci -display none -monitor none -serial "pipe:$tmp/s" -no-reboot \
+  -drive "file=$iso,media=cdrom,readonly=on" \
+  -drive "file=$tmp/disk.img,format=raw,if=virtio,discard=unmap" \
+  -drive "file=$tmp/in.tar,format=raw,if=virtio,readonly=on" \
+  -kernel "$tmp/vmlinuz" -initrd "$tmp/initrd" -append "$opts console=ttyS0 cow_spacesize=1G" &
+pid=$!
+exec 3> "$tmp/s.in"
+
+fail() { echo "cloud image build FAILED: $1. Log: $out.log"; tr -d '\r' < "$tmp/serial" > "$out.log"; exit 1; }
+t=0
+until grep -q 'archiso login:' "$tmp/serial"; do
+  (( ++t < 180 )) && kill -0 "$pid" 2>/dev/null || fail "the live ISO did not reach a login prompt"
+  sleep 1
+done
+printf 'root\n' >&3; sleep 5
+# The echoed input reads "build-rc-$?"; only the shell's output has a digit there.
+printf 'mkdir /in && tar -xf /dev/vdb -C /in && bash /in/build-in-guest /dev/vda 2>&1; echo build-rc-$?\n' >&3
+until grep -aq 'build-rc-[0-9]' "$tmp/serial"; do
+  (( ++t < limit )) && kill -0 "$pid" 2>/dev/null || fail "no result from build-in-guest after ${t}s"
+  sleep 1
+done
+grep -aq 'build-rc-0' "$tmp/serial" || fail "build-in-guest failed"
+printf 'poweroff\n' >&3
+wait "$pid" || true; pid=
+tr -d '\r' < "$tmp/serial" > "$out.log"
+mv "$tmp/disk.img" "$out"
+echo "built $(basename "$out"): ${size} GiB virtual, $(du -h "$out" | cut -f1) on disk, in ${t}s (arch-bootstrap $commit)"

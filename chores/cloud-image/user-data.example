@@ -1,0 +1,16 @@
+#cloud-config
+# user-data for a box made from the arch-bootstrap cloud image (station-maintenance
+# beast-arch task 85). Paste into the provider's "user data" / "cloud-init" field.
+# The provider's own SSH-key field also works: cloud-init gives the key to ben.
+#
+# The auth key is a SECRET: use a one-off, pre-approved, tagged, EPHEMERAL=false key from
+# the tailnet admin console, never a reusable one, and never commit a filled-in copy.
+# Provider user-data is readable from inside the box (metadata service) for its lifetime.
+hostname: CHANGEME
+ssh_authorized_keys:
+  - ssh-ed25519 AAAA... ben@beast-arch
+runcmd:
+  # Join the tailnet; only once that succeeded, close public :22 (the image's
+  # /etc/nftables.conf allows tailscale0, ICMP, tailscale's UDP 41641 and DHCP).
+  # If tailscale fails, the box stays reachable on public :22, key-only.
+  - [sh, -c, 'tailscale up --auth-key=tskey-auth-CHANGEME --hostname="$(cat /etc/hostname)" && systemctl enable --now nftables']

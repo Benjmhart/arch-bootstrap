@@ -1,0 +1,42 @@
+# Headless profile (station-maintenance beast-arch tasks 33, 85): the CLI subset of
+# pkglist-userspace.txt, for SSH-only machines. ADDITIVE on purpose -- nothing windowed
+# is excluded here because nothing windowed is listed. Used by chores/cloud-image.
+# Image plumbing (kernel, grub, cloud-init, sudo) is in chores/cloud-image/build-in-guest,
+# not here, so this list stays usable for a headless box installed by other means.
+7zip
+base-devel
+bat
+bubblewrap
+earlyoom
+eza
+fzf
+git
+github-cli
+jq
+less
+make
+mise
+neovim
+nftables
+openbsd-netcat
+openssh
+pacman-contrib
+python-pip
+rclone
+ripgrep
+rsync
+starship
+tailscale
+thefuck
+tmux
+trash-cli
+tree
+tree-sitter-cli
+unzip
+uv
+vim
+wget
+yazi
+zip
+zoxide
+zsh

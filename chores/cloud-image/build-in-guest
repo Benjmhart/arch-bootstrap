@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+# build-in-guest DISK -- runs as ROOT INSIDE the throwaway Arch live VM that
+# make-cloud-image boots; never on a real machine (it WIPES DISK). Everything it needs
+# is beside it in /in (unpacked from the input tar by make-cloud-image).
+#
+# Builds a headless Arch on DISK that boots on BIOS and UEFI, on any KVM/Xen/Nitro
+# cloud, and takes its identity from cloud-init at first boot:
+#   GPT: 1 MiB BIOS-boot | 256 MiB ESP (/efi) | ext4 / (last, so growpart can grow it)
+#   GRUB for i386-pc AND x86_64-efi --removable (EFI/BOOT/BOOTX64.EFI: no NVRAM entry
+#   needed, which an uploaded image never has); console on tty0 and ttyS0.
+#   Initramfs WITHOUT autodetect: built in a virtio VM, autodetect would keep only
+#   virtio and the image would not find its root on AWS Nitro (NVMe) or Xen.
+#   User `ben` (locked password, zsh, wheel) with the dotfiles checked out, herdr and
+#   claude in ~/.local/bin, arch-bootstrap in ~/projects. cloud-init's default_user is
+#   ben, so the provider's SSH key lands in ~ben/.ssh/authorized_keys.
+#   NO secrets and no per-machine identity: machine-id, SSH host keys and the pacman
+#   keyring are all created on the first boot of each clone.
+set -Eeuo pipefail
+disk=${1:?usage: build-in-guest DISK}
+in=$(dirname "$(readlink -f "$0")")
+. "$in/build.env"      # HERDR_VER HERDR_SUM DOTFILES_URL BOOTSTRAP_COMMIT
+step() { printf '\n==== %s\n' "$*"; }
+trap 'echo "build-in-guest FAILED at line $LINENO: $BASH_COMMAND"' ERR
+
+step "live environment"
+systemctl stop reflector.service 2>/dev/null || true   # it would rewrite the mirrorlist under us
+cp "$in/mirrorlist" /etc/pacman.d/mirrorlist
+systemctl start pacman-init.service                    # the live keyring (oneshot: waits)
+pacman -Sy --needed --noconfirm archlinux-keyring      # an ISO weeks old may predate a signing key
+
+step "partition $disk"
+sfdisk -q --wipe always "$disk" <<EOF
+label: gpt
+size=1MiB, type=21686148-6449-6E6F-744E-656564454649
+size=256MiB, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B
+type=4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709
+EOF
+udevadm settle
+mkfs.fat -F32 -n EFI "${disk}2" >/dev/null
+mkfs.ext4 -q -L root "${disk}3"
+mount "${disk}3" /mnt
+mount --mkdir "${disk}2" /mnt/efi
+
+step "pacstrap"
+mapfile -t pkgs < <(grep -v '^\s*#' "$in/pkglist-headless.txt" | grep -v '^\s*$')
+pacstrap -K /mnt base linux grub efibootmgr sudo cloud-init cloud-guest-utils "${pkgs[@]}"
+genfstab -U /mnt >> /mnt/etc/fstab
+rm -rf /mnt/var/cache/pacman/pkg/*                      # ~600 MiB of downloads, on a 4 GiB disk
+df -h /mnt | tail -1
+
+step "configure"; [[ -n ${BUILD_DEBUG:-} ]] && set -x
+c() { arch-chroot /mnt "$@"; }
+ln -sf /usr/share/zoneinfo/UTC /mnt/etc/localtime
+sed -i 's/^#en_US.UTF-8/en_US.UTF-8/' /mnt/etc/locale.gen; c locale-gen >/dev/null
+echo LANG=en_US.UTF-8 > /mnt/etc/locale.conf
+
+sed -i 's/^HOOKS=(\(.*\)autodetect \(.*\))/HOOKS=(\1\2)/' /mnt/etc/mkinitcpio.conf
+sed -i "s/^PRESETS=.*/PRESETS=('default')/" /mnt/etc/mkinitcpio.d/linux.preset
+rm -f /mnt/boot/initramfs-linux-fallback.img
+c mkinitcpio -P
+
+sed -i -e 's/^GRUB_TIMEOUT=.*/GRUB_TIMEOUT=1/' \
+  -e 's/^GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT="console=tty0 console=ttyS0,115200"/' \
+  /mnt/etc/default/grub
+printf '%s\n' 'GRUB_TERMINAL="serial console"' 'GRUB_SERIAL_COMMAND="serial --speed=115200"' >> /mnt/etc/default/grub
+c grub-install --target=i386-pc "$disk"
+c grub-install --target=x86_64-efi --efi-directory=/efi --removable --no-nvram
+c grub-mkconfig -o /boot/grub/grub.cfg
+
+# Network: DHCP on any wired interface. cloud-init renders its own networkd config
+# where the provider supplies one (10-cloud-init-*.network sorts first).
+cat > /mnt/etc/systemd/network/99-dhcp.network <<EOF
+[Match]
+Name=en* eth*
+[Network]
+DHCP=yes
+EOF
+
+cat > /mnt/etc/ssh/sshd_config.d/10-cloud.conf <<EOF
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin no
+EOF
+
+cat > /mnt/etc/cloud/cloud.cfg.d/90-arch-bootstrap.cfg <<EOF
+# arch-bootstrap cloud image: the provider's SSH key goes to ben, not to a distro user.
+system_info:
+  default_user:
+    name: ben
+    lock_passwd: true
+    shell: /usr/bin/zsh
+    groups: [wheel]
+    sudo: ["ALL=(ALL) NOPASSWD:ALL"]
+disable_root: true
+ssh_pwauth: false
+EOF
+
+# Inbound: tailnet only. NOT enabled here: user-data enables it once `tailscale up`
+# has succeeded (see user-data.example), so a box whose tailscale failed stays reachable
+# on public :22 (key-only) instead of locking itself out.
+# ponytail: a static copy of bootstrap.sh's hostfw minus the LAN/docker lines; generate
+# both from one place if they start to drift.
+cat > /mnt/etc/nftables.conf <<'EOF'
+#!/usr/bin/nft -f
+# Written by arch-bootstrap chores/cloud-image. Own table only: tailscaled keeps its own.
+table inet hostfw
+delete table inet hostfw
+table inet hostfw {
+  chain input {
+    type filter hook input priority filter; policy drop;
+    ct state established,related accept
+    ct state invalid drop
+    iif "lo" accept
+    iifname "tailscale0" accept
+    meta l4proto { icmp, ipv6-icmp } accept
+    udp dport 41641 accept
+    udp dport { 68, 546 } accept
+  }
+}
+EOF
+
+# The pacman keyring holds a private master key: each clone makes its own at first boot.
+cat > /mnt/etc/systemd/system/pacman-init.service <<'EOF'
+[Unit]
+Description=Initialize the pacman keyring (first boot of a cloud image)
+ConditionPathExists=!/etc/pacman.d/gnupg
+Before=cloud-final.service
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/pacman-key --init
+ExecStart=/usr/bin/pacman-key --populate
+[Install]
+WantedBy=multi-user.target
+EOF
+
+units=(systemd-networkd systemd-resolved systemd-timesyncd sshd earlyoom tailscaled pacman-init)
+for u in cloud-init-main cloud-init-local cloud-init-network cloud-init cloud-config cloud-final; do
+  [[ -e /mnt/usr/lib/systemd/system/$u.service ]] && units+=("$u")
+done
+c systemctl enable "${units[@]}"
+
+step "user ben"
+c useradd -m -G wheel -s /usr/bin/zsh ben
+c passwd -l ben >/dev/null
+u() { arch-chroot -u ben /mnt env HOME=/home/ben bash -c "$1"; }
+u "git clone -q --bare '$DOTFILES_URL' ~/.dot \
+   && git --git-dir ~/.dot --work-tree ~ checkout -f \
+   && git --git-dir ~/.dot config status.showUntrackedFiles no \
+   && git --git-dir ~/.dot config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'"
+cp "$in/arch-bootstrap.tar" /mnt/var/tmp/   # not /tmp: arch-chroot mounts a tmpfs there
+u "mkdir -p ~/projects ~/.local/bin && tar -xf /var/tmp/arch-bootstrap.tar -C ~/projects"; rm /mnt/var/tmp/arch-bootstrap.tar
+u "curl -fsSL https://github.com/herdrdev/herdr/releases/download/v$HERDR_VER/herdr-linux-x86_64 -o ~/.local/bin/herdr \
+   && echo '$HERDR_SUM  /home/ben/.local/bin/herdr' | sha256sum -c --quiet && chmod +x ~/.local/bin/herdr"
+u "curl -fsSL https://claude.ai/install.sh | bash"
+# nvm, as bootstrap.sh stage toolchains pins it; .zshrc sources it unguarded.
+# PROFILE=/dev/null: its installer would otherwise append to the dotfiles' .zshrc.
+u "curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | PROFILE=/dev/null bash" >/dev/null
+# oh-my-zsh + the plugins .zshrc names: bootstrap.sh install_oh_my_zsh does the same
+# (clone, never upstream's install.sh, which would replace the dotfiles' .zshrc).
+# ponytail: URLs copied from bootstrap.sh OMZ_REMOTE / OMZ_EXTERNAL_PLUGINS.
+u "git clone -q --depth 1 https://github.com/ohmyzsh/ohmyzsh.git ~/.oh-my-zsh \
+   && git clone -q --depth 1 https://github.com/zsh-users/zsh-autosuggestions.git ~/.oh-my-zsh/custom/plugins/zsh-autosuggestions \
+   && git clone -q --depth 1 https://github.com/zsh-users/zsh-syntax-highlighting.git ~/.oh-my-zsh/custom/plugins/zsh-syntax-highlighting"
+
+step "clean"
+rm -rf /mnt/etc/pacman.d/gnupg /mnt/etc/ssh/ssh_host_* /mnt/var/cache/pacman/pkg/* /mnt/var/log/journal/*
+: > /mnt/etc/machine-id                                # empty = first boot, new id
+ln -sf /run/systemd/resolve/stub-resolv.conf /mnt/etc/resolv.conf
+echo "arch-bootstrap cloud image, built $(date -u +%F) from arch-bootstrap $BOOTSTRAP_COMMIT" > /mnt/etc/cloud-image-release
+df -h /mnt | tail -1
+fstrim -v /mnt/efi; fstrim -v /mnt                     # discard=unmap: holes in the host file
+umount -R /mnt
+echo "build-in-guest: done"
