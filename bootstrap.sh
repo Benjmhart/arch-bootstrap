@@ -3580,12 +3580,19 @@ font-name=$KMSCON_FONT" "kmscon font" || true
   # would kill it. Takes effect at the next boot.
   local on=kmsconvt@tty1.service off=getty@tty1.service
   [[ $KMSCON_TTY1 == yes ]] || { on=getty@tty1.service; off=kmsconvt@tty1.service; }
+  # Both units carry Alias=autovt@.service, so enabling either writes autovt@tty1.service
+  # (what logind starts when you switch to tty1), and `disable` of the other leaves it:
+  # on 2026-10-08 the switch back to getty failed on three machines with "autovt@tty1.service
+  # already exists and is a symlink to kmsconvt@.service". So the alias is part of the
+  # check, and `enable --force` replaces it.
+  local alias=/etc/systemd/system/autovt@tty1.service
   if systemctl is-enabled --quiet "$on" 2>/dev/null \
-     && ! systemctl is-enabled --quiet "$off" 2>/dev/null; then
+     && ! systemctl is-enabled --quiet "$off" 2>/dev/null \
+     && { [[ ! -L $alias ]] || [[ $(readlink "$alias") == */${on%@*}@.service ]]; }; then
     ok "tty1: ${on%@*} (KMSCON_TTY1=$KMSCON_TTY1)"
   else
     run sudo systemctl disable "$off"
-    run sudo systemctl enable "$on"
+    run sudo systemctl enable --force "$on"
     did "tty1: ${on%@*} from the next boot (KMSCON_TTY1=$KMSCON_TTY1)"
   fi
 }
