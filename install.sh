@@ -356,13 +356,14 @@ if [[ -f $bundle ]]; then
   # GitHub, marked as not reviewed. Its answer pins the dotfiles and secrets too (bootstrap.sh).
   # It runs INSIDE the new system: the live ISO has no git (found by tests/rehearse-install,
   # 2026-10-08), the installed one does (EXTRA_PACKAGES), and arch-chroot gives it the
-  # network and this terminal.
+  # network and this terminal. Staged in /var/tmp: arch-chroot mounts a fresh tmpfs over
+  # /tmp, which hid a copy put in /mnt/tmp (the second rehearsal, same day).
   if pick=$(command -v snapshot-pick); then
-    install -m 755 "$pick" /mnt/tmp/snapshot-pick
-    [[ -f /usr/local/share/fleet-snapshots ]] && install -m 644 /usr/local/share/fleet-snapshots /mnt/tmp/fleet-snapshots
-    arch-chroot /mnt /tmp/snapshot-pick "/home/$user/projects/arch-bootstrap" /tmp/fleet-snapshots \
+    install -m 755 "$pick" /mnt/var/tmp/snapshot-pick
+    [[ -f /usr/local/share/fleet-snapshots ]] && install -m 644 /usr/local/share/fleet-snapshots /mnt/var/tmp/fleet-snapshots
+    arch-chroot /mnt /var/tmp/snapshot-pick "/home/$user/projects/arch-bootstrap" /var/tmp/fleet-snapshots \
       "/home/$user/.config/fleet/install-snapshot" || die "no starting commit chosen"
-    rm -f /mnt/tmp/snapshot-pick /mnt/tmp/fleet-snapshots
+    rm -f /mnt/var/tmp/snapshot-pick /mnt/var/tmp/fleet-snapshots
     arch-chroot /mnt chown -R "$user:$user" "/home/$user/.config" 2>/dev/null || true
   fi
   arch-chroot /mnt chown -R "$user:$user" "/home/$user/projects"
