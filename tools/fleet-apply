@@ -9,6 +9,25 @@
 #   apply <main|SHA> [stage ...]    update arch-bootstrap to latest main, or to SHA (which must be
 #                                   on origin/main -- the "last known safe commit" after a security
 #                                   event), fast-forward the dotfiles, then run the stages.
+#   secrets                         bring ~/secrets in line with origin (fleet push runs this on
+#                                   every machine first, beast-arch first). Rules (Ben, 2026-10-08):
+#                                   beast-arch is the source of truth, above all for the KeePassXC
+#                                   vault, whose merges are destructive -- so nothing is ever merged:
+#                                     in sync               ok
+#                                     vault saved, not committed, on beast-arch
+#                                                           committed ("Passwords.kdbx: saved <time>
+#                                                           on beast-arch"), then as below. KeePassXC
+#                                                           saves by rename, so the file is whole
+#                                     ahead only            pushed; a vault commit anywhere but
+#                                                           beast-arch is an error instead
+#                                     behind only           fast-forwarded; an error if the incoming
+#                                                           commits touch the vault while KeePassXC
+#                                                           runs here (it would overwrite them)
+#                                     diverged              rebased onto origin and pushed, but only
+#                                                           when the incoming commits leave the vault
+#                                                           alone; a conflict aborts. Otherwise an error
+#                                     any other uncommitted change   an error: a human sorts it out
+#                                   Exit 0 in line, 1 out of sync (fleet push then skips this machine).
 #
 # For apply, the FIRST LINE OF STDIN is the shared sudo password. It is handed to `sudo -S -v`
 # on fd 3 inside a private pty (script), so sudo caches it for that pty and every sudo the
@@ -25,15 +44,59 @@ REPO=${FLEET_REPO:-$HOME/projects/arch-bootstrap}
 STATE=${FLEET_STATE:-$HOME/.local/state/fleet}
 HOLD=${FLEET_HOLD:-$HOME/.config/fleet/hold}
 DOTDIR=${FLEET_DOTDIR:-$HOME/.dot}
+SECRETS=${FLEET_SECRETS:-$HOME/secrets}
+VAULT=Passwords.kdbx
+VAULT_HOST=${FLEET_VAULT_HOST:-beast-arch}
+HOST=${FLEET_HOST:-$(uname -n)}
 ALLOWED="packages aur toolchains services xmonad verify"
 DEFAULT="packages aur services xmonad verify"
 die() { echo "FAIL  $*"; exit 1; }
 
 read -r -a req <<<"${SSH_ORIGINAL_COMMAND:-$*}"
+sync_secrets() {
+  local g=(git -C "$SECRETS") ahead behind dirty incoming outgoing
+  touches() { [[ $'\n'$1$'\n' == *$'\n'"$VAULT"$'\n'* ]]; }   # a file list names the vault
+  [[ -d $SECRETS/.git ]] || die "secrets: no checkout at $SECRETS"
+  "${g[@]}" fetch -q origin || die "secrets: fetch failed"
+  dirty=$("${g[@]}" status --porcelain | awk '{print $2}')
+  if [[ -n $dirty && $HOST == "$VAULT_HOST" && $dirty == "$VAULT" ]]; then
+    "${g[@]}" commit -q -m "$VAULT: saved $(date -r "$SECRETS/$VAULT" '+%F %H:%M') on $HOST" -- "$VAULT" \
+      || die "secrets: could not commit the saved vault on $HOST"
+    echo "did   secrets: committed the saved $VAULT on $HOST"
+  elif [[ -n $dirty ]]; then
+    die "secrets: uncommitted changes on $HOST: $(tr '\n' ' ' <<<"$dirty")-- commit them (the vault only on $VAULT_HOST) or discard"
+  fi
+  ahead=$("${g[@]}" rev-list --count '@{u}..HEAD'); behind=$("${g[@]}" rev-list --count 'HEAD..@{u}')
+  incoming=$("${g[@]}" diff --name-only 'HEAD...@{u}'); outgoing=$("${g[@]}" diff --name-only '@{u}...HEAD')
+  if (( ahead )) && [[ $HOST != "$VAULT_HOST" ]] && touches "$outgoing"; then
+    die "secrets: $HOST has unpushed $VAULT commits -- the vault's source of truth is $VAULT_HOST; redo the change there"
+  fi
+  if (( ahead && behind )); then
+    touches "$incoming" && die "secrets: diverged on $HOST ($ahead ahead, $behind behind) and origin changed $VAULT -- the vault is never merged; sort it out by hand"
+    "${g[@]}" rebase -q '@{u}' >/dev/null 2>&1 || { "${g[@]}" rebase --abort 2>/dev/null
+      die "secrets: diverged on $HOST ($ahead ahead, $behind behind) and the rebase conflicts -- nothing changed; sort it out by hand"; }
+    echo "did   secrets: rebased $ahead local commit(s) onto $behind from origin on $HOST"
+    behind=0
+  fi
+  if (( ahead )); then
+    "${g[@]}" push -q origin HEAD || die "secrets: push failed on $HOST"
+    echo "did   secrets: pushed $ahead commit(s) from $HOST"
+  elif (( behind )); then
+    if touches "$incoming" && pgrep -x keepassxc >/dev/null; then
+      die "secrets: $HOST is $behind behind with $VAULT changes, and KeePassXC is running -- close it, then re-run"
+    fi
+    "${g[@]}" merge -q --ff-only '@{u}' || die "secrets: fast-forward failed on $HOST"
+    echo "did   secrets: fast-forwarded $behind commit(s) on $HOST"
+  else
+    echo "ok    secrets in sync on $HOST"
+  fi
+}
+
 case ${req[0]:-} in
-  status) cat "$STATE/applied" 2>/dev/null || echo "none"; exit 0 ;;
-  apply)  ;;
-  *)      die "request must be: status | apply <main|SHA> [stage ...]" ;;
+  status)  cat "$STATE/applied" 2>/dev/null || echo "none"; exit 0 ;;
+  secrets) sync_secrets; exit 0 ;;
+  apply)   ;;
+  *)       die "request must be: status | secrets | apply <main|SHA> [stage ...]" ;;
 esac
 target=${req[1]:-}
 [[ $target == main || $target =~ ^[0-9a-f]{7,40}$ ]] || die "target must be main or a commit SHA: '$target'"

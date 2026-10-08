@@ -78,6 +78,50 @@ out=$(echo wrong | "$fa" apply main 2>&1); rc=$?
 check "wrong password: nonzero, bootstrap never ran" '(( rc != 0 )) && [[ ! -e $HOME/bootstrap.calls ]]'
 check "...exactly one sudo attempt"                  '[[ $(wc -l < "$t/sudo.fail") == 1 ]]'
 
+# ---- secrets sync (fleet-apply secrets). One bare origin, one clone per host; h1 is the vault host.
+git init -q --bare -b master "$t/secrets.git"
+git clone -q "$t/secrets.git" "$t/sseed" 2>/dev/null
+echo v1 > "$t/sseed/Passwords.kdbx"; mkdir -p "$t/sseed/ssh"; echo k1 > "$t/sseed/ssh/keys"
+git -C "$t/sseed" add -A && git -C "$t/sseed" commit -qm s1 && git -C "$t/sseed" push -q origin master
+for h in self h1 h2; do git clone -q "$t/secrets.git" "$t/sec-$h"; done
+printf '#!/bin/bash\n[[ "$*" == "-x keepassxc" && -e "%s/kpx.${FLEET_HOST:-x}" ]]\n' "$t" > "$t/bin/pgrep"; chmod +x "$t/bin/pgrep"
+up() { git -C "$t/sseed" pull -q; echo "$2" > "$t/sseed/$1"; git -C "$t/sseed" commit -qam "up $1" && git -C "$t/sseed" push -q; }
+sec() { FLEET_SECRETS="$t/sec-$1" FLEET_HOST="$1" FLEET_VAULT_HOST=h1 "$fa" secrets 2>&1; }
+
+check "secrets in sync: ok"                          'grep -q "ok    secrets in sync on h2" <<<"$(sec h2)"'
+up ssh/keys k2
+check "behind on ssh/ only: fast-forwarded"          'grep -q "fast-forwarded 1" <<<"$(sec h2)" && [[ $(cat "$t/sec-h2/ssh/keys") == k2 ]]'
+up Passwords.kdbx v2; touch "$t/kpx.h2"
+check "behind on the vault, KeePassXC up: error"     '! sec h2 >/dev/null && grep -q "KeePassXC is running" <<<"$(sec h2)" && [[ $(cat "$t/sec-h2/Passwords.kdbx") == v1 ]]'
+rm "$t/kpx.h2"
+check "...KeePassXC closed: fast-forwarded"          'sec h2 | grep -q fast-forwarded && [[ $(cat "$t/sec-h2/Passwords.kdbx") == v2 ]]'
+up ssh/keys k3; touch "$t/kpx.h2"
+check "behind on ssh/ only, KeePassXC up: still ff"  'sec h2 | grep -q fast-forwarded && [[ $(cat "$t/sec-h2/ssh/keys") == k3 ]]'
+rm "$t/kpx.h2"
+git -C "$t/sec-h2" pull -q; echo k4 > "$t/sec-h2/ssh/keys"; git -C "$t/sec-h2" commit -qam "h2 key"
+check "ahead on ssh/ (not the vault host): pushed"   'grep -q "pushed 1 commit" <<<"$(sec h2)" && git -C "$t/sseed" pull -q && [[ $(cat "$t/sseed/ssh/keys") == k4 ]]'
+echo v-h2 > "$t/sec-h2/Passwords.kdbx"; git -C "$t/sec-h2" commit -qam "h2 vault"
+check "ahead with a vault commit off the vault host: error, not pushed" '! sec h2 >/dev/null && grep -q "source of truth is h1" <<<"$(sec h2)" && git -C "$t/sseed" pull -q && [[ $(cat "$t/sseed/Passwords.kdbx") == v2 ]]'
+git -C "$t/sec-h2" reset -q --hard '@{u}'
+git -C "$t/sec-h1" pull -q; echo v-h1 > "$t/sec-h1/Passwords.kdbx"; git -C "$t/sec-h1" commit -qam "h1 vault"
+check "ahead with a vault commit ON the vault host: pushed" 'grep -q "pushed 1 commit" <<<"$(sec h1)" && git -C "$t/sseed" pull -q && [[ $(cat "$t/sseed/Passwords.kdbx") == v-h1 ]]'
+git -C "$t/sec-h2" pull -q; echo k-local > "$t/sec-h2/ssh/keys"; git -C "$t/sec-h2" commit -qam local; up ssh/keys k-remote
+check "diverged, same file both sides: error, rebase aborted" '! sec h2 >/dev/null && grep -q "diverged on h2 (1 ahead, 1 behind) and the rebase conflicts" <<<"$(sec h2)" && [[ $(cat "$t/sec-h2/ssh/keys") == k-local ]] && [[ ! -d "$t/sec-h2/.git/rebase-merge" ]]'
+git -C "$t/sec-h2" reset -q --hard '@{u}'
+echo other > "$t/sec-h2/ssh/other"; git -C "$t/sec-h2" add -A; git -C "$t/sec-h2" commit -qm "h2 other"; up ssh/keys k-remote2
+check "diverged, no overlap, vault untouched: rebased + pushed" 'grep -q "rebased 1 local commit(s) onto 1" <<<"$(sec h2)" && git -C "$t/sseed" pull -q && [[ -e "$t/sseed/ssh/other" && $(cat "$t/sseed/ssh/keys") == k-remote2 ]]'
+git -C "$t/sec-h2" pull -q; echo k-h2b > "$t/sec-h2/ssh/keys"; git -C "$t/sec-h2" commit -qam "h2 key b"; up Passwords.kdbx v3
+check "diverged and origin changed the vault: error"  '! sec h2 >/dev/null && grep -q "origin changed Passwords.kdbx -- the vault is never merged" <<<"$(sec h2)"'
+git -C "$t/sec-h2" reset -q --hard '@{u}'; echo dirty >> "$t/sec-h2/Passwords.kdbx"
+check "uncommitted vault OFF the vault host: error"   '! sec h2 >/dev/null && grep -q "uncommitted changes on h2: Passwords.kdbx" <<<"$(sec h2)"'
+git -C "$t/sec-h2" checkout -q -- Passwords.kdbx
+git -C "$t/sec-h1" pull -q; echo v-saved > "$t/sec-h1/Passwords.kdbx"; up ssh/keys k-meanwhile
+check "vault saved on the vault host, origin moved on: committed, rebased, pushed" 'o=$(sec h1); grep -q "committed the saved Passwords.kdbx on h1" <<<"$o" && grep -q "rebased 1" <<<"$o" && git -C "$t/sseed" pull -q && [[ $(cat "$t/sseed/Passwords.kdbx") == v-saved ]] && git -C "$t/sseed" log -1 --format=%s HEAD | grep -q "^Passwords.kdbx: saved .* on h1$"'
+git -C "$t/sec-h1" pull -q; echo x > "$t/sec-h1/ssh/keys"
+check "vault host with a dirty NON-vault file: error"  '! sec h1 >/dev/null && grep -q "uncommitted changes on h1: ssh/keys" <<<"$(sec h1)"'
+git -C "$t/sec-h1" checkout -q -- ssh/keys
+for h in self h1 h2; do git -C "$t/sec-$h" pull -q; done
+
 # ---- fleet push: stub ssh runs fleet-apply locally as the forced command, one state dir per host
 cat > "$t/bin/ssh" <<EOF
 #!/bin/bash
@@ -85,20 +129,29 @@ host=\${@: -3:1}; host=\${host%%.*}; req="\${@: -2}"
 for a; do case \$a in *.ts.test) host=\${a%%.ts.test} ;; esac; done
 req=""; seen=0; for a; do if (( seen )); then req+="\$a "; fi; [[ \$a == *.ts.test ]] && seen=1; done
 echo "\$host" >> "$t/ssh.hosts"
-FLEET_STATE="$t/state-\$host" SSH_ORIGINAL_COMMAND="\${req% }" exec "$repo/tools/fleet-apply"
+FLEET_STATE="$t/state-\$host" FLEET_SECRETS="$t/sec-\$host" FLEET_HOST="\$host" SSH_ORIGINAL_COMMAND="\${req% }" exec "$repo/tools/fleet-apply"
 EOF
 printf '#!/bin/sh\necho "SSH_AUTH_SOCK=/x; export SSH_AUTH_SOCK; SSH_AGENT_PID=1; export SSH_AGENT_PID;"\n' > "$t/bin/ssh-agent"
 printf '#!/bin/sh\nexit 0\n' > "$t/bin/ssh-add"
 printf '#!/bin/sh\necho "{\\"MagicDNSSuffix\\":\\"ts.test\\"}"\n' > "$t/bin/tailscale"
 chmod +x "$t/bin/"*; touch "$HOME/.ssh_dummy"; mkdir -p "$HOME/.ssh"; touch "$HOME/.ssh/id_ed25519_fleet"
 git -C "$repo" checkout -q main; git -C "$repo" reset -q --hard "$first"
-export FLEET_HOSTS="h1 h2" FLEET_SELF_HOST=self FLEET_STATE=$t/state-self
+export FLEET_HOSTS="h1 h2" FLEET_SELF_HOST=self FLEET_STATE=$t/state-self FLEET_SECRETS=$t/sec-self FLEET_HOST=self FLEET_VAULT_HOST=h1
 mkdir -p "$t/state-h2"; echo "$second 2026-10-04T00:00:00 rc=0 stages=x" > "$t/state-h2/applied"   # h2 already has it
 rm -f "$t/ticket" "$t/ssh.hosts"
 out=$(echo pw-ok | "$repo/tools/fleet" push 2>&1); rc=$?
 check "push: self applied locally, h1 over ssh"      'grep -q "^self .*ok (${second:0:7})" <<<"$out" && grep -q "^h1 .*ok (${second:0:7})" <<<"$out"'
 check "...h2 skipped (already at main)"              'grep -q "^h2 .*skip (already at ${second:0:7})" <<<"$out"'
 check "...h1 now records main"                       '[[ $(cat "$t/state-h1/applied") == "$second "*" rc=0 "* ]]'
+check "...secrets synced first, vault host (h1) first" 'awk "/=== secrets/{f=1;next} f&&/secrets/{print;exit}" <<<"$out" | grep -q "on h1"'
+# h2's secrets diverge: push reports it FAILED and does not update it; the others still run
+git -C "$t/sec-h2" pull -q; echo k-h2 > "$t/sec-h2/ssh/keys"; git -C "$t/sec-h2" commit -qam h2; up ssh/keys k-origin
+echo "$first 2026-10-04T00:00:00 rc=0 stages=x" > "$t/state-h2/applied"
+rm -f "$t/ticket"
+out=$(echo pw-ok | "$repo/tools/fleet" push 2>&1); rc=$?
+check "push: h2 with diverged secrets FAILED, not updated" 'grep -q "^h2 .*FAILED secrets out of sync, not updated: diverged" <<<"$out" && [[ $(cat "$t/state-h2/applied") == "$first "* ]]'
+check "...self and h1 still processed; push exits nonzero" '(( rc != 0 )) && grep -q "^self " <<<"$out" && grep -q "^h1 " <<<"$out"'
+git -C "$t/sec-h2" reset -q --hard '@{u}'
 rm -f "$t/ticket"; : > "$t/ssh.hosts"
 out=$(echo wrong | "$repo/tools/fleet" push 2>&1); rc=$?
 check "push with a wrong password: stops before any ssh" '(( rc != 0 )) && [[ ! -s "$t/ssh.hosts" ]]'

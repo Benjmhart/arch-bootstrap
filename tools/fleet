@@ -7,9 +7,12 @@
 #                                   as a forced command (from= micro, command=fleet-apply, restrict).
 #   fleet status                    each machine's last applied commit
 #   fleet push [main|SHA] [stage ...]
-#                                   apply to every machine not already at that commit, micro
-#                                   included (locally). Asks ONCE for the fleet key passphrase
-#                                   (a temporary agent) and ONCE for the shared sudo password.
+#                                   first bring every machine's ~/secrets in line (fleet-apply
+#                                   secrets; beast-arch first, it is the vault's source of truth),
+#                                   then apply to every machine not already at that commit, micro
+#                                   included (locally). A machine whose secrets are out of sync is
+#                                   reported FAILED and not updated. Asks ONCE for the fleet key
+#                                   passphrase (a temporary agent) and ONCE for the sudo password.
 #
 # Default target: main. After a security event, pass the last known safe SHA instead; each
 # machine refuses a SHA that origin/main does not contain. Stages default to fleet-apply's.
@@ -79,9 +82,21 @@ push)
   IFS= read -r -s -p "sudo password (shared by every machine): " pw; echo
   printf '%s\n' "$pw" | sudo -S -p '' -k -v 2>/dev/null || die "sudo password rejected here -- nothing sent anywhere"
 
-  declare -A result
+  declare -A result secrets_bad
+  # Secrets before anything else, the vault's source of truth first, so its pushes are in
+  # origin before the others fast-forward.
+  vault_host=${FLEET_VAULT_HOST:-beast-arch}
+  order=(); for h in "$SELF" "${hosts[@]}"; do [[ $h == "$vault_host" ]] && order=("$h" "${order[@]}") || order+=("$h"); done
+  echo "=== secrets"
+  for h in "${order[@]}"; do
+    if [[ $h == "$SELF" ]]; then out=$("$here/fleet-apply" secrets 2>&1); else out=$(fssh "$h" secrets 2>&1); fi
+    rc=$?; echo "$out"
+    (( rc == 0 )) || secrets_bad[$h]=$(tail -1 <<<"$out")
+  done
+
   run_one() {  # host -> result line
     local h=$1 st rc
+    if [[ -n ${secrets_bad[$h]:-} ]]; then result[$h]="FAILED secrets out of sync, not updated: ${secrets_bad[$h]#FAIL  secrets: }"; return; fi
     if [[ $h == "$SELF" ]]; then st=$("$here/fleet-apply" status); else st=$(fssh "$h" status 2>&1 | tail -1); fi
     if [[ $st == "$want "*" rc=0 "* ]]; then result[$h]="skip (already at ${want:0:7})"; return; fi
     echo; echo "=== $h"
@@ -94,6 +109,7 @@ push)
   unset pw
   echo; echo "=== fleet push ${want:0:7}"
   for h in "$SELF" "${hosts[@]}"; do printf '%-14s %s\n' "$h" "${result[$h]}"; done
+  (( ${#secrets_bad[@]} == 0 ))
   ;;
 *) die "usage: fleet setup | status | push [main|SHA] [stage ...]" ;;
 esac
