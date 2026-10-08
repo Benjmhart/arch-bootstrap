@@ -52,7 +52,7 @@ setup)
     echo "did   $h: fleet key authorized (forced command, from=$ip)"
   done
   echo "todo  git -C $SECRETS_DIR add ssh && git -C $SECRETS_DIR commit -m '$SELF: fleet key' && git -C $SECRETS_DIR push"
-  echo "todo  each machine's authorized-keys timer installs it within 15 min (media-center: tools/authorized-keys apply)"
+  echo "todo  after the push: $REPO/tools/authorized-keys trigger ${hosts[*]}   (the timer alone takes up to a week)"
   ;;
 status)
   SUFFIX=$(suffix)
