@@ -3507,12 +3507,15 @@ set_console_font() {
 # until they are released (logout, or a reboot).
 #
 # KMSCON_TTY1=yes moves tty1 too: kmsconvt@tty1 enabled, getty@tty1 disabled (the
-# unit Conflicts= with it). The dotfiles alias startx to kmscon-launch-gui on a
-# kmscon tty, so the login habit is unchanged. =no puts agetty back. On by default
-# fleet-wide since 2026-10-06 (Ben, station-maintenance beast-arch 71); no machine
-# autologins through getty@tty1, which this would silently drop.
+# unit Conflicts= with it). =no (the default) keeps agetty on tty1.
+# OFF by default again since 2026-10-08: tried on micro, X CANNOT start from a kmscon
+# login. kmscon runs login on a pty (sudo logs TTY=pts/0), so Xorg.wrap refuses it --
+# "only console users are allowed to run the X server" -- and the dotfiles' startx
+# alias, which tests $TTY for /dev/ttyN, never fires either. kmscon-launch-gui only
+# makes kmscon release DRM; it does not make the session a console one. Turning this
+# back on needs a real answer for X first (station-maintenance beast-arch 71).
 KMSCON_FONT="${KMSCON_FONT:-Fira Code}"   # Alacritty's font
-KMSCON_TTY1="${KMSCON_TTY1:-yes}"
+KMSCON_TTY1="${KMSCON_TTY1:-no}"
 setup_kmscon() {
   if ! pacman -Qq kmscon >/dev/null 2>&1; then
     (( DRY_RUN )) || warn "kmscon not installed -- console left on agetty"
