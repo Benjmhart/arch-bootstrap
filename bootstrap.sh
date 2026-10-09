@@ -115,7 +115,8 @@ DEPLOY_REPOS="${DEPLOY_REPOS:-}"
 PACMAN_IGNORE="${PACMAN_IGNORE:-}"
 
 # Chores to enable on this machine: names of directories under chores/, each with a
-# chore-NAME.timer. See chores/chore-run for the protocol. Empty = none.
+# chore-NAME.timer. See chores/chore-run for the protocol. low-disk is on everywhere
+# whatever this says (beast-arch 76); the rest are opt-in.
 CHORES="${CHORES:-}"
 
 # /tmp: RAM or disk. systemd's static tmp.mount makes /tmp a tmpfs at size=50% of
@@ -3120,12 +3121,11 @@ install_chores() {
       did "linked $c into ~/.local/bin"
     fi
   done
-  [[ -n $CHORES ]] || { info "no CHORES enabled for this machine"; return 0; }
   # `link` is idempotent: re-linking the same file is a no-op, so no check first.
   for unit in "$d/chore@.service" "$d"/*/chore-*.timer; do
     run systemctl --user --quiet link "$unit"
   done
-  for c in $CHORES; do
+  for c in low-disk $CHORES; do
     [[ -f $d/$c/chore-$c.timer ]] || { warn "CHORES names '$c', but there is no chores/$c/chore-$c.timer"; continue; }
     if systemctl --user is-enabled --quiet "chore-$c.timer" 2>/dev/null; then
       ok "chore $c scheduled"

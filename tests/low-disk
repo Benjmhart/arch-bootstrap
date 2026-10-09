@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# tests/low-disk -- chores/low-disk exits 0 when every filesystem is under LOW_DISK_PCT and 75 when
+# one is over; chore-run notifies only on the 75 (quiet-ok). Uses a fake notify-send and a temp
+# XDG_STATE_HOME; reads this machine's real df. Run: tests/low-disk
+set -uo pipefail
+d=$(cd "$(dirname "$0")/.." && pwd)/chores
+t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
+mkdir "$t/bin"; printf '#!/bin/sh\necho "$@" >> %s/notified\n' "$t" > "$t/bin/notify-send"; chmod +x "$t/bin/notify-send"
+export PATH=$t/bin:$PATH XDG_STATE_HOME=$t/state
+pass=0 fail=0
+check() { if eval "$2"; then pass=$((pass+1)); echo "pass  $1"; else fail=$((fail+1)); echo "FAIL  $1"; fi; }
+
+out=$(LOW_DISK_PCT=101 "$d/low-disk/run.sh"); rc=$?
+check "under the limit: rc 0"                 '(( rc == 0 ))'
+check "under the limit: lists /"              '[[ $out == "all below 101%: "*"/ "* ]]'
+out=$(LOW_DISK_PCT=0 "$d/low-disk/run.sh"); rc=$?
+check "over the limit: rc 75"                 '(( rc == 75 ))'
+check "over the limit: names / and its free"  'grep -q "^/ [0-9]*% (.* free)$" <<<"$out"'
+check "USB sticks are skipped"                '! grep -q /run/media <<<"$out"'
+
+LOW_DISK_PCT=101 "$d/chore-run" low-disk >/dev/null; rc=$?
+check "chore-run ok: rc 0, no notification"   '(( rc == 0 )) && [[ ! -e $t/notified ]]'
+check "chore-run ok: status json written"     '[[ $(jq -r .status "$t/state/chores/low-disk.json") == ok ]]'
+LOW_DISK_PCT=0 "$d/chore-run" low-disk >/dev/null; rc=$?
+check "chore-run over: rc 75, notified"       '(( rc == 75 )) && grep -q "chore low-disk: needs-you" "$t/notified"'
+check "timer is hourly"                       'grep -qx "OnCalendar=hourly" "$d/low-disk/chore-low-disk.timer" && systemd-analyze calendar hourly >/dev/null'
+
+echo "$pass passed, $fail failed"; (( fail == 0 ))

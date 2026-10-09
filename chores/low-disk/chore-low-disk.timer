@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly: warn when a filesystem is 90% full (arch-bootstrap chores/low-disk)
+
+[Timer]
+OnBootSec=10min
+OnCalendar=hourly
+RandomizedDelaySec=5min
+Unit=chore@low-disk.service
+
+[Install]
+WantedBy=timers.target
