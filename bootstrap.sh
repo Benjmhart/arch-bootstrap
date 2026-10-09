@@ -3146,6 +3146,22 @@ ExecStartPre=/usr/bin/timeout 60 /bin/sh -c 'until ip -o addr show | grep -qF \"
   fi
 }
 
+# rclone's remotes (Ben 2026-10-09: "rclone set for my personal drive across all computers"),
+# from secrets' rclone/rclone.conf (beast-arch 70). Installed only where there is no config yet:
+# rclone rewrites the file itself whenever it refreshes a token, so a machine's own copy is
+# always the newer one and must never be overwritten by the snapshot's.
+install_rclone_conf() {
+  local src="$SECRETS_DIR/rclone/rclone.conf" dst="${XDG_CONFIG_HOME:-$HOME/.config}/rclone/rclone.conf"
+  [[ -f $src ]] || { info "no rclone/rclone.conf in secrets -- no rclone remotes"; return 0; }
+  if [[ -f $dst ]]; then
+    ok "rclone config present ($(grep -c '^\[' "$dst") remote(s); kept, rclone refreshes its tokens there)"
+    return 0
+  fi
+  run install -d -m 700 "$(dirname "$dst")"
+  run install -m 600 "$src" "$dst"
+  did "rclone remotes installed from secrets: $(grep -o '^\[.*\]' "$src" | tr '\n' ' ')"
+}
+
 # Chores: regular jobs as systemd user timers (chores/, beast-arch task 69). chore-run
 # and chores go on PATH; every chore shares the chore@.service template, and only the
 # timers named in CHORES are enabled. `systemctl --user link` rather than copying, so a
@@ -3918,6 +3934,7 @@ stage_services() {
   stop_sshd_no_inbound
   ssh_tailnet_peers
   install_chores
+  install_rclone_conf
   manage_tmp_storage
   install_system_dropins
   install_browser_search_policy
