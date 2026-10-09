@@ -1082,6 +1082,11 @@ stage_packages() {
     # the refresh has to happen; doing it unconditionally would mean a routine
     # re-run silently upgraded the whole system, which is not this script's job.
     [[ -n $PACMAN_IGNORE ]] && info "holding back (PACMAN_IGNORE): $PACMAN_IGNORE"
+    # The keyring first, in its own transaction (the Arch wiki's fix): a package signed by
+    # a packager key newer than the installed keyring otherwise fails "invalid or corrupted
+    # package (PGP signature)". Only here, never on its own: -Sy without the -Su below
+    # would leave the partial-upgrade trap for every later `pacman -S`.
+    run sudo pacman -Sy --needed --noconfirm archlinux-keyring
     run sudo pacman -Syu --needed --noconfirm ${PACMAN_IGNORE:+--ignore "$PACMAN_IGNORE"} "${missing[@]}"
     did "${#missing[@]} user-space package(s) installed"
   fi
