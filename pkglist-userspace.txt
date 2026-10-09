@@ -92,6 +92,7 @@ python-gobject
 python-pip
 python-plyvel
 qemu-system-x86
+qutebrowser
 rclone
 ripgrep
 ruby
