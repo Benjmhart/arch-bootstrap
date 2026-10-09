@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# hetzner-test IMAGE -- put the cloud image on Hetzner Cloud and prove a box boots from it.
+# Hetzner has no image upload, so: a temporary server in rescue mode, the image written
+# to its disk with dd, a snapshot of it, the server deleted. Then a server from the
+# snapshot with user-data (a throwaway key and sudo password), checked over ssh as ben,
+# and deleted. KEEPS the snapshot (labelled purpose=cloudimg-test); create boxes from it.
+# Token: ~/.config/hcloud/token-rw (read-write). Touches only cloudimg-test-* resources.
+# HZ_TYPE (default cx23) and HZ_LOC (default nbg1). Cost: two servers for ~10 min.
+# station-maintenance beast-arch task 85; first passed 2026-10-09.
+set -euo pipefail
+img=${1:?image}
+d=$(mktemp -d)
+tok=$(cat ~/.config/hcloud/token-rw)
+api() { local m=$1 p=$2; shift 2; curl -sS -X "$m" -H "Authorization: Bearer $tok" -H 'Content-Type: application/json' "https://api.hetzner.cloud/v1/$p" "$@"; }
+wait_action() { local id=$1 s; for _ in $(seq 120); do s=$(api GET actions/$id | jq -r .action.status); [[ $s == success ]] && return; [[ $s == error ]] && { api GET actions/$id | jq .action.error; return 1; }; sleep 5; done; return 1; }
+type=${HZ_TYPE:-cx23} loc=${HZ_LOC:-nbg1}
+S=(-i "$d/key" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -o BatchMode=yes -o LogLevel=ERROR)
+waitssh() { for _ in $(seq 60); do ssh "${S[@]}" "$1" true 2>/dev/null && return; sleep 5; done; return 1; }
+
+ssh-keygen -q -t ed25519 -N '' -C cloudimg-test -f "$d/key"
+keyid=$(api POST ssh_keys -d "$(jq -n --arg k "$(cat "$d/key.pub")" '{name:"cloudimg-test-key",public_key:$k}')" | jq -r .ssh_key.id)
+up=; run=
+cleanup() {
+  for s in $up $run; do api DELETE servers/$s >/dev/null && echo "deleted server $s"; done
+  api DELETE ssh_keys/$keyid >/dev/null && echo "deleted ssh key $keyid"
+}
+trap 'cleanup; rm -rf "$d"' EXIT
+
+echo "== 1. temporary server in rescue, write the image"
+r=$(api POST servers -d "$(jq -n --arg t $type --arg l $loc --argjson k $keyid '{name:"cloudimg-test-upload",server_type:$t,location:$l,image:"debian-12",ssh_keys:[$k],start_after_create:false}')")
+up=$(jq -r .server.id <<<"$r"); [[ $up != null ]] || { jq .error <<<"$r"; exit 1; }
+wait_action "$(jq -r .action.id <<<"$r")"
+wait_action "$(api POST servers/$up/actions/enable_rescue -d "{\"type\":\"linux64\",\"ssh_keys\":[$keyid]}" | jq -r .action.id)"
+wait_action "$(api POST servers/$up/actions/poweron | jq -r .action.id)"
+ip=$(api GET servers/$up | jq -r .server.public_net.ipv4.ip)
+waitssh root@$ip; echo "rescue up at $ip"
+ssh "${S[@]}" root@$ip 'command -v zstd >/dev/null' || { echo "no zstd in rescue"; exit 1; }
+time zstd -T0 -3 -c "$img" | ssh "${S[@]}" root@$ip 'zstd -dc | dd of=/dev/sda bs=4M conv=fsync status=none && sync && sfdisk -l /dev/sda | tail -4'
+wait_action "$(api POST servers/$up/actions/poweroff | jq -r .action.id)"
+desc="arch-cloud $(basename "$img" .img) $(date +%F)"
+r=$(api POST servers/$up/actions/create_image -d "$(jq -n --arg d "$desc" '{type:"snapshot",description:$d,labels:{purpose:"cloudimg-test"}}')")
+snap=$(jq -r .image.id <<<"$r"); wait_action "$(jq -r .action.id <<<"$r")"
+echo "snapshot $snap: $desc"
+api DELETE servers/$up >/dev/null; echo "deleted upload server $up"; up=
+
+echo "== 2. server from the snapshot, cloud-init user-data"
+pw=$(openssl rand -hex 12)
+ud=$(printf '#cloud-config\nhostname: cloudimg-test\nssh_authorized_keys:\n  - %s\nchpasswd:\n  expire: false\n  users:\n    - {name: ben, type: hash, password: "%s"}\n' "$(cat "$d/key.pub")" "$(openssl passwd -6 "$pw")")
+r=$(api POST servers -d "$(jq -n --arg t $type --arg l $loc --argjson i $snap --arg u "$ud" '{name:"cloudimg-test-run",server_type:$t,location:$l,image:$i,user_data:$u}')")
+run=$(jq -r .server.id <<<"$r"); [[ $run != null ]] || { jq .error <<<"$r"; exit 1; }
+wait_action "$(jq -r .action.id <<<"$r")"
+ip=$(api GET servers/$run | jq -r .server.public_net.ipv4.ip)
+t0=$SECONDS; waitssh ben@$ip; echo "ssh as ben after ~$((SECONDS-t0))s at $ip"
+ssh "${S[@]}" ben@$ip "cloud-init status --wait >/dev/null; zsh -eic '
+  print host: \$(uname -n); cat /etc/cloud-image-release; print -n \"root fs: \"; df -h / | tail -1
+  cloud-init status --long | grep -E \"status|datasource\"
+  [[ -d /sys/firmware/efi ]] && print boot: UEFI || print boot: BIOS
+  print -n \"net: \"; ip -br addr show scope global | tr -s \" \" | paste -sd\";\"
+  nvim --version | head -1; print herdr: \$(herdr --version); print claude: \$(claude --version); tailscale version | head -1
+  ! sudo -n true 2>/dev/null && print sudo: asks for a password
+  print $pw | sudo -S -p \"\" true && print sudo: ok with the user-data password
+  print $pw | sudo -S -p \"\" pacman-key --list-keys >/dev/null 2>&1 && print pacman keyring: initialised
+  print -n \"sshd: \"; sudo -n sshd -T 2>/dev/null | grep -E \"^(passwordauthentication|permitrootlogin)\" | paste -sd\" \"
+  systemctl is-system-running'" 2>&1 | sed 's/^/  | /'
+ssh "${S[@]}" -o BatchMode=yes -o PreferredAuthentications=password root@$ip true 2>/dev/null && echo "FAIL: root password login" || echo "root/password ssh: refused (expected)"
