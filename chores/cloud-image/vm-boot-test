@@ -24,7 +24,9 @@ cp --sparse=always "$img" "$tmp/disk.img"; truncate -s 8G "$tmp/disk.img"
 ssh-keygen -q -t ed25519 -N '' -C vm-boot-test -f "$tmp/key"
 mkdir "$tmp/seed"
 printf 'instance-id: vm-boot-test-%s\nlocal-hostname: cloudtest\n' "$$" > "$tmp/seed/meta-data"
-printf '#cloud-config\nssh_authorized_keys:\n  - %s\n' "$(cat "$tmp/key.pub")" > "$tmp/seed/user-data"
+pw=$(openssl rand -hex 12)   # throwaway sudo password, set the way user-data.example does
+printf '#cloud-config\nssh_authorized_keys:\n  - %s\nchpasswd:\n  expire: false\n  users:\n    - {name: ben, type: hash, password: "%s"}\n' \
+  "$(cat "$tmp/key.pub")" "$(openssl passwd -6 "$pw")" > "$tmp/seed/user-data"
 xorriso -as mkisofs -quiet -V CIDATA -J -r -o "$tmp/seed.iso" "$tmp/seed" 2>/dev/null
 
 fwopts=()
@@ -52,8 +54,9 @@ for (( t = 0; t < limit; t += 5 )); do
       cloud-init status; nvim --version | head -1; git --version; gh --version | head -1
       print herdr: \$(herdr --version); print claude: \$(claude --version)
       tailscale version | head -1; command -v starship zoxide yazi fzf rg
-      sudo -n true && print sudo: ok
-      sudo -n pacman-key --list-keys >/dev/null 2>&1 && print pacman keyring: initialised on this boot
+      ! sudo -n true 2>/dev/null && print sudo: asks for a password
+      print '"$pw"' | sudo -S -p \"\" true && print sudo: ok with the user-data password
+      print '"$pw"' | sudo -S -p \"\" pacman-key --list-keys >/dev/null 2>&1 && print pacman keyring: initialised on this boot
       print -n \"ssh host key: \"; ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub | cut -d\" \" -f2
       print machine-id: \$(cat /etc/machine-id)
       systemctl is-system-running" 2>&1' | sed 's/^/  | /'

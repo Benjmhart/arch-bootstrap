@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Weekly: rebuild the headless cloud image from the newest verified Arch ISO that the
+# Build the headless cloud image (on demand; no timer, Ben 2026-10-09) from the newest verified Arch ISO that the
 # rescue-usb chore cached, boot-test it on BIOS and UEFI, and only then replace the
 # last good one. Keeps one image: ~/.cache/cloud-image/arch-cloud-VER.img (raw, sparse).
 # NO ROOT. Uploading to a provider is NOT done here (see station-maintenance task 85).
@@ -14,9 +14,9 @@ iso=$(ls -1 "$cache"/rescue-usb/archlinux-*-x86_64.iso 2>/dev/null | sort | tail
 ver=$(basename "$iso" | sed 's/archlinux-\(.*\)-x86_64.iso/\1/')
 img="$out/arch-cloud-$ver.img"
 
-# Rebuilt when the ISO, the repo's HEAD or the builder changes; also weekly regardless,
-# since pacstrap pulls current packages (that is the point of a refresh).
-stamp=$({ echo "$ver"; git -C "$repo" rev-parse HEAD; date +%G-W%V; cat "$here"/*; } | sha256sum | cut -d' ' -f1)
+# Rebuilt when the ISO, the repo's HEAD or the builder changes. Packages come from the
+# mirrors at build time, so delete $img.stamp to force a refresh.
+stamp=$({ echo "$ver"; git -C "$repo" rev-parse HEAD; cat "$here"/*; } | sha256sum | cut -d' ' -f1)
 if [[ -f $img && $(cat "$img.stamp" 2>/dev/null) == "$stamp" ]]; then
   echo "cloud image $(basename "$img") is current"; exit 0
 fi

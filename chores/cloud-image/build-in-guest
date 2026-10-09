@@ -10,7 +10,7 @@
 #   needed, which an uploaded image never has); console on tty0 and ttyS0.
 #   Initramfs WITHOUT autodetect: built in a virtio VM, autodetect would keep only
 #   virtio and the image would not find its root on AWS Nitro (NVMe) or Xen.
-#   User `ben` (locked password, zsh, wheel) with the dotfiles checked out, herdr and
+#   User `ben` (locked password until user-data sets one; zsh; wheel; sudo asks for it) with the dotfiles checked out, herdr and
 #   claude in ~/.local/bin, arch-bootstrap in ~/projects. cloud-init's default_user is
 #   ben, so the provider's SSH key lands in ~ben/.ssh/authorized_keys.
 #   NO secrets and no per-machine identity: machine-id, SSH host keys and the pacman
@@ -90,7 +90,9 @@ system_info:
     lock_passwd: true
     shell: /usr/bin/zsh
     groups: [wheel]
-    sudo: ["ALL=(ALL) NOPASSWD:ALL"]
+    # sudo needs the password user-data sets (chpasswd, see user-data.example); without one
+    # ben has no sudo at all (Ben, 2026-10-09: not passwordless).
+    sudo: ["ALL=(ALL) ALL"]
 disable_root: true
 ssh_pwauth: false
 EOF

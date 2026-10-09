@@ -7,6 +7,13 @@
 # the tailnet admin console, never a reusable one, and never commit a filled-in copy.
 # Provider user-data is readable from inside the box (metadata service) for its lifetime.
 hostname: CHANGEME
+# ben's password, for sudo (it is never accepted over ssh). Hash only, never the password:
+#   openssl passwd -6        (prompts; paste the $6$... line below)
+# Without this block ben has no sudo at all; root login is disabled.
+chpasswd:
+  expire: false
+  users:
+    - {name: ben, type: hash, password: "$6$CHANGEME"}
 ssh_authorized_keys:
   - ssh-ed25519 AAAA... ben@beast-arch
 runcmd:
