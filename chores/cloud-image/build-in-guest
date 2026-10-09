@@ -95,6 +95,12 @@ system_info:
     sudo: ["ALL=(ALL) ALL"]
 disable_root: true
 ssh_pwauth: false
+# Ignore provider vendor-data: it outranks this file, and Hetzner's sets
+# system_info.default_user to root, so the provider's SSH keys went to root (login
+# disabled) and nobody could get in (2026-10-09, task 85). The image's user policy wins.
+vendor_data: {enabled: false}
+vendor_data2: {enabled: false}
+manage_etc_hosts: true
 EOF
 
 # Inbound: tailnet only. NOT enabled here: user-data enables it once `tailscale up`

@@ -27,6 +27,8 @@ printf 'instance-id: vm-boot-test-%s\nlocal-hostname: cloudtest\n' "$$" > "$tmp/
 pw=$(openssl rand -hex 12)   # throwaway sudo password, set the way user-data.example does
 printf '#cloud-config\nssh_authorized_keys:\n  - %s\nchpasswd:\n  expire: false\n  users:\n    - {name: ben, type: hash, password: "%s"}\n' \
   "$(cat "$tmp/key.pub")" "$(openssl passwd -6 "$pw")" > "$tmp/seed/user-data"
+# Provider vendor-data the image must ignore: Hetzner's makes root the default user.
+printf '#cloud-config\nsystem_info:\n  default_user: {name: root, lock_passwd: true, shell: /bin/bash}\n' > "$tmp/seed/vendor-data"
 xorriso -as mkisofs -quiet -V CIDATA -J -r -o "$tmp/seed.iso" "$tmp/seed" 2>/dev/null
 
 fwopts=()
