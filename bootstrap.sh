@@ -1114,11 +1114,15 @@ stage_packages() {
     # the machine to them -- forward after a reviewed date bump, BACK after a rollback (-uu).
     # The database never changes under a pinned date, so a refresh here is no partial upgrade.
     pin_repo_date "$date" || return 1
+    # -yy, FORCED: pacman downloads a database only when the server's is newer than the local
+    # copy, and the archive's copy of a day is OLDER than one fetched later from a live mirror
+    # (or from a later day, after a rollback). With -y the first pinned fpush on 2026-10-09 kept
+    # the live mirrors' databases on three machines, so nothing was pinned there.
     # The keyring first, in its own transaction (the Arch wiki's fix): a package signed by a
     # packager key newer than the installed keyring otherwise fails "invalid or corrupted
     # package (PGP signature)".
-    run sudo pacman -Sy --needed --noconfirm archlinux-keyring || return 1
-    run sudo pacman -Syuu --needed --noconfirm ${ignore:+--ignore "$ignore"} ${missing[@]+"${missing[@]}"} || return 1
+    run sudo pacman -Syy --needed --noconfirm archlinux-keyring || return 1
+    run sudo pacman -Suu --needed --noconfirm ${ignore:+--ignore "$ignore"} ${missing[@]+"${missing[@]}"} || return 1
     did "packages at the archive of $date${missing[0]:+; installed ${#missing[@]}: ${missing[*]}}"
   elif (( ${#missing[@]} == 0 )); then
     ok "all ${#want[@]} user-space packages already installed"
