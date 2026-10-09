@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# root-rollback [N] [--yes] -- put / back to snapper snapshot N (station-maintenance beast-arch 76).
+#
+# For a machine install.sh built with a btrfs root (@, @.snapshots, ...). snap-pac takes a "pre"
+# snapshot before every pacman run, so after an upgrade that broke something, N is that run's pre.
+#   root-rollback            list the snapshots (number, time, what pacman was doing)
+#   root-rollback last       the same for the newest "pre" snapshot: undo the last pacman run
+#   root-rollback N          make snapshot N the root: @ is kept as @.before-rollback-<time>, a
+#                            writable copy of N becomes @, and /boot gets N's copy of the kernel
+#                            (/.bootbackup, filled by install.sh's pacman hook). Then reboot.
+# Where: on the running system (sudo) if it still boots; otherwise from the rescue stick, after
+#   cryptsetup open <root partition> root, with the boot partition mounted on /boot (BOOT_DIR).
+# Package versions fleet-wide go back with `fleet rollback` (repo-date); this is the local undo.
+# Env: ROOT_DEV (default /dev/mapper/root), BOOT_DIR (default /boot).
+set -euo pipefail
+die() { echo "FAIL  $*" >&2; exit 1; }
+n="" yes=0
+for a; do case $a in --yes) yes=1 ;; [0-9]*|last) n=$a ;; *) die "usage: root-rollback [N|last] [--yes]" ;; esac; done
+(( EUID == 0 )) || die "run as root (sudo root-rollback ...)"
+dev=${ROOT_DEV:-/dev/mapper/root} boot=${BOOT_DIR:-/boot}
+[[ -b $dev ]] || die "$dev not found -- on the rescue stick: cryptsetup open <root partition> root"
+top=$(mktemp -d)
+mount -o subvolid=5 "$dev" "$top" || die "cannot mount the top of $dev"
+trap 'umount "$top"; rmdir "$top"' EXIT
+[[ -d $top/@ && -d $top/@.snapshots ]] || die "$dev is not install.sh's btrfs layout (no @ and @.snapshots)"
+
+if [[ -z $n ]]; then
+  echo "snapshots of / (newest last):"
+  for d in $(ls "$top/@.snapshots" | sort -n); do
+    i=$top/@.snapshots/$d/info.xml; [[ -f $i ]] || continue
+    printf '  %4s  %s  %-5s %s\n' "$d" "$(sed -n 's:.*<date>\(.*\)</date>.*:\1:p' "$i")" \
+      "$(sed -n 's:.*<type>\(.*\)</type>.*:\1:p' "$i")" "$(sed -n 's:.*<description>\(.*\)</description>.*:\1:p' "$i")"
+  done
+  echo "then: root-rollback N   (the 'pre' before the pacman run that broke it), or: root-rollback last"
+  exit 0
+fi
+if [[ $n == last ]]; then
+  n=$(grep -l '<type>pre</type>' "$top"/@.snapshots/*/info.xml 2>/dev/null | awk -F/ '{print $(NF-1)}' | sort -n | tail -1)
+  [[ -n $n ]] || die "no pre snapshot (snap-pac takes one before every pacman run)"
+fi
+snap=$top/@.snapshots/$n/snapshot
+[[ -d $snap ]] || die "no snapshot $n"
+if (( ! yes )); then
+  printf 'make snapshot %s the root (%s)? the current root is kept. [y/N] ' "$n" \
+    "$(sed -n 's:.*<description>\(.*\)</description>.*:\1:p' "$top/@.snapshots/$n/info.xml")"
+  read -r ans </dev/tty; [[ $ans == y || $ans == Y ]] || die "nothing changed"
+fi
+old=@.before-rollback-$(date +%Y%m%dT%H%M%S)
+mv "$top/@" "$top/$old"
+btrfs subvolume snapshot "$snap" "$top/@" >/dev/null || { mv "$top/$old" "$top/@"; die "snapshot copy failed; nothing changed"; }
+echo "ok    / is now snapshot $n; the old root is $old"
+if [[ -d $top/@/.bootbackup ]] && mountpoint -q "$boot"; then
+  rsync -a --delete "$top/@/.bootbackup/" "$boot/" && echo "ok    $boot restored from the snapshot's /.bootbackup"
+else
+  echo "todo  restore /boot: mount the boot partition on $boot, then rsync -a --delete <@>/.bootbackup/ $boot/"
+fi
+echo "todo  reboot. When all is well: btrfs subvolume delete on $old (mount -o subvolid=5 $dev /mnt)"

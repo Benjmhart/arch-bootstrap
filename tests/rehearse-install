@@ -33,6 +33,9 @@ INSTALL_URL: default main on GitHub, i.e. what is pushed, not the working tree. 
 install.sh the ISO carries. With a rescue ISO built by `fleet stick` (it carries approved
 snapshots), PICK answers snapshot-pick's "start from?" ("" = newest approved, "2" = roll back one,
 "N1" = a newer GitHub commit) and EXPECT_AB makes the boot phase check the result (task 86).
+INSTALL_URL=local: the working tree's install.sh, served over local HTTP. ROLLBACK=1 (boot, a btrfs
+root): pacman -S tree, tools/root-rollback (working tree) to snap-pac's pre snapshot, power off,
+boot again (ROLLBACK=after), check tree is gone (beast-arch 76).
 Work files (a sparse 70 GiB disk) live in ~/.cache/vm-rehearsal/<fw>-<bus>, on disk, because
 /tmp can be RAM. Passwords are throwaway; the disk is never used for anything real.
 
@@ -49,6 +52,7 @@ ISO = os.environ.get("ISO") or (sorted(glob.glob(os.path.expanduser(
     "~/.cache/rescue-usb/archlinux-*-x86_64.iso"))) or [""])[-1]
 PICK = os.environ.get("PICK", "")            # answer to snapshot-pick (rescue ISO from `fleet stick`)
 EXPECT_AB = os.environ.get("EXPECT_AB", "")  # boot: the arch-bootstrap commit it must have picked
+ROLLBACK = os.environ.get("ROLLBACK", "")    # boot: install a package, root-rollback to its pre snapshot, boot again, check
 URL = os.environ.get("INSTALL_URL",
                      "https://raw.githubusercontent.com/Benjmhart/arch-bootstrap/main/install.sh")
 FW = os.environ.get("FIRMWARE", "uefi")
@@ -129,9 +133,10 @@ arch-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg
 cat /mnt/etc/kernel/cmdline /mnt/etc/crypttab; ls -l /mnt/boot/EFI/Linux
 """
 HOST = ""
-if PHASE in ("install", "convert") and SHAPE:
-    serve = tempfile.mkdtemp()
-    shutil.copy(f"{REPO}/tools/encrypt-root-in-place", serve)
+if (PHASE in ("install", "convert") and SHAPE) or URL == "local" or ROLLBACK not in ("", "after"):
+    serve = tempfile.mkdtemp()   # the WORKING TREE's files, for the guest
+    for f in ("tools/encrypt-root-in-place", "tools/root-rollback", "install.sh"):
+        shutil.copy(f"{REPO}/{f}", serve)
     open(f"{serve}/shape.sh", "w").write(SHAPE_SH)
     class Quiet(http.server.SimpleHTTPRequestHandler):
         def log_message(self, *a): pass
@@ -203,7 +208,7 @@ if PHASE == "install":
     step("network up", run("until curl -fsI https://raw.githubusercontent.com >/dev/null; do sleep 2; done", 120))
     # INSTALL_URL= (empty): use the install.sh a rescue ISO carries on PATH.
     step("fetch install.sh",
-         run(f"curl -fsSL -o install.sh {URL}" if URL else "cp /usr/local/bin/install.sh ."))
+         run(f"curl -fsSL -o install.sh {HOST + '/install.sh' if URL == 'local' else URL}" if URL else "cp /usr/local/bin/install.sh ."))
     send(f"LUKS_PASSWORD={PW} USER_PASSWORD={PW} bash install.sh {INSTALL_ARGS} --disk {GUEST_DISK} rehearsal ben; echo __RC_$?__")
     expect(r"Type WIPE to continue", 300); send("WIPE")
     while True:   # a rescue ISO from `fleet stick` asks which snapshot to start from (snapshot-pick)
@@ -236,18 +241,38 @@ elif PHASE == "convert":
     send("poweroff"); wait_exit()
 
 else:  # boot
-    expect(r"[Pp]assphrase|password is required", 240); time.sleep(1); send(PW)
-    t0 = time.time()
-    expect(r"rehearsal login:", 240)
-    print(f"ok   one passphrase, then login prompt after {time.time()-t0:.0f}s", flush=True)
-    send("ben"); expect(r"Password:", 30); send(PW); expect(r"\$\s*$", 60)
-    send("export TERM=dumb PS1='$ '"); time.sleep(1)
+    def unlock_login():
+        expect(r"[Pp]assphrase|password is required", 240); time.sleep(1); send(PW)
+        t0 = time.time()
+        expect(r"rehearsal login:", 240)
+        print(f"ok   one passphrase, then login prompt after {time.time()-t0:.0f}s", flush=True)
+        send("ben"); expect(r"Password:", 30); send(PW); expect(r"\$\s*$", 60)
+        send("export TERM=dumb PS1='$ '"); time.sleep(1)
+    def sudo(c, timeout=120): return run(f"echo {PW} | sudo -S -p '' sh -c '{c}'", timeout)
+    unlock_login()
     step("/ is on dm-crypt", run("findmnt -no SOURCE / | grep -q '^/dev/mapper/'"))
     step("/home is on dm-crypt", run("findmnt -no SOURCE /home | grep -q '^/dev/mapper/'"))
     step("sudo works", run(f"echo {PW} | sudo -S -p '' true"))
     step("/etc is 755", run('[ "$(stat -c %a /etc)" = 755 ]'))
     step("system bus up (systemctl as a user)", run("systemctl is-active --quiet dbus.socket"))
     step("no failed units", run('[ -z "$(systemctl --failed --no-legend)" ]'))
+    if run('[ "$(findmnt -no FSTYPE /)" = btrfs ]') == 0:   # install.sh's root snapshots (beast-arch 76)
+        step("/ is subvolume @, /.snapshots is @.snapshots",
+             run("findmnt -no OPTIONS / | tr , '\\n' | grep -qx subvol=/@ && findmnt -no OPTIONS /.snapshots | tr , '\\n' | grep -qx subvol=/@.snapshots"))
+        step("snapper lists the root config", sudo("snapper list-configs | grep -q \"^root \""))
+    if ROLLBACK == "after":   # the second boot: did the rollback take?
+        step("after the rollback: tree is gone", run("! command -v tree"))
+        step("...the old root kept as @.before-rollback-*", sudo("mount -o subvolid=5 /dev/mapper/root /mnt && ls -d /mnt/@.before-rollback-* && umount /mnt"))
+        step("...no failed units", run('[ -z "$(systemctl --failed --no-legend)" ]'))
+    elif ROLLBACK:
+        step("pacman -S tree: snap-pac takes pre and post", sudo("pacman -S --noconfirm tree >/dev/null && snapper list | grep -q pacman", 300))
+        step("...and /.bootbackup has the kernel", sudo("[ -f /.bootbackup/vmlinuz-linux ]"))
+        step("fetch root-rollback (working tree)", run(f"curl -fsS -o /tmp/root-rollback {HOST}/root-rollback && chmod +x /tmp/root-rollback"))
+        step("root-rollback to the pre snapshot", sudo("/tmp/root-rollback last --yes", 300))
+        # QEMU runs with -no-reboot: power off here, and boot again as ROLLBACK=after.
+        send(f"echo {PW} | sudo -S -p '' poweroff"); wait_exit()
+        rc = subprocess.call([sys.argv[0], "boot"], env={**os.environ, "ROLLBACK": "after"})
+        sys.exit(1 if FAILS or rc else 0)
     if EXPECT_AB:   # the snapshot snapshot-pick was told to choose (beast-arch task 86)
         step(f"~/projects/arch-bootstrap at {EXPECT_AB[:7]} (the picked snapshot)",
              run(f'[ "$(git -C ~/projects/arch-bootstrap rev-parse HEAD)" = {EXPECT_AB} ]'))

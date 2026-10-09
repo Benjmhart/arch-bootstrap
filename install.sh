@@ -15,7 +15,8 @@
 # What it installs (mirrors how beast-arch was built by hand):
 #   GPT on UEFI / msdos on BIOS, archinstall's own default layout, reproduced here:
 #     1 GiB fat32 /boot   (unencrypted -- GRUB and the kernel have to be readable)
-#     ext4 /      32 GiB (disk < 320 GiB), disk/10 (320-500 GiB), 50 GiB (> 500 GiB)
+#     btrfs /     32 GiB (disk < 320 GiB), disk/10 (320-500 GiB), 50 GiB (> 500 GiB),
+#                 subvolumes @ (/), @log, @pkg, @.snapshots, compress=zstd
 #     ext4 /home  the rest
 #   BOTH / and /home LUKS-encrypted, one passphrase at boot: archinstall adds the
 #   `encrypt` hook and cryptdevice= for /, and unlocks /home with a keyfile kept
@@ -27,6 +28,14 @@
 #   America/Toronto with NTP, one sudo user, root locked (sudo only),
 #   plus base-devel git zsh openssh github-cli -- what bootstrap.sh needs to start.
 #   Xorg and everything else come later, from bootstrap.sh.
+#
+# Root snapshots (station-maintenance beast-arch 76, 2026-10-09): snapper keeps / only
+# (not /home), with no timeline; snap-pac takes a pre and a post snapshot around every
+# pacman run, and a pacman hook copies /boot into /.bootbackup just before, so each
+# snapshot carries the kernel it booted with. tools/root-rollback N puts / back to
+# snapshot N (from the running system, or from the rescue stick when it no longer boots).
+# Package VERSIONS are pinned and rolled back fleet-wide by arch-bootstrap's repo-date;
+# this is the local undo for an upgrade that broke one machine.
 #
 # Why the layout is computed HERE: archinstall's JSON cannot ask it for its
 # default layout. "config_type": "default_layout" is only a label; the parser
@@ -54,7 +63,7 @@ LOCALE="en_US.UTF-8"
 KEYMAP="us"
 # gnome-keyring is here, not left to bootstrap.sh, so PAM can create and unlock the
 # `login` keyring at the very FIRST login (see the PAM block after archinstall).
-EXTRA_PACKAGES=(base-devel git zsh openssh github-cli gnome-keyring)
+EXTRA_PACKAGES=(base-devel git zsh openssh github-cli gnome-keyring snapper rsync)
 TESTED_ARCHINSTALL="4.4 4.5"
 
 die()  { printf 'FAIL  %s\n' "$*" >&2; exit 1; }
@@ -218,10 +227,15 @@ uefi = e["IS_FW"] == "uefi"
 ROOT, HOME, BOOT = ("9dbda828-aaaa-4024-8fff-098ef9dca776",
                     "751585c1-9f9f-4f12-8119-dc0d7656a5f1",
                     "8c5ffa14-b178-46b3-97de-384db16ee566")
-def part(obj_id, start, sz, fs, mnt, flags):
+def part(obj_id, start, sz, fs, mnt, flags, opts=(), subvols=()):
     return {"obj_id": obj_id, "status": "create", "type": "primary",
             "start": size(start), "size": sz, "fs_type": fs, "mountpoint": mnt,
-            "mount_options": [], "flags": flags, "btrfs": [], "dev_path": None}
+            "mount_options": list(opts), "flags": flags,
+            "btrfs": [{"name": n, "mountpoint": m} for n, m in subvols], "dev_path": None}
+# Root: btrfs subvolumes, the partition itself unmounted (archinstall mounts the subvolumes).
+# @.snapshots at the top level, not nested in @, so a rollback replaces @ and keeps them.
+ROOT_SUBVOLS = (("@", "/"), ("@log", "/var/log"), ("@pkg", "/var/cache/pacman/pkg"),
+                ("@.snapshots", "/.snapshots"))
 cfg = {
   "archinstall-language": "English",
   "script": "guided",
@@ -231,7 +245,7 @@ cfg = {
       "device": e["IS_DISK"], "wipe": True,
       "partitions": [
         part(BOOT, 1, size(1, "GiB"), "fat32", "/boot", ["boot", "esp"] if uefi else ["boot"]),
-        part(ROOT, 1025, size(e["IS_ROOT_MIB"]), "ext4", "/", []),
+        part(ROOT, 1025, size(e["IS_ROOT_MIB"]), "btrfs", None, [], ["compress=zstd"], ROOT_SUBVOLS),
         part(HOME, e["IS_HOME_START"], size(e["IS_HOME_MIB"]), "ext4", "/home",
              ["linux-home"] if uefi else []),
       ]}],
@@ -342,6 +356,39 @@ if [[ -f $pamfile ]] && ! grep -q pam_gnome_keyring "$pamfile"; then
   rm -f "$pamfile.new"
 fi
 
+# Root snapshots (see the header). snapper's create-config insists on making /.snapshots itself,
+# as a subvolume nested inside @, which a rollback of @ would take with it. So: let it, delete
+# that one, and mount the top-level @.snapshots there instead (the usual Arch-wiki dance).
+# snap-pac only now, from the new system's mirrors: installed earlier, its hooks would have
+# fired in archinstall's own pacman runs with no snapper config yet.
+rootsrc=$(findmnt -no SOURCE /mnt | sed 's/\[.*//')
+umount /mnt/.snapshots && rmdir /mnt/.snapshots
+arch-chroot /mnt snapper --no-dbus -c root create-config / || die "snapper create-config failed"
+btrfs subvolume delete /mnt/.snapshots >/dev/null
+install -d -m 750 /mnt/.snapshots
+mount -o subvol=@.snapshots,compress=zstd "$rootsrc" /mnt/.snapshots
+sed -i -e 's/^TIMELINE_CREATE=.*/TIMELINE_CREATE="no"/' -e 's/^NUMBER_LIMIT=.*/NUMBER_LIMIT="10"/' \
+       -e 's/^NUMBER_LIMIT_IMPORTANT=.*/NUMBER_LIMIT_IMPORTANT="5"/' /mnt/etc/snapper/configs/root
+arch-chroot /mnt systemctl enable snapper-cleanup.timer
+install -d /mnt/etc/pacman.d/hooks
+# 00-: before snap-pac's 05-snap-pac-pre, so the pre snapshot holds the matching /boot.
+cat > /mnt/etc/pacman.d/hooks/00-boot-backup.hook <<'HOOK'
+# install.sh (arch-bootstrap): /boot is a separate FAT partition, outside every snapshot. A copy
+# in / goes into snap-pac's pre snapshot, so tools/root-rollback can restore the kernel to match.
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Operation = Remove
+Type = Package
+Target = *
+
+[Action]
+Description = Copying /boot into /.bootbackup for the snapshot...
+When = PreTransaction
+Exec = /usr/bin/rsync -a --delete /boot/ /.bootbackup/
+HOOK
+arch-chroot /mnt pacman -S --needed --noconfirm snap-pac || die "installing snap-pac failed"
+
 # The arch-bootstrap clone the rescue ISO carries (chores/rescue-usb/make-rescue-iso):
 # unpacked into the new user's ~/projects, so after the reboot it is
 # `cd ~/projects/arch-bootstrap && ./bootstrap.sh`, with no clone over the network.
@@ -382,6 +429,10 @@ chk "archinstall reported success" \
 chk "fstab written"          "[ -s /mnt/etc/fstab ]"
 chk "grub.cfg generated"     "[ -s /mnt/boot/grub/grub.cfg ]"
 chk "user $user exists"      "grep -q '^$user:' /mnt/etc/passwd"
+chk "/ is btrfs subvolume @" "[ \"\$(findmnt -no FSTYPE /mnt)\" = btrfs ] && findmnt -no OPTIONS /mnt | tr , '\\n' | grep -qx subvol=/@"
+chk "snapper: root config, no timeline" "grep -qx 'TIMELINE_CREATE=\"no\"' /mnt/etc/snapper/configs/root"
+chk "/.snapshots is the top-level @.snapshots" "findmnt -no OPTIONS /mnt/.snapshots | grep -q 'subvol=/@.snapshots'"
+chk "snap-pac and the /boot copy hook" "ls /mnt/usr/share/libalpm/hooks/*snap-pac-pre* >/dev/null && [ -f /mnt/etc/pacman.d/hooks/00-boot-backup.hook ]"
 chk "/home is LUKS"          "grep -q luks /mnt/etc/crypttab || grep -q cryptdevice /mnt/etc/default/grub"
 chk "/etc is 755"            "[ \"\$(stat -c %a /mnt/etc)\" = 755 ]"
 chk "console keymap $KEYMAP"  "grep -qx 'KEYMAP=$KEYMAP' /mnt/etc/vconsole.conf"
