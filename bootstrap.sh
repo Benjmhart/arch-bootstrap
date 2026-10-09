@@ -41,9 +41,10 @@
 #   the last line rather than one you infer.
 #
 # That second property is what makes it safe to re-run as a routine check that the
-# script still reproduces the machine. Note that a re-run deliberately does NOT
-# upgrade the system: packages are installed only when missing. Upgrading is a
-# separate job with a separate risk profile; do it with pacman directly.
+# script still reproduces the machine. Packages: with a `repo-date` file (pinned, the fleet's
+# way since 2026-10-09) every run moves the machine to exactly that day's package versions from
+# the Arch Linux Archive, and nothing newer; the date moves only by a reviewed commit (`fleet
+# push`). Without one, a re-run does NOT upgrade: packages are installed only when missing.
 
 set -euo pipefail
 
@@ -115,8 +116,8 @@ DEPLOY_REPOS="${DEPLOY_REPOS:-}"
 PACMAN_IGNORE="${PACMAN_IGNORE:-}"
 
 # Chores to enable on this machine: names of directories under chores/, each with a
-# chore-NAME.timer. See chores/chore-run for the protocol. low-disk is on everywhere
-# whatever this says (beast-arch 76); the rest are opt-in.
+# chore-NAME.timer. See chores/chore-run for the protocol. low-disk is on everywhere and
+# fleet-due on micro, whatever this says (beast-arch 76); the rest are opt-in.
 CHORES="${CHORES:-}"
 
 # /tmp: RAM or disk. systemd's static tmp.mount makes /tmp a tmpfs at size=50% of
@@ -1050,6 +1051,30 @@ github_register_keys() {
 
 # --------------------------------------------------------------------------- 10
 
+# repo_holds <host>: the packages arch-bootstrap's `holds` file keeps back on <host>, comma-separated.
+repo_holds() {
+  [[ -f $SCRIPT_DIR/holds ]] || return 0
+  awk -v h="$1" '$1 == h && $2 ~ /^[a-z0-9@._+-]+$/ { printf "%s%s", (n++ ? "," : ""), $2 }' "$SCRIPT_DIR/holds"
+}
+
+# pin_repo_date <YYYY-MM-DD>: point pacman at the Arch Linux Archive's repos of that day. The
+# stock list is kept once as mirrorlist.orig; pacman-mirrorlist upgrades land as .pacnew.
+pin_repo_date() {
+  local date=$1 want tmp
+  [[ $date =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { warn "bad repo-date '$date' (want YYYY-MM-DD)"; return 1; }
+  want="# Managed by arch-bootstrap (repo-date). Every package comes from the Arch Linux Archive's
+# copy of the repos on $date; moving the date is a reviewed commit (fleet push, on micro).
+# The stock list is mirrorlist.orig. Unpin: delete repo-date in arch-bootstrap, restore that.
+Server = ${ARCHIVE_URL:-https://archive.archlinux.org/repos}/${date//-//}/\$repo/os/\$arch"
+  if [[ "$(cat /etc/pacman.d/mirrorlist 2>/dev/null)" == "$want" ]]; then
+    ok "repos pinned to the archive of $date"; return 0
+  fi
+  [[ -e /etc/pacman.d/mirrorlist.orig ]] || run sudo cp -p /etc/pacman.d/mirrorlist /etc/pacman.d/mirrorlist.orig
+  tmp=$(mktemp); printf '%s\n' "$want" > "$tmp"
+  run sudo install -m 644 "$tmp" /etc/pacman.d/mirrorlist; rm -f "$tmp"
+  did "repos pinned to the archive of $date"
+}
+
 stage_packages() {
   stage_banner "10 packages -- user-space only"
 
@@ -1074,21 +1099,38 @@ stage_packages() {
   # missing forever. -T exits 127 when anything is unsatisfied, hence the `|| true`.
   mapfile -t missing < <(pacman -T "${want[@]}" 2>/dev/null || true)
 
-  if (( ${#missing[@]} == 0 )); then
+  # Holds for this machine from the repo (one package per line, beast-arch 76/87), added to
+  # PACMAN_IGNORE (fleet-apply's local ~/.config/fleet/hold).
+  local ignore=$PACMAN_IGNORE held
+  held=$(repo_holds "$(uname -n)")
+  [[ -n $held ]] && ignore=${ignore:+$ignore,}$held
+  [[ -n $ignore ]] && info "holding back: $ignore"
+
+  local date=""
+  [[ -f $SCRIPT_DIR/repo-date ]] && date=$(<"$SCRIPT_DIR/repo-date")
+  if [[ -n $date ]]; then
+    # Pinned (beast-arch 76): every package comes from the Arch Linux Archive's copy of the repos
+    # on $date, so a commit of arch-bootstrap names exact package versions, and every run moves
+    # the machine to them -- forward after a reviewed date bump, BACK after a rollback (-uu).
+    # The database never changes under a pinned date, so a refresh here is no partial upgrade.
+    pin_repo_date "$date" || return 1
+    # The keyring first, in its own transaction (the Arch wiki's fix): a package signed by a
+    # packager key newer than the installed keyring otherwise fails "invalid or corrupted
+    # package (PGP signature)".
+    run sudo pacman -Sy --needed --noconfirm archlinux-keyring || return 1
+    run sudo pacman -Syuu --needed --noconfirm ${ignore:+--ignore "$ignore"} ${missing[@]+"${missing[@]}"} || return 1
+    did "packages at the archive of $date${missing[0]:+; installed ${#missing[@]}: ${missing[*]}}"
+  elif (( ${#missing[@]} == 0 )); then
     ok "all ${#want[@]} user-space packages already installed"
   else
     info "${#missing[@]} missing: ${missing[*]}"
-    # -Syu rather than -S, and only on the path that actually installs something.
-    # Installing against a stale sync database is Arch's partial-upgrade trap, so
-    # the refresh has to happen; doing it unconditionally would mean a routine
-    # re-run silently upgraded the whole system, which is not this script's job.
-    [[ -n $PACMAN_IGNORE ]] && info "holding back (PACMAN_IGNORE): $PACMAN_IGNORE"
-    # The keyring first, in its own transaction (the Arch wiki's fix): a package signed by
-    # a packager key newer than the installed keyring otherwise fails "invalid or corrupted
-    # package (PGP signature)". Only here, never on its own: -Sy without the -Su below
-    # would leave the partial-upgrade trap for every later `pacman -S`.
+    # Unpinned (no repo-date): -Syu rather than -S, and only on the path that actually
+    # installs something. Installing against a stale sync database is Arch's
+    # partial-upgrade trap, so the refresh has to happen; doing it unconditionally would
+    # mean a routine re-run silently upgraded the whole system. The keyring first, as above;
+    # never on its own, since -Sy without the -Su would leave the trap for a later `pacman -S`.
     run sudo pacman -Sy --needed --noconfirm archlinux-keyring
-    run sudo pacman -Syu --needed --noconfirm ${PACMAN_IGNORE:+--ignore "$PACMAN_IGNORE"} "${missing[@]}"
+    run sudo pacman -Syu --needed --noconfirm ${ignore:+--ignore "$ignore"} "${missing[@]}"
     did "${#missing[@]} user-space package(s) installed"
   fi
 
@@ -3125,7 +3167,9 @@ install_chores() {
   for unit in "$d/chore@.service" "$d"/*/chore-*.timer; do
     run systemctl --user --quiet link "$unit"
   done
-  for c in low-disk $CHORES; do
+  # fleet-due only on the fleet controller (tools/fleet's FLEET_SELF_HOST, micro).
+  local extra=""; [[ $(uname -n) == "${FLEET_SELF_HOST:-micro}" ]] && extra=fleet-due
+  for c in low-disk $extra $CHORES; do
     [[ -f $d/$c/chore-$c.timer ]] || { warn "CHORES names '$c', but there is no chores/$c/chore-$c.timer"; continue; }
     if systemctl --user is-enabled --quiet "chore-$c.timer" 2>/dev/null; then
       ok "chore $c scheduled"

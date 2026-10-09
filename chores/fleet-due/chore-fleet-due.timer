@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily: remind when the fleet's packages are a week old (arch-bootstrap chores/fleet-due)
+
+[Timer]
+OnCalendar=*-*-* 10:00
+# A day micro was off runs at the next boot.
+Persistent=true
+RandomizedDelaySec=10min
+Unit=chore@fleet-due.service
+
+[Install]
+WantedBy=timers.target

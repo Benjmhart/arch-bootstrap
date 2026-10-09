@@ -195,6 +195,36 @@ out=$(echo pw-ok | fleet rollback 2>&1); rc=$?
 check "rollback (micro only): self back to the previous snapshot" '(( rc == 0 )) && [[ $(dotat self) == "$dot3" ]] && [[ $(dotat h1) == "$dot4" ]] && grep -q "^h1 .*not touched" <<<"$out"'
 check "...recorded as the newest snapshot"                    '[[ $(tail -1 "$SN") == *" $dot3 "*rollback-of* ]]'
 
+# ================= packages: repo-date bump and holds (beast-arch 76)
+mkdb() {  # mkdb <date> <name-ver-rel...>: a fake archive day with one core repo
+  local d=$t/ala/${1//-//}/core/os/x86_64 w=$t/db; shift; rm -rf "$w"; mkdir -p "$d" "$w"
+  for e; do mkdir -p "$w/$e"; echo x > "$w/$e/desc"; done
+  (cd "$w" && bsdtar -czf "$d/core.db" "$@")
+}
+mkdb 2026-10-02 linux-7.2.8.arch1-2 foo-1.0-1 held-2.0-1 other-1-1
+mkdb 2026-10-09 linux-7.2.9.arch1-1 foo-1.1-1 held-3.0-1 other-2-1
+printf '#!/bin/sh\ncase "$1" in -Qq) printf "linux\\nfoo\\nheld\\n" ;; -Q) echo "$2 1.0-1" ;; esac\n' > "$t/bin/pacman"; chmod +x "$t/bin/pacman"
+git -C "$t/ab-seed" pull -q
+echo 2026-10-02 > "$t/ab-seed/repo-date"; printf '# c\nh1 held 2.0-1 -- broke h1\n' > "$t/ab-seed/holds"
+git -C "$t/ab-seed" add -A; git -C "$t/ab-seed" commit -qm "pin the date"; git -C "$t/ab-seed" push -q
+pf() { FLEET_ARCHIVE_URL=file://$t/ala FLEET_TODAY=$1 fleet push; }
+rm -f "$t/ticket"; printf 'p\ny\n\ny\n' > "$t/answers"   # print the changes, take the date; review: keep all; confirm
+out=$(echo pw-ok | pf 2026-10-09 2>&1); rc=$?
+check "bump: offers the newest day, kernel listed to watch"  '(( rc == 0 )) && grep -q "move the date 2026-10-02 -> 2026-10-09" <<<"$out" && grep -q "^        linux 7.2.8.arch1-2 -> 7.2.9.arch1-1" <<<"$out"'
+check "...p prints every change of OUR packages only"        'grep -q "  foo 1.0-1 -> 1.1-1$" <<<"$out" && ! grep -q "other 1-1" <<<"$out"'
+check "...the new date is a commit, in the review"           'grep -q "^  A[0-9]  .*repo-date: 2026-10-09 (3 package changes since 2026-10-02)" <<<"$out" && [[ $(git -C "$t/home-h1/projects/arch-bootstrap" show HEAD:repo-date) == 2026-10-09 ]]'
+check "...holds listed with the date version, NEWER flagged" 'grep -qE "^  h1 +held +installed .* 2026-10-09 has 3.0-1 +broke at 2.0-1 <- NEWER" <<<"$out" && grep -q "broke h1" <<<"$out"'
+rm -f "$t/ticket"; printf 'y\n' > "$t/answers"
+out=$(echo pw-ok | pf 2026-10-09 2>&1); rc=$?
+check "no newer day: nothing offered"                         '(( rc == 0 )) && grep -q "2026-10-09 is the newest day" <<<"$out" && ! grep -q "move the date" <<<"$out"'
+check "fleet-apply status: repo holds of this host"           '[[ $(HOME=$t/home-h1 FLEET_HOST=h1 "$t/home-h1/projects/arch-bootstrap/tools/fleet-apply" status | head -1) == "hold held 1.0-1 repo" ]]'
+cp -r "$H/projects/arch-bootstrap" "$t/ab-due"; mkdir -p "$t/ab-due/chores/fleet-due"; cp "$root/chores/fleet-due/run.sh" "$t/ab-due/chores/fleet-due/"
+due() { FLEET_SNAPSHOTS=$SN FLEET_TODAY=$1 "$t/ab-due/chores/fleet-due/run.sh"; }
+out=$(due 2026-10-12); rc=$?
+check "fleet-due: 3 days old, quiet (rc 0)"                   '(( rc == 0 )) && [[ $out == "fleet packages at 2026-10-09 (3 days old"* ]]'
+out=$(due 2026-10-16); rc=$?
+check "fleet-due: a week old, needs you (rc 75), holds named" '(( rc == 75 )) && grep -q "pinned to 2026-10-09 (7 days); 1 held package" <<<"$out"'
+
 # ================= the fleet forced-command line passes tools/authorized-keys check
 s=$t/secrets; mkdir -p "$s/ssh/pubkeys" "$s/ssh/fleet" "$s/ssh/authorized_keys"
 ssh-keygen -q -t ed25519 -N '' -C peer -f "$t/peer"; ssh-keygen -q -t ed25519 -N '' -C fleet -f "$t/fleetkey"

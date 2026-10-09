@@ -38,7 +38,9 @@
 #
 # Stages are limited to ALLOWED. ~/.config/fleet/hold, per machine:
 #   <stage>: <reason>                       skip that stage, and say why
-#   ignore-pkgs: <pkg>[,<pkg>] -- <reason>  keep those packages from upgrading (PACMAN_IGNORE)
+#   ignore-pkgs: <pkg>[,<pkg>] -- <reason>  keep those packages from upgrading (PACMAN_IGNORE): for
+#                                           a short local hold; a lasting one goes in arch-bootstrap's
+#                                           `holds` file, where it is reviewed and versioned
 set -euo pipefail
 umask 077
 REPO=${FLEET_REPO:-$HOME/projects/arch-bootstrap}
@@ -116,7 +118,12 @@ move() {
 
 read -r -a req <<<"${SSH_ORIGINAL_COMMAND:-$*}"
 case ${req[0]:-} in
-  status)       cat "$STATE/applied" 2>/dev/null || echo "none"; exit 0 ;;
+  status)       # held packages first ("hold <pkg> <installed> <source>"), the applied line LAST
+                for p in $(awk -F': *' '$1 == "ignore-pkgs" { sub(/^[^:]*: */, ""); sub(/ *--.*$/, ""); gsub(/,/, " "); print; exit }' "$HOLD" 2>/dev/null); do
+                  echo "hold $p $(pacman -Q "$p" 2>/dev/null | cut -d' ' -f2) local"; done
+                for p in $(awk -v h="$HOST" '$1 == h { print $2 }' "$REPO/holds" 2>/dev/null); do
+                  echo "hold $p $(pacman -Q "$p" 2>/dev/null | cut -d' ' -f2) repo"; done
+                cat "$STATE/applied" 2>/dev/null || echo "none"; exit 0 ;;
   secrets-push) secrets_push; exit 0 ;;
   apply)        ;;
   *)            die "request must be: status | secrets-push | apply <ab> <dot> <sec> [stage ...|keys]" ;;

@@ -11,16 +11,22 @@
 #   fleet push [stage ...|keys]   1. every machine pushes its own secrets commits (beast-arch first:
 #                                    it is the vault's source of truth); out-of-sync machines are
 #                                    reported and skipped
-#                                 2. review, per repo (arch-bootstrap, dotfiles, secrets): every new
+#                                 2. packages: when the Arch archive has a newer day than
+#                                    arch-bootstrap's repo-date, how many of the fleet's packages
+#                                    change (the kernel, mesa, xorg... listed); y commits the new
+#                                    date. Then every held package (arch-bootstrap `holds`, and
+#                                    local ~/.config/fleet/hold) with what the date has
+#                                 3. review, per repo (arch-bootstrap, dotfiles, secrets): every new
 #                                    commit with its time, author, subject and files, the risky files
 #                                    marked. Exclude any by number: micro reverts them in a throwaway
 #                                    checkout and pushes the revert, so they are gone from main too
-#                                 3. confirm, then apply the snapshot: micro first; if micro fails,
+#                                 4. confirm, then apply the snapshot: micro first; if micro fails,
 #                                    nothing else is touched
 #                                 "keys" = move to the snapshot and install authorized_keys only
 #                                 (an urgent revocation); no bootstrap stages.
 #   fleet rollback [all]          re-apply the previous approved snapshot: micro only, or every
-#                                 machine. Code and dotfiles go back; secrets never do (the vault).
+#                                 machine. Code, dotfiles AND packages go back (the repo-date of that
+#                                 commit; pacman -Syuu downgrades); secrets never do (the vault).
 #                                 It cannot undo what a bad commit already did as root -- after
 #                                 that, reinstall.
 #   fleet stick                   make the rescue stick HERE, on micro, from the approved snapshot
@@ -34,7 +40,7 @@
 # Asks ONCE for the fleet key passphrase (a temporary agent) and ONCE for the shared sudo password
 # (stdin), checked here before anything is sent. Review answers come from the terminal.
 #
-# Env: FLEET_HOSTS (default: the other machines), FLEET_KEY, FLEET_SELF_HOST (micro),
+# Env: FLEET_ARCHIVE_URL, FLEET_TODAY (tests), FLEET_HOSTS (default: the other machines), FLEET_KEY, FLEET_SELF_HOST (micro),
 # FLEET_VAULT_HOST (beast-arch), FLEET_INPUT (review answers; default /dev/tty), FLEET_STATE,
 # FLEET_DOTDIR, FLEET_SECRETS.
 set -uo pipefail
@@ -147,6 +153,85 @@ review_all() {  # review_all <base-ab> <base-dot> <base-sec>: one screen, one pr
   done
 }
 
+# ---- packages: arch-bootstrap's `repo-date` pins every machine to one day of the Arch Linux
+# Archive, and `holds` keeps single packages back on single machines (beast-arch 76, Ben
+# 2026-10-09: "declarative versioned systems that are easy to roll back").
+ALA=${FLEET_ARCHIVE_URL:-https://archive.archlinux.org/repos}
+TODAY=${FLEET_TODAY:-$(date +%F)}
+WATCH='linux|linux-lts|linux-zen|linux-firmware.*|.*-ucode|mesa|vulkan-.*|xorg-server.*|xf86-.*|glibc|systemd|pacman|grub|openssh|sudo|tailscale|nvidia.*|cryptsetup|mkinitcpio'
+
+pkgvers() {  # pkgvers <date> <dir>: "name version" for every package in that day's repos
+  local r
+  for r in core extra multilib; do
+    curl -sfL --max-time 300 -o "$2/$r.db" "$ALA/${1//-//}/$r/os/x86_64/$r.db" || continue
+    bsdtar -tf "$2/$r.db" | sed -n 's#/desc$##p'
+  done | awk '{ n = split($0, a, "-"); v = a[n-1] "-" a[n]; print substr($0, 1, length($0) - length(v) - 1), v }' | sort -u
+}
+
+bump_date() {  # offer the newest archive day; a yes commits it to arch-bootstrap and pushes. Sets PKGDIR
+  local cur new d tmp ans n
+  gitr ab fetch -q origin || die "arch-bootstrap: fetch failed"
+  cur=$(gitr ab show origin/main:repo-date 2>/dev/null) || return 0      # not pinned: nothing to offer
+  echo; echo "=== packages: pinned to the Arch archive of $cur"
+  for d in "$TODAY" "$(date -d "$TODAY - 1 day" +%F)"; do
+    curl -sfI --max-time 30 "$ALA/${d//-//}/core/os/x86_64/core.db" >/dev/null && { new=$d; break; }
+  done
+  [[ -n ${new:-} ]] || { echo "note  the archive did not answer: the date stays $cur"; return 0; }
+  [[ $new > $cur ]] || { echo "ok    $cur is the newest day"; return 0; }
+  PKGDIR=$(mktemp -d)
+  pkgvers "$cur" "$PKGDIR" > "$PKGDIR/old"; pkgvers "$new" "$PKGDIR" > "$PKGDIR/new"
+  [[ -s $PKGDIR/old && -s $PKGDIR/new ]] || { echo "note  could not read the archive's package lists: the date stays $cur"; return 0; }
+  # Only what the fleet has: this machine's packages and every pkglist.
+  { pacman -Qq; for f in $(gitr ab ls-tree --name-only origin/main | grep '^pkglist'); do
+      gitr ab show "origin/main:$f" | grep -vE '^[[:space:]]*(#|$)' | awk '{print $1}'; done; } | sort -u > "$PKGDIR/ours"
+  awk 'FILENAME == ARGV[1] { o[$1]; next } FILENAME == ARGV[2] { a[$1] = $2; next }
+       ($1 in o) && a[$1] != $2 { print $1, ($1 in a ? a[$1] : "(new)"), "->", $2 }' \
+    "$PKGDIR/ours" "$PKGDIR/old" "$PKGDIR/new" > "$PKGDIR/changes"
+  n=$(wc -l < "$PKGDIR/changes")
+  echo "      $new is newer: $n of the fleet's packages change. To watch:"
+  grep -E "^($WATCH$(gitr ab show origin/main:holds 2>/dev/null | awk '!/^#/ && NF { printf "|%s", $2 }')) " "$PKGDIR/changes" | sed 's/^/        /'
+  while :; do
+    printf 'move the date %s -> %s? y = yes; p = print all %d; Enter = keep %s: ' "$cur" "$new" "$n" "$cur"
+    IFS= read -r ans <&3 || die "no answer -- aborted, nothing applied"
+    case $ans in
+      p) sed 's/^/  /' "$PKGDIR/changes" ;;
+      y|Y) break ;;
+      *) echo "ok    the date stays $cur"; return 0 ;;
+    esac
+  done
+  tmp=$(mktemp -d)
+  gitr ab worktree add -q --detach "$tmp" origin/main || die "arch-bootstrap: worktree failed"
+  echo "$new" > "$tmp/repo-date"
+  git -C "$tmp" commit -q -m "repo-date: $new ($n package changes since $cur)" -m "$(cat "$PKGDIR/changes")" -- repo-date \
+    && git -C "$tmp" push -q origin HEAD:refs/heads/main \
+    || { gitr ab worktree remove --force "$tmp"; die "arch-bootstrap: committing or pushing the new date failed (origin moved? re-run)"; }
+  echo "did   repo-date $new committed and pushed ($(git -C "$tmp" rev-parse --short HEAD)); it is in the review below"
+  gitr ab worktree remove --force "$tmp"; gitr ab fetch -q origin
+  cp "$PKGDIR/new" "$PKGDIR/date"
+}
+
+show_holds() {  # every held package on every machine: installed, what the pinned day has, what broke
+  local date h p ver src broke why have; local -A inst=()
+  date=$(gitr ab show origin/main:repo-date 2>/dev/null) || return 0
+  PKGDIR=${PKGDIR:-$(mktemp -d)}
+  for h in "$SELF" "${hosts[@]}"; do
+    while read -r _ p ver src; do inst[$h:$p]="$ver ${src:-}"; done < <(on "$h" status 2>/dev/null | grep '^hold ')
+  done
+  { gitr ab show origin/main:holds 2>/dev/null | awk '!/^#/ && NF'
+    for k in "${!inst[@]}"; do [[ ${inst[$k]} == *\ local ]] && echo "${k%%:*} ${k#*:} - -- local (~/.config/fleet/hold)"; done
+  } | sort > "$PKGDIR/holds"
+  [[ -s $PKGDIR/holds ]] || return 0
+  [[ -s $PKGDIR/date ]] || pkgvers "$date" "$PKGDIR" > "$PKGDIR/date"
+  echo; echo "=== held packages (kept at their installed version; the date $date has the version shown)"
+  while read -r h p broke _ why; do
+    have=$(awk -v p="$p" '$1 == p { print $2 }' "$PKGDIR/date")
+    printf '  %-13s %-22s installed %-14s %s has %-14s' "$h" "$p" "$(cut -d' ' -f1 <<<"${inst[$h:$p]:-?}")" "$date" "${have:-?}"
+    if [[ $broke != - && -n $have && $have != "$broke" ]]; then printf '  broke at %s <- NEWER now: try it, then drop the hold' "$broke"
+    elif [[ $broke != - ]]; then printf '  broke at %s' "$broke"; fi
+    printf '\n                %s\n' "$why"
+  done < "$PKGDIR/holds"
+}
+
 # apply_all <ab> <dot> <sec> <hosts...> -- stages in $stages, password in $pw. Fills result[].
 apply_all() {
   local ab=$1 dot=$2 sec=$3; shift 3; local h st rc micro_ok=1
@@ -221,7 +306,10 @@ push)
     (( rc == 0 )) || secrets_bad[$h]=$(tail -1 <<<"$out")
   done
 
-  # 2. Review against the last approved snapshot (the first time: what micro has checked out).
+  # 2. The weekly package date, if it is time (its commit then shows in the review), and every hold.
+  bump_date; show_holds
+
+  # 3. Review against the last approved snapshot (the first time: what micro has checked out).
   if [[ -s $SNAPS ]]; then read -r _ b_ab b_dot b_sec _ < <(tail -1 "$SNAPS")
   else b_ab=$(gitr ab rev-parse HEAD); b_dot=$(gitr dot rev-parse HEAD); b_sec=$(gitr sec rev-parse HEAD)
        echo; echo "note  no approved snapshot yet: reviewing from what $SELF has checked out now"; fi
@@ -231,7 +319,7 @@ push)
     "${ab:0:7}" "${dot:0:7}" "${sec:0:7}" "$SELF" "${hosts[*]}"
   IFS= read -r ans <&3; [[ $ans == y || $ans == Y ]] || die "not applied"
 
-  # 3. micro first; it records the snapshot once it holds it.
+  # 4. micro first; it records the snapshot once it holds it.
   apply_all "$ab" "$dot" "$sec" "$SELF" "${hosts[@]}"
   # Record the snapshot once micro holds it -- unless it is the one already recorded (a push with
   # nothing new must not make `fleet rollback` "roll back" to the same snapshot).
@@ -247,8 +335,8 @@ rollback)
   [[ $(wc -l < "$SNAPS" 2>/dev/null || echo 0) -ge 2 ]] || die "no earlier approved snapshot to roll back to"
   read -r t ab dot sec _ < <(tail -2 "$SNAPS" | head -1)
   exec 3<"$IN" || die "no terminal ($IN)"
-  printf 'roll %s back to the snapshot approved %s (arch-bootstrap %s, dotfiles %s; secrets stay)? [y/N] ' \
-    "$( [[ $scope == all ]] && echo "every machine" || echo "$SELF")" "$t" "${ab:0:7}" "${dot:0:7}"
+  printf 'roll %s back to the snapshot approved %s (arch-bootstrap %s, dotfiles %s; secrets stay; packages go back to the archive of %s)? [y/N] ' \
+    "$( [[ $scope == all ]] && echo "every machine" || echo "$SELF")" "$t" "${ab:0:7}" "${dot:0:7}" "$(gitr ab show "$ab:repo-date" 2>/dev/null || echo "-- (not pinned then)")"
   IFS= read -r ans <&3; [[ $ans == y || $ans == Y ]] || die "not rolled back"
   declare -A result secrets_bad; stages=()
   if [[ $scope == all ]]; then unlock; targets=("$SELF" "${hosts[@]}")

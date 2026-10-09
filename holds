@@ -1,0 +1,9 @@
+# Packages a machine keeps at its installed version because an upgrade broke it there
+# (station-maintenance beast-arch 76/87). The packages stage passes them to pacman --ignore, so
+# they are neither upgraded by a repo-date bump nor downgraded by a rollback.
+#   <host> <package> <version that broke> -- <reason>
+# ONE package per line: dropping one hold can never take another with it (task 87's hold was
+# lost exactly that way, on a shared line). `fleet push` lists every hold with the version the
+# new date carries; when that differs from the one that broke, try it and drop the line.
+beast-arch xorg-server 21.1.25-1 -- task 87: ABI break, startx segfaults in amdgpu_drv
+beast-arch xorg-server-common 21.1.25-1 -- task 87: goes with xorg-server
