@@ -1,5 +1,6 @@
 bemoji
 claude-desktop
+espanso-x11
 google-chrome
 handy-bin
 lightworks

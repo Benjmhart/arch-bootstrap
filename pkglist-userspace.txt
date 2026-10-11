@@ -102,7 +102,9 @@ python-plyvel
 qemu-system-x86
 qutebrowser
 rclone
+restic
 ripgrep
+ripgrep-all
 ruby
 rustup
 shellcheck
