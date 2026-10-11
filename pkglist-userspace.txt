@@ -32,6 +32,7 @@ fontconfig
 freetype2
 fzf
 gcr
+gemini-cli
 git
 github-cli
 gnome-keyring
