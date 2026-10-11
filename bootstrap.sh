@@ -1081,9 +1081,10 @@ Server = ${ARCHIVE_URL:-https://archive.archlinux.org/repos}/${date//-//}/\$repo
 # xorg-server (beast-arch 87). The holds file is rewritten every run, so dropping a hold
 # takes effect on the next fleet push.
 hold_in_pacman_conf() {
-  local f=/etc/pacman.d/fleet-holds.conf want tmp
+  local f=/etc/pacman.d/fleet-holds.conf want tmp pkgs
+  pkgs=$(tr , '\n' <<<"$1" | awk 'NF && !seen[$0]++' | paste -sd' ')   # a package can be in both hold lists
   want="# Managed by arch-bootstrap: packages held back on this machine (arch-bootstrap holds + ~/.config/fleet/hold).
-${1:+IgnorePkg = ${1//,/ }}"
+${pkgs:+IgnorePkg = $pkgs}"
   grep -qxF "Include = $f" /etc/pacman.conf ||
     run sudo sed -i "/^\[options\]/a Include = $f" /etc/pacman.conf || return 1
   [[ "$(cat "$f" 2>/dev/null)" == "$want" ]] && { ok "holds in pacman.conf: ${1:-none}"; return 0; }
