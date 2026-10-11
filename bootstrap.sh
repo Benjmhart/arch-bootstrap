@@ -1075,8 +1075,30 @@ Server = ${ARCHIVE_URL:-https://archive.archlinux.org/repos}/${date//-//}/\$repo
   did "repos pinned to the archive of $date"
 }
 
+# hold_in_pacman_conf <a,b,c>: the holds as IgnorePkg, so a hand-run `pacman -Syu` or `yay` keeps
+# them back too. Until 2026-10-11 they lived only in this script's --ignore. A manual
+# `pacman -Syu neofetch` on beast-arch (2026-10-10 15:46) then upgraded the held linux and
+# xorg-server (beast-arch 87). The holds file is rewritten every run, so dropping a hold
+# takes effect on the next fleet push.
+hold_in_pacman_conf() {
+  local f=/etc/pacman.d/fleet-holds.conf want tmp
+  want="# Managed by arch-bootstrap: packages held back on this machine (arch-bootstrap holds + ~/.config/fleet/hold).
+${1:+IgnorePkg = ${1//,/ }}"
+  grep -qxF "Include = $f" /etc/pacman.conf ||
+    run sudo sed -i "/^\[options\]/a Include = $f" /etc/pacman.conf || return 1
+  [[ "$(cat "$f" 2>/dev/null)" == "$want" ]] && { ok "holds in pacman.conf: ${1:-none}"; return 0; }
+  tmp=$(mktemp); printf '%s\n' "$want" > "$tmp"
+  run sudo install -m 644 "$tmp" "$f"; rm -f "$tmp"
+  did "holds in pacman.conf: ${1:-none}"
+}
+
 stage_packages() {
   stage_banner "10 packages -- user-space only"
+
+  # Also here, not only in preflight: fleet pushes run from stage 10 on, so machines installed
+  # before the drop-in existed (beast-arch, carbon) kept the 5-minute timeout. An espanso build
+  # outlived it and its install hit a password prompt nobody saw (2026-10-11).
+  sudo_timeout_dropin
 
   info "installing from pkglist-userspace.txt -- no kernel, microcode, GPU or firmware"
 
@@ -1105,6 +1127,7 @@ stage_packages() {
   held=$(repo_holds "$(uname -n)")
   [[ -n $held ]] && ignore=${ignore:+$ignore,}$held
   [[ -n $ignore ]] && info "holding back: $ignore"
+  hold_in_pacman_conf "$ignore" || return 1
 
   local date=""
   [[ -f $SCRIPT_DIR/repo-date ]] && date=$(<"$SCRIPT_DIR/repo-date")
