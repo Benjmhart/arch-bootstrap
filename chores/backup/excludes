@@ -1,0 +1,48 @@
+# restic --exclude-file for chores/backup (station-maintenance beast-arch 92).
+# Backed up: $HOME, minus what the bootstrap/fpush reinstalls, what rebuilds, and caches.
+# Git repos stay IN: their uncommitted and unpushed work is exactly what git does not cover.
+# Also skipped without being named: any dir with a CACHEDIR.TAG (--exclude-caches; cargo's
+# target/ has one), and other filesystems (--one-file-system: media-center's USB library).
+
+# caches and trash
+/home/*/.cache
+/home/*/.local/share/Trash
+**/Cache
+**/Code Cache
+**/GPUCache
+**/Service Worker/CacheStorage
+**/component_crx_cache
+
+# toolchains and package managers (reinstalled by the bootstrap or on first use)
+/home/*/.rustup
+/home/*/.cargo
+/home/*/.ghcup
+/home/*/.stack
+/home/*/.npm
+/home/*/.nvm
+/home/*/go
+/home/*/.oh-my-zsh
+/home/*/.local/share/mise
+/home/*/.local/share/pnpm
+/home/*/.local/share/uv
+/home/*/.local/share/nvim/lazy
+/home/*/.local/share/nvim/mason
+/home/*/.docker/buildx/.bin
+/home/*/.docker/cli-plugins
+/home/*/.local/share/claude
+/home/*/godot-bin
+/home/*/.fly/bin
+/home/*/actions-runner-*/externals
+/home/*/actions-runner-*/bin
+/home/*/actions-runner-*/_work
+
+# build output inside projects
+node_modules
+.stack-work
+dist-newstyle
+.venv*
+__pycache__
+.direnv
+
+# one-off leftovers
+/home/*/.xdg-migrate-*

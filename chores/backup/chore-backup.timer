@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily: restic snapshot of $HOME to Google Drive (arch-bootstrap chores/backup)
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+# Laptops are often off at midnight: run at the next boot instead of skipping the day.
+Persistent=true
+Unit=chore@backup.service
+
+[Install]
+WantedBy=timers.target

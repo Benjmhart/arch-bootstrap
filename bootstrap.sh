@@ -116,8 +116,8 @@ DEPLOY_REPOS="${DEPLOY_REPOS:-}"
 PACMAN_IGNORE="${PACMAN_IGNORE:-}"
 
 # Chores to enable on this machine: names of directories under chores/, each with a
-# chore-NAME.timer. See chores/chore-run for the protocol. low-disk is on everywhere and
-# fleet-due on micro, whatever this says (beast-arch 76); the rest are opt-in.
+# chore-NAME.timer. See chores/chore-run for the protocol. low-disk and backup (beast-arch 92)
+# are on everywhere and fleet-due on micro, whatever this says (beast-arch 76); the rest are opt-in.
 CHORES="${CHORES:-}"
 
 # /tmp: RAM or disk. systemd's static tmp.mount makes /tmp a tmpfs at size=50% of
@@ -3227,7 +3227,7 @@ install_chores() {
   done
   # fleet-due only on the fleet controller (tools/fleet's FLEET_SELF_HOST, micro).
   local extra=""; [[ $(uname -n) == "${FLEET_SELF_HOST:-micro}" ]] && extra=fleet-due
-  for c in low-disk $extra $CHORES; do
+  for c in low-disk backup $extra $CHORES; do
     [[ -f $d/$c/chore-$c.timer ]] || { warn "CHORES names '$c', but there is no chores/$c/chore-$c.timer"; continue; }
     if systemctl --user is-enabled --quiet "chore-$c.timer" 2>/dev/null; then
       ok "chore $c scheduled"
