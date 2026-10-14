@@ -37,7 +37,6 @@ freetype2
 fzf
 gcr
 gdu
-gemini-cli
 git
 git-delta
 github-cli

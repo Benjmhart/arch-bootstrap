@@ -1,3 +1,4 @@
+antigravity-cli
 bemoji
 claude-desktop
 espanso-x11
