@@ -1162,6 +1162,20 @@ stage_packages() {
     did "${#missing[@]} user-space package(s) installed"
   fi
 
+  # Dropping a package from the lists leaves it installed; naming it in pkglist-remove.txt
+  # takes it off every machine at the next run (gemini-cli, 2026-10-14). Only installed
+  # names reach pacman, so a re-run is a no-op.
+  local -a gone=()
+  [[ -f $SCRIPT_DIR/pkglist-remove.txt ]] && mapfile -t gone < <(
+    grep -vE '^[[:space:]]*(#|$)' "$SCRIPT_DIR/pkglist-remove.txt" | xargs -r pacman -Qq 2>/dev/null || true)
+  if (( ${#gone[@]} )); then
+    if run sudo pacman -Rns --noconfirm "${gone[@]}"; then
+      did "removed ${#gone[@]} dropped package(s): ${gone[*]}"
+    else
+      warn "could not remove: ${gone[*]} (something still depends on them?)"
+    fi
+  fi
+
   if [[ -f $SCRIPT_DIR/pkglist-hardware.txt ]]; then
     info "held back for stage 15 to decide: \
 $(tr '\n' ' ' < "$SCRIPT_DIR/pkglist-hardware.txt")"

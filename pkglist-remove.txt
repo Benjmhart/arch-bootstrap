@@ -1,0 +1,3 @@
+# Packages taken off every machine by stage 10 (pacman -Rns), one per line.
+# A name here must not also be in another pkglist, or each run installs then removes it.
+gemini-cli
