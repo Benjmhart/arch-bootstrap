@@ -9,6 +9,7 @@ over=() all=()
 while read -r pct avail target; do
   pct=${pct%\%}
   [[ $target == /run/media/* ]] && continue      # USB sticks fill up on purpose
+  [[ $target == /srv/media/* ]] && continue      # media drives: managed by media-system rebalancer, not chores
   all+=("$target $pct%")
   (( pct >= limit )) && over+=("$target $pct% ($avail free)")
 done < <(df -h --local --output=pcent,avail,target \
