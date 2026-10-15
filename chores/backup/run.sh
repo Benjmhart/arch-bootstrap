@@ -10,6 +10,8 @@
 # Only the fleet controller (micro) prunes and checks: pruning is the one step that deletes data, so a
 # dirty machine only ever adds snapshots and marks its own old ones for removal.
 set -euo pipefail
+# --retry-lock: forget and prune need the repo to themselves, and the four machines share it. Without it
+# the first run (all four started together, 2026-10-15) failed at forget with exit 11 on three of them.
 export RESTIC_REPOSITORY=${RESTIC_REPOSITORY:-"rclone:personal drive:restic"}
 export RESTIC_PASSWORD_FILE=${RESTIC_PASSWORD_FILE:-$HOME/.config/restic/password}
 here="$(dirname "$(readlink -f "$0")")"
@@ -20,14 +22,14 @@ if [[ ! -s $RESTIC_PASSWORD_FILE ]]; then
   exit 75
 fi
 
-restic backup --quiet --host "$host" --one-file-system --exclude-caches \
+restic backup --retry-lock 2h --quiet --host "$host" --one-file-system --exclude-caches \
   --exclude-file "$here/excludes" "$HOME"
-restic forget --quiet --host "$host" --keep-daily 7 --keep-weekly 4 --keep-monthly 12
+restic forget --retry-lock 2h --quiet --host "$host" --keep-daily 7 --keep-weekly 4 --keep-monthly 12
 
 if [[ $host == "${FLEET_SELF_HOST:-micro}" ]]; then
-  restic prune --quiet
+  restic prune --retry-lock 2h --quiet
   # A weekly read of 5% of the data catches a damaged repo before the day a restore needs it.
-  [[ $(date +%u) == 7 ]] && restic check --read-data-subset=5%
+  [[ $(date +%u) == 7 ]] && restic check --retry-lock 2h --read-data-subset=5%
 fi
 
 latest=$(restic snapshots --host "$host" --latest 1 --json | jq -r '.[0] | "\(.short_id) \(.time[:16])"')
