@@ -18,6 +18,7 @@
 /home/*/.cargo
 /home/*/.ghcup
 /home/*/.stack
+/home/*/.cabal
 /home/*/.npm
 /home/*/.nvm
 /home/*/go
@@ -35,6 +36,10 @@
 /home/*/actions-runner-*/externals
 /home/*/actions-runner-*/bin
 /home/*/actions-runner-*/_work
+
+# media-center's download staging (deluge, slskd): media, re-acquirable, and 45 GiB on
+# 2026-10-15. The library itself is on the USB drives (--one-file-system).
+/home/*/media
 
 # build output inside projects
 node_modules
