@@ -1,21 +1,10 @@
 # Profile media-center: PROFILES="media-center" in bootstrap.conf for that host.
-# Jellyfin: the server plus its web client. jellyfin.service is enabled in stage 60
-# (SYSTEM_UNITS); first-run setup is in the browser at http://<host>:8096.
-jellyfin-server
-jellyfin-web
-# Hardware transcoding (Jellyfin: VAAPI, /dev/dri/renderD128). libva-intel-driver
+# Jellyfin was removed 2026-10-15 (pkglist-remove.txt): media-system's castbox (catt to
+# the TV, mpv/VLC locally) replaced it.
+# VAAPI hardware decoding for mpv/VLC (/dev/dri/renderD128). libva-intel-driver
 # (i965) is for Intel up to Haswell/Broadwell -- media-center is a Haswell i3-4130T.
 # Broadwell and newer want intel-media-driver instead.
 libva-intel-driver
-# Plays on this box's own screen, as a cast target driven from the Jellyfin phone
-# app (mpv underneath, so most files direct-play instead of transcoding).
-jellyfin-mpv-shim
-# Its optional deps, needed in practice (media-center, 2026-10-03): without pystray
-# the GUI process dies silently and the first-run login window never appears -- the
-# shim just sits there. Without the shader pack it logs "Could not find default
-# shader pack" at every start.
-mpv-shim-default-shaders
-python-pystray
 # VLC casting to a Chromecast (Playback > Renderer). The shared list has vlc and
 # vlc-plugin-ffmpeg only. vlc-plugin-chromecast is the renderer itself;
 # vlc-plugin-avahi finds _googlecast._tcp on the LAN (Arch's VLC is built without

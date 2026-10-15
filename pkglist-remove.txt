@@ -1,3 +1,9 @@
 # Packages taken off every machine by stage 10 (pacman -Rns), one per line.
 # A name here must not also be in another pkglist, or each run installs then removes it.
 gemini-cli
+# Jellyfin and its cast-target shim, media-center only (2026-10-15): castbox replaced them.
+jellyfin-server
+jellyfin-web
+jellyfin-mpv-shim
+mpv-shim-default-shaders
+python-pystray

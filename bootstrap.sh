@@ -150,7 +150,7 @@ TMP_ON_DISK="${TMP_ON_DISK:-false}"              # true = mask tmp.mount so /tmp
 # pri=10, behind zram's 100, so it only takes overflow. Empty = no disk swap.
 SWAP_PARTUUID="${SWAP_PARTUUID:-}"
 
-# USB media drives for Jellyfin (profile media-center). Space-separated
+# USB media drives (profile media-center). Space-separated
 # name:fs-UUID:fstype entries -- `lsblk -no UUID,FSTYPE /dev/sdXN` -- each mounted at
 # /srv/media/<name> on first access. Use ntfs3 (the kernel driver) for NTFS, not ntfs.
 # Empty = none.
@@ -1169,6 +1169,11 @@ stage_packages() {
   [[ -f $SCRIPT_DIR/pkglist-remove.txt ]] && mapfile -t gone < <(
     grep -vE '^[[:space:]]*(#|$)' "$SCRIPT_DIR/pkglist-remove.txt" | xargs -r pacman -Qq 2>/dev/null || true)
   if (( ${#gone[@]} )); then
+    # Stop their system units first, or a removed server keeps running until the next boot
+    # behind a dangling enable symlink (jellyfin, 2026-10-15).
+    local -a units=()
+    mapfile -t units < <(pacman -Qlq "${gone[@]}" | grep -E '^/usr/lib/systemd/system/[^/@]+\.(service|socket|timer)$' | xargs -r -n1 basename)
+    (( ${#units[@]} )) && { run sudo systemctl disable --now "${units[@]}" || true; }
     if run sudo pacman -Rns --noconfirm "${gone[@]}"; then
       did "removed ${#gone[@]} dropped package(s): ${gone[*]}"
     else
@@ -3042,7 +3047,6 @@ SYSTEM_UNITS=(
   "tailscale|tailscaled.service|mesh VPN; joining a tailnet is a separate manual step"
   "openssh|sshd.service|remote shell; harden_sshd() writes the config it needs"
   "pacman-contrib|paccache.timer|weekly: keeps 3 versions per package in /var/cache/pacman, which is on the root filesystem"
-  "jellyfin-server|jellyfin.service|media server (profile media-center); web UI on port 8096"
   # Gated on the VLC plugin, not on avahi itself: avahi arrives as a dependency on
   # every host, and mDNS should not be switched on everywhere just because of that.
   "vlc-plugin-avahi|avahi-daemon.service|mDNS for VLC's Chromecast renderer discovery (profile media-center)"
@@ -3728,8 +3732,8 @@ font-name=$KMSCON_FONT" "kmscon font" || true
 # the tailnet policy is the access control there), docker's bridges, ICMP,
 # tailscale's direct UDP port, mDNS (cast discovery) and DHCP replies.
 # FIREWALL_LAN_TCP / FIREWALL_LAN_UDP open ports to the LAN; profile media-center
-# adds Jellyfin (8096, and 7359 for the apps' discovery) for the LAN-only phone,
-# and 8010/8011: catt serves the media stream (8010) and the subtitle file (8011)
+# adds 8010/8011 (Jellyfin's 8096 and 7359 went with it, 2026-10-15): catt serves
+# the media stream (8010) and the subtitle file (8011)
 # over HTTP and the TV connects IN to fetch them (media-system catt cast).
 #
 # Its own table only, never `flush ruleset`, so a reload leaves the tables docker
@@ -3751,7 +3755,7 @@ setup_firewall() {
   [[ -d /lib/modules/$(uname -r) ]] || {
     warn "kernel $(uname -r) is running but its modules are gone (upgraded, not rebooted) -- reboot, then --only services for the firewall"; return 0; }
   local tcp=$FIREWALL_LAN_TCP udp=$FIREWALL_LAN_UDP extra=""
-  profile_on media-center && { tcp+=" 8096 8010 8011"; udp+=" 7359"; }
+  profile_on media-center && tcp+=" 8010 8011"
   tcp="$(echo $tcp | tr ' ' ',')"; udp="$(echo $udp | tr ' ' ',')"
   [[ -n $tcp ]] && extra+="
     tcp dport { $tcp } accept"
@@ -3895,12 +3899,14 @@ setup_encrypted_swap() {
 
 # MEDIA_DRIVES at /srv/media/<name> (added 2026-10-03 for media-center).
 # exFAT and NTFS store no Unix ownership, so the mount options ARE the permissions:
-# the login user owns everything (read/write/delete), group jellyfin can read but
-# not write (the server cannot delete media), and root bypasses the masks.
+# the login user owns everything (read/write/delete), the group can read but not
+# write, and root bypasses the masks. The group is jellyfin where that group exists
+# (media-center's fstab lines use it, and pacman -R leaves a package's group behind),
+# else the user's own.
 # nofail + x-systemd.automount: an absent drive does not hold up boot, and one
-# plugged in later mounts when the path is touched (a Jellyfin scan does that).
+# plugged in later mounts when the path is touched.
 # udiskie would otherwise mount it first under /run/media/$USER, which is 750 root
-# plus an ACL for the user only, so jellyfin cannot read it there; a udev rule
+# plus an ACL for the user only, so the group cannot read it there; a udev rule
 # marks these UUIDs UDISKS_IGNORE. fstab lines are appended, never rewritten, as
 # for the encrypted swap.
 setup_media_drives() {
@@ -3908,7 +3914,7 @@ setup_media_drives() {
   [[ -r /etc/fstab ]] || { warn "/etc/fstab is not readable -- media drives not added"; return 0; }
   local gid
   gid="$(getent group jellyfin | cut -d: -f3)"
-  [[ -n $gid ]] || { warn "no jellyfin group (jellyfin-server not installed?) -- media drives not added"; return 0; }
+  [[ -n $gid ]] || gid="$(id -g)"
 
   local entry name uuid fstype mp line where rules="# Written by arch-bootstrap (MEDIA_DRIVES). Mounted by fstab, not udisks/udiskie."
   local -a units=()
