@@ -3208,6 +3208,24 @@ install_rclone_conf() {
   did "rclone remotes installed from secrets: $(grep -o '^\[.*\]' "$src" | tr '\n' ' ')"
 }
 
+# espanso (station-maintenance beast-arch task 91). Config and matches come from the
+# dotfiles; ~/.xinitrc STARTS the packaged user unit once X is up. It is deliberately
+# not enabled: the unit is WantedBy=default.target, which starts at the TTY login
+# before X exists. The first launch opens a wizard whose auto-start page offers
+# `espanso service register` -- an enabled unit in ~/.config/systemd/user, exactly
+# that -- so mark the wizard done in espanso's key-value store (one file per key
+# holding JSON; key names from the 2.4 binary). Verified on beast-arch 2026-10-16.
+espanso_skip_wizard() {
+  have espanso || return 0
+  local kvs="$HOME/.cache/espanso/kvs" k
+  [[ -f $kvs/has_completed_wizard ]] && { ok "espanso wizard already done"; return 0; }
+  run mkdir -p "$kvs"
+  for k in has_completed_wizard has_selected_auto_start_option; do
+    (( DRY_RUN )) || printf true > "$kvs/$k"
+  done
+  did "espanso first-run wizard marked done (xinitrc starts it, not an enabled unit)"
+}
+
 # Chores: regular jobs as systemd user timers (chores/, beast-arch task 69). chore-run
 # and chores go on PATH; every chore shares the chore@.service template, and only the
 # timers named in CHORES are enabled. `systemctl --user link` rather than copying, so a
@@ -4036,6 +4054,7 @@ stage_services() {
   ssh_tailnet_peers
   install_chores
   install_rclone_conf
+  espanso_skip_wizard
   manage_tmp_storage
   install_system_dropins
   setup_yubikey
