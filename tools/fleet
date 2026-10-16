@@ -255,13 +255,24 @@ unlock() {  # the fleet key (one passphrase) and the sudo password (stdin), both
   SUFFIX=$(suffix); [[ -n $SUFFIX ]] || die "not on the tailnet"
   eval "$(ssh-agent -s)" >/dev/null
   trap 'ssh-agent -k >/dev/null 2>&1' EXIT
-  # A plugged-in YubiKey with a fleet key made for it (~/.ssh/id_ed25519_sk_<serial>, beast-arch 88):
-  # touch per machine, no passphrase. Otherwise the passphrase key, as before.
-  local s sk=()
-  for s in $(ykman list --serials 2>/dev/null); do [[ -f $HOME/.ssh/id_ed25519_sk_$s ]] && sk+=("$HOME/.ssh/id_ed25519_sk_$s"); done
+  # A plugged-in YubiKey with a fleet key made for it (beast-arch 88), no passphrase. ONE touch per push:
+  # a presence check signs with the touch key (~/.ssh/id_ed25519_sk_<serial>), then every machine is
+  # reached with that YubiKey's no-touch key (id_ed25519_sk_nt_<serial>, authorized `no-touch-required`;
+  # still unusable without the key plugged in, and forced to fleet-apply). Without an nt key: touch per
+  # machine. Without a YubiKey: the passphrase key, as before.
+  local s k sk=()
+  for s in $(ykman list --serials 2>/dev/null); do [[ -f $HOME/.ssh/id_ed25519_sk_$s ]] && sk+=("$s"); done
   if (( ${#sk[@]} )); then
-    ssh-add -t 3600 "${sk[0]}" || die "YubiKey fleet key not loaded"
-    IDS=(-i "${sk[0]}"); echo "fleet key: YubiKey ${sk[0]##*_} -- touch it once per machine when it blinks"
+    s=${sk[0]}; k=$HOME/.ssh/id_ed25519_sk_$s
+    if [[ -f $HOME/.ssh/id_ed25519_sk_nt_$s ]]; then
+      echo "fleet key: YubiKey $s -- touch it once now"
+      ssh-keygen -Y sign -q -f "$k" -n fleet-presence </dev/null >/dev/null || die "YubiKey not touched -- nothing sent anywhere"
+      k=$HOME/.ssh/id_ed25519_sk_nt_$s
+    else
+      echo "fleet key: YubiKey $s -- touch it once per machine when it blinks"
+    fi
+    ssh-add -t 3600 "$k" || die "YubiKey fleet key not loaded"
+    IDS=(-i "$k")
   else
     [[ -f $KEY ]] || die "no $KEY -- run: fleet setup"
     ssh-add -t 3600 "$KEY" || die "fleet key not loaded"
