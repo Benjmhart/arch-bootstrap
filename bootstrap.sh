@@ -1452,6 +1452,12 @@ stage_aur() {
   else
     info "${#missing[@]} missing from the AUR list: ${missing[*]}"
     local n=${#missing[@]}
+    # i3lock-color replaces i3lock (station-maintenance beast-arch 88). Both own /usr/bin/i3lock, and
+    # under --noconfirm pacman answers its "remove i3lock?" conflict prompt No, so remove it first.
+    # Its /etc/pam.d/i3lock goes with it (.pacsave); stage 60's setup_yubikey re-adds pam_u2f to the new one.
+    if [[ " ${missing[*]} " == *" i3lock-color "* ]] && pacman -Q i3lock >/dev/null 2>&1; then
+      run sudo pacman -Rdd --noconfirm i3lock
+    fi
     # shellcheck disable=SC2086
     run yay -S --needed --noconfirm "${missing[@]}"
     if ! (( DRY_RUN )); then

@@ -45,7 +45,6 @@ gnome-keyring
 go
 godot
 gst-plugin-pipewire
-i3lock
 inotify-tools
 jq
 kdenlive
@@ -162,3 +161,4 @@ yubikey-manager
 zip
 zoxide
 zsh
+ffmpeg
