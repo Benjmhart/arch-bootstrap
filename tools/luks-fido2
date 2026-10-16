@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# luks-fido2 [--dry-run] -- enroll YubiKeys to unlock / at boot (station-maintenance beast-arch 95). Run by Ben,
+# on the machine, as root (sudo), with bootstrap's setup_boot already applied (dracut + /etc/grub.d/10_arch).
+#   1. /home: if crypttab opens it with a passphrase ("none"), add a keyfile on / (asks the /home passphrase
+#      once), test it, and point crypttab at it -- otherwise a key-unlocked boot stops at a /home prompt.
+#   2. Enroll keys on /, one at a time: the LUKS passphrase, then the key's FIDO2 PIN and a touch. The
+#      passphrase stays; at boot it is the fallback after 20 s, and the "(passphrase)" GRUB entry.
+#   3. Regenerate the GRUB menu (10_arch adds the key entries once a key is enrolled).
+# A log goes to $OPS (or /root) as luks-fido2-<host>-<date>.log; it never holds a passphrase or PIN.
+set -uo pipefail
+dry=0; [[ ${1:-} == --dry-run ]] && dry=1
+[[ $EUID -eq 0 ]] || { echo "run with sudo"; exit 1; }
+host=$(cat /etc/hostname)
+ops=$(getent passwd "${SUDO_USER:-root}" | cut -d: -f6)/.local/state/ops; [[ -d $ops ]] || ops=/root
+log="$ops/luks-fido2-$host-$(date +%Y%m%d).log"
+exec > >(tee -a "$log") 2>&1
+echo "== $(date -Is) on $host$( ((dry)) && echo ' (dry run)')"
+fail() { echo "FAIL: $*"; exit 1; }
+do_() { if ((dry)); then echo "would run: $*"; else "$@"; fi; }
+ask() { read -rp "$1 " REPLY </dev/tty; }
+
+[[ $(findmnt -no SOURCE /) == /dev/mapper/root ]] || fail "/ is not /dev/mapper/root"
+[[ -x /etc/grub.d/10_arch ]] || fail "/etc/grub.d/10_arch missing: run bootstrap (fpush) first"
+root_dev=$(cryptsetup status root | awk '$1=="device:"{print $2}')
+tokens() { cryptsetup luksDump "$root_dev" | grep -c systemd-fido2 || true; }
+echo "/ is LUKS on $root_dev; FIDO2 keys enrolled now: $(tokens)"
+
+# 1. /home by keyfile
+line=$(awk '$1=="home"' /etc/crypttab)
+if [[ -n $line && $(awk '{print $3}' <<<"$line") =~ ^(none|-)$ ]]; then
+  src=$(awk '{print $2}' <<<"$line"); home_dev=$(blkid -U "${src#UUID=}" 2>/dev/null || echo "$src")
+  key=/etc/cryptsetup-keys.d/home.key
+  echo "/home ($home_dev) is opened by passphrase; adding the keyfile $key"
+  if ((dry)); then echo "would: make $key (4 KiB random, 0400), luksAddKey (asks the /home passphrase), test, edit crypttab"
+  else
+    install -d -m 700 /etc/cryptsetup-keys.d
+    [[ -s $key ]] || { head -c 4096 /dev/urandom > "$key"; chmod 400 "$key"; }
+    cryptsetup luksAddKey "$home_dev" "$key" || fail "luksAddKey on $home_dev"
+    cryptsetup open --test-passphrase --key-file "$key" "$home_dev" || fail "the keyfile does not open $home_dev"
+    cp -a /etc/crypttab /etc/crypttab.pre-luks-fido2
+    awk -v k="$key" '$1=="home" {$3=k} {print}' /etc/crypttab.pre-luks-fido2 > /etc/crypttab
+    echo "crypttab now: $(awk '$1=="home"' /etc/crypttab)"
+  fi
+else
+  echo "/home: ${line:-no crypttab entry} (left alone)"
+fi
+
+# 2. Enroll keys on /
+while :; do
+  ask "Plug in ONE YubiKey to enroll and press Enter (or type q and Enter when done)"
+  [[ ${REPLY,,} == q ]] && break
+  echo "Asks the LUKS passphrase for /, then the key's FIDO2 PIN, then a touch:"
+  do_ systemd-cryptenroll --fido2-device=auto --fido2-with-client-pin=yes --fido2-with-user-presence=yes "$root_dev" \
+    && echo "enrolled; keys now: $(tokens)" || echo "enrollment failed (nothing changed); try again or q"
+done
+
+# 3. The menu
+new=$(mktemp)
+{ grub-mkconfig 2>/dev/null >"$new" && grub-script-check "$new"; } || fail "grub-mkconfig/grub-script-check failed; grub.cfg untouched"
+echo "menu:"; grep -E "^menuentry " "$new" | cut -d"'" -f2 | sed 's/^/  /'
+do_ install -m 600 "$new" /boot/grub/grub.cfg; rm -f "$new"
+echo "keys enrolled for /: $(tokens). Test: reboot without a key (20 s, then the passphrase), then with one (PIN, touch)."
+echo "== done $(date -Is)"

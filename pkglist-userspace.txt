@@ -162,3 +162,4 @@ zip
 zoxide
 zsh
 ffmpeg
+dracut

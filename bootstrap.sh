@@ -4041,6 +4041,138 @@ exit 1' "sudo: password-only under ssh or sudo -S"; then
   return 0
 }
 
+# Boot (Ben, 2026-10-16: "one setup everywhere, one boot path"; station-maintenance beast-arch 95):
+# GRUB -> kernel + dracut initramfs on every machine. dracut's systemd initramfs unlocks / with a FIDO2
+# YubiKey (PIN + touch) or the passphrase; mkinitcpio builds only the fallback image (busybox `encrypt`,
+# cryptdevice=). The menu comes from /etc/grub.d/10_arch (GRUB_10_ARCH below), which reads the UUIDs and
+# the enrolled keys each time grub-mkconfig runs, so enrolling a key (tools/luks-fido2, by hand) changes
+# the menu without a bootstrap run. The generated entries -- 10_linux, the UKI (15_uki on beast-arch and
+# carbon), Xen, EFI BootNext (two dozen firmware entries on carbon) -- are switched off. A grub upgrade
+# reinstalls 10_linux executable; the next run here switches it off again.
+# Both pacman hooks keep working on kernel updates: dracut's writes /boot/initramfs-linux.img, mkinitcpio's
+# the fallback; the entries name those files, so grub.cfg never needs regenerating for a kernel.
+setup_boot() {
+  if [[ $(findmnt -no SOURCE /) != /dev/mapper/root ]]; then info "/ is not LUKS /dev/mapper/root -- boot setup skipped"; return 0; fi
+  local rebuild=0 f cfg=/boot/grub/grub.cfg img=/boot/initramfs-linux.img
+  # /boot is root-only (vfat fmask 0077), so every look inside it is through sudo.
+  if ! have dracut || ! have grub-mkconfig || ! sudo test -f /boot/vmlinuz-linux || ! sudo test -f "$cfg"; then
+    warn "dracut, grub, /boot/vmlinuz-linux or $cfg missing -- boot setup skipped"; return 0
+  fi
+  put_etc_file /etc/dracut.conf.d/arch-bootstrap.conf \
+'# Written by arch-bootstrap (station-maintenance beast-arch 95): systemd initramfs, LUKS unlock by a FIDO2 YubiKey
+# (PIN + touch) or the passphrase. GRUB loads the microcode image itself, so no early microcode here.
+hostonly="yes"
+hostonly_cmdline="no"
+add_dracutmodules+=" systemd systemd-cryptsetup fido2 "
+early_microcode="no"
+compress="zstd"' "dracut: systemd initramfs with FIDO2 unlock" && rebuild=1
+  put_etc_file /etc/mkinitcpio.d/linux.preset \
+'# Written by arch-bootstrap (station-maintenance beast-arch 95): dracut builds /boot/initramfs-linux.img; mkinitcpio
+# only the passphrase-only fallback (busybox `encrypt`, reads cryptdevice=), offered by GRUB as "fallback initramfs".
+ALL_kver="/boot/vmlinuz-linux"
+PRESETS=('"'"'fallback'"'"')
+fallback_image="/boot/initramfs-linux-fallback.img"
+fallback_options="-S autodetect"' "mkinitcpio: fallback image only" && rebuild=1
+  if (( DRY_RUN )); then info "(dry run) would build the images and regenerate $cfg if needed"; return 0; fi
+
+  # The images.
+  dracut_ok() { sudo lsinitrd "$img" 2>/dev/null | grep -q libcryptsetup-token-systemd-fido2 \
+    && sudo lsinitrd "$img" 2>/dev/null | grep -q 'systemd-cryptsetup$'; }
+  if (( rebuild )) || ! dracut_ok || ! sudo test -f /boot/initramfs-linux-fallback.img; then
+    local kver; kver=$(pacman -Qlq linux | grep -m1 '/vmlinuz$'); kver=${kver%/vmlinuz}; kver=${kver##*/}
+    run sudo dracut --force "$img" "$kver" && run sudo mkinitcpio -p linux \
+      || { warn "building the boot images failed -- the old menu stays"; return 1; }
+    dracut_ok || { warn "$img has no FIDO2 token module or systemd-cryptsetup -- the old menu stays"; return 1; }
+    did "boot images: dracut $img, mkinitcpio fallback ($kver)"
+  else
+    ok "boot images in place (dracut with FIDO2, mkinitcpio fallback)"
+  fi
+
+  # The menu: generate, check, and install only when it differs.
+  if put_etc_file /etc/grub.d/10_arch "$GRUB_10_ARCH" "GRUB: the Arch entries"; then :; fi
+  [[ -x /etc/grub.d/10_arch ]] || run sudo chmod 755 /etc/grub.d/10_arch
+  for f in 10_linux 15_uki 20_linux_xen 31_efi_bootnext; do
+    [[ -x /etc/grub.d/$f ]] && { run sudo chmod 644 "/etc/grub.d/$f"; did "GRUB: $f switched off"; }
+  done
+  local new; new=$(mktemp)   # grub-mkconfig -o would make it root-only (umask 077); stdout keeps it readable
+  if ! sudo grub-mkconfig 2>/dev/null >"$new" || ! grub-script-check "$new" \
+     || (( $(grep -c "^menuentry 'Arch Linux" "$new") < 2 )) || grep -qE '^[[:space:]]*(uki|submenu)' "$new"; then
+    warn "the generated GRUB menu failed its checks ($new kept) -- $cfg untouched"; return 1
+  fi
+  if sudo cmp -s "$new" "$cfg"; then
+    ok "GRUB menu up to date: $(grep -c "^menuentry 'Arch Linux" "$new") Arch entries"
+  else
+    run sudo cp -a "$cfg" "$cfg.pre-arch-bootstrap" 2>/dev/null || true
+    run sudo install -m 600 "$new" "$cfg"
+    did "GRUB menu: $(grep "^menuentry 'Arch Linux" "$new" | cut -d"'" -f2 | paste -sd, | sed 's/,/, /g')"
+  fi
+  rm -f "$new"
+
+  # The UKI that beast-arch and carbon booted before; nothing points at it once the menu above is in.
+  if sudo test -e /boot/EFI/Linux/arch-linux.efi || sudo test -e /boot/EFI/Linux/arch-linux-fallback.efi; then
+    run sudo rm -f /boot/EFI/Linux/arch-linux.efi /boot/EFI/Linux/arch-linux-fallback.efi && did "old UKI removed"
+  fi
+  [[ -f /etc/kernel/cmdline ]] && run sudo rm -f /etc/kernel/cmdline && did "/etc/kernel/cmdline removed (UKI only)"
+  sudo cryptsetup luksDump "$(sudo cryptsetup status root | awk '$1=="device:"{print $2}')" 2>/dev/null \
+    | grep -q systemd-fido2 || todo "no YubiKey enrolled for / here: sudo $SCRIPT_DIR/tools/luks-fido2"
+  return 0
+}
+
+GRUB_10_ARCH='#!/bin/sh
+# Written by arch-bootstrap (station-maintenance beast-arch 95); edit setup_boot there, not this file.
+# The Arch entries, read fresh at every grub-mkconfig:
+#   Arch Linux               dracut: the YubiKey (PIN + touch), or the passphrase after 20 s without it
+#   Arch Linux (passphrase)  dracut, no key step (only once a key is enrolled; tools/luks-fido2)
+#   Arch Linux (fallback)    mkinitcpio image, busybox `encrypt`, passphrase
+# SYSTEMD_CRYPTSETUP_USE_TOKEN_MODULE=0: systemd-cryptsetup'"'"'s own FIDO2 code waits for the key
+# (token-timeout) before it asks for the PIN. The libcryptsetup token module asks for the PIN first and
+# waits forever, so a boot without the key never reached the passphrase (carbon, 2026-10-16 18:40).
+set -e
+if mountpoint -q /boot; then p=; else p=/boot; fi
+boot_uuid=$(grub-probe --target=fs_uuid /boot)
+boot_fs=$(grub-probe --target=fs /boot)
+boot_pm=$(grub-probe --target=partmap /boot)
+root_uuid=$(findmnt -no UUID /)
+root_fs=$(findmnt -no FSTYPE /)
+luks_dev=$(cryptsetup status root | awk '"'"'$1=="device:"{print $2}'"'"')
+luks_uuid=$(blkid -s UUID -o value "$luks_dev")
+[ -n "$boot_uuid" ] && [ -n "$root_uuid" ] && [ -n "$luks_uuid" ] || { echo "10_arch: could not read a UUID (not root?)" >&2; exit 1; }
+keys=$(cryptsetup luksDump "$luks_dev" | grep -c systemd-fido2 || true)
+ucode=
+for u in intel-ucode.img amd-ucode.img; do if [ -f "/boot/$u" ]; then ucode="$ucode$p/$u "; fi; done
+# zswap off: every machine swaps to zram.
+common="root=UUID=$root_uuid rw rootfstype=$root_fs zswap.enabled=0"
+rd="rd.luks.name=$luks_uuid=root systemd.setenv=SYSTEMD_CRYPTSETUP_USE_TOKEN_MODULE=0"
+tail=${GRUB_CMDLINE_LINUX_DEFAULT-loglevel=3 quiet}
+
+entry() { # title, message, kernel options, image
+  cat <<EOF
+menuentry '"'"'$1'"'"' --class arch --class gnu-linux --class os {
+	insmod all_video
+	set gfxpayload=keep
+	insmod gzio
+	insmod part_$boot_pm
+	insmod $boot_fs
+	search --no-floppy --fs-uuid --set=root $boot_uuid
+	echo '"'"'$2'"'"'
+	linux $p/vmlinuz-linux $3
+	initrd $ucode$p/$4
+}
+EOF
+}
+
+if [ "$keys" -gt 0 ]; then
+  entry "Arch Linux" "Plug in your YubiKey (PIN, then touch), or wait 20 s for the passphrase prompt" \
+    "$common $rd rd.luks.options=$luks_uuid=fido2-device=auto,token-timeout=20s $tail" initramfs-linux.img
+  entry "Arch Linux (passphrase)" "Passphrase unlock (no YubiKey)" "$common $rd $tail" initramfs-linux.img
+else
+  entry "Arch Linux" "Passphrase unlock (no YubiKey enrolled here)" "$common $rd $tail" initramfs-linux.img
+fi
+if [ -f /boot/initramfs-linux-fallback.img ]; then
+  entry "Arch Linux (fallback)" "Fallback image (mkinitcpio), passphrase unlock" \
+    "$common cryptdevice=UUID=$luks_uuid:root $tail" initramfs-linux-fallback.img
+fi'
+
 # pam_prepend <pam file> <what> <line>...: put the lines ahead of the file's first auth line, once
 # (skipped when pam_u2f is already there). A PAM file written from a bad match can lock you out,
 # so it installs only when every line landed and the original auth line is still there.
@@ -4071,6 +4203,7 @@ stage_services() {
   manage_tmp_storage
   install_system_dropins
   setup_yubikey
+  setup_boot
   install_browser_search_policy
   tune_storage_and_swap
   apply_lean_profile
@@ -4368,6 +4501,10 @@ stage_verify() {
   [[ -d $XMONAD_DIR ]]      && check "xmonad binary built"   "command -v xmonad"
   check "nvm present"                   "[ -s \"\${NVM_DIR:-\$HOME/.nvm}/nvm.sh\" ]"
   check "herdr installed"               "command -v herdr"
+  if [[ $(findmnt -no SOURCE /) == /dev/mapper/root ]]; then
+    check "boot: dracut config"            "[ -f /etc/dracut.conf.d/arch-bootstrap.conf ]"
+    check "boot: GRUB 10_arch on, 10_linux off" "[ -x /etc/grub.d/10_arch ] && [ ! -x /etc/grub.d/10_linux ]"
+  fi
   have claude && have herdr && check "herdr claude integration" "herdr integration status | grep -q '^claude: current'"
   check "arch-bootstrap origin is SSH"  "git -C '$SCRIPT_DIR' remote get-url origin | grep -q '^git@'"
   check "bfq rule for rotational disks"  "[ -f /etc/udev/rules.d/60-ioscheduler.rules ]"
