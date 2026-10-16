@@ -45,6 +45,7 @@ gnome-keyring
 go
 godot
 gst-plugin-pipewire
+i3lock
 inotify-tools
 jq
 kdenlive
@@ -154,6 +155,7 @@ xorg-xev
 xorg-xinit
 xorg-xrandr
 xorg-xsetroot
+xss-lock
 yazi
 yubikey-manager
 zip

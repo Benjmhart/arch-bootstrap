@@ -61,10 +61,14 @@ suffix() { tailscale status --json 2>/dev/null | jq -r '.MagicDNSSuffix // empty
 # The fleet key only, never the peer key: a peer-key login would run the request as a shell
 # command instead of the forced fleet-apply. -F /dev/null drops ~/.ssh/config's peer stanzas;
 # HostKeyAlias keeps the pinned host keys.
+# IDS: the YubiKey's fleet key when one is plugged in (unlock), else the passphrase key. One
+# connection per machine (ControlMaster), so a YubiKey is touched once per machine per run.
+IDS=(-i "$KEY")
 fssh() {
   local h=$1; shift
-  ssh -F /dev/null -i "$KEY" -o IdentitiesOnly=yes -o ConnectTimeout=8 -o HostKeyAlias="$h" \
-      -o UserKnownHostsFile="$HOME/.ssh/known_hosts" "$h.${SUFFIX}" "$@"
+  ssh -F /dev/null "${IDS[@]}" -o IdentitiesOnly=yes -o ConnectTimeout=8 -o HostKeyAlias="$h" \
+      -o UserKnownHostsFile="$HOME/.ssh/known_hosts" -o ControlMaster=auto \
+      -o ControlPath="$STATE/cm-%C" -o ControlPersist=120 "$h.${SUFFIX}" "$@"
 }
 on() { local h=$1; shift; if [[ $h == "$SELF" ]]; then "$here/fleet-apply" "$@"; else fssh "$h" "$@"; fi; }
 
@@ -249,10 +253,19 @@ apply_all() {
 
 unlock() {  # the fleet key (one passphrase) and the sudo password (stdin), both checked first
   SUFFIX=$(suffix); [[ -n $SUFFIX ]] || die "not on the tailnet"
-  [[ -f $KEY ]] || die "no $KEY -- run: fleet setup"
   eval "$(ssh-agent -s)" >/dev/null
   trap 'ssh-agent -k >/dev/null 2>&1' EXIT
-  ssh-add -t 3600 "$KEY" || die "fleet key not loaded"
+  # A plugged-in YubiKey with a fleet key made for it (~/.ssh/id_ed25519_sk_<serial>, beast-arch 88):
+  # touch per machine, no passphrase. Otherwise the passphrase key, as before.
+  local s sk=()
+  for s in $(ykman list --serials 2>/dev/null); do [[ -f $HOME/.ssh/id_ed25519_sk_$s ]] && sk+=("$HOME/.ssh/id_ed25519_sk_$s"); done
+  if (( ${#sk[@]} )); then
+    ssh-add -t 3600 "${sk[0]}" || die "YubiKey fleet key not loaded"
+    IDS=(-i "${sk[0]}"); echo "fleet key: YubiKey ${sk[0]##*_} -- touch it once per machine when it blinks"
+  else
+    [[ -f $KEY ]] || die "no $KEY -- run: fleet setup"
+    ssh-add -t 3600 "$KEY" || die "fleet key not loaded"
+  fi
   IFS= read -r -s -p "sudo password (shared by every machine): " pw; echo
   printf '%s\n' "$pw" | sudo -S -p '' -k -v 2>/dev/null || die "sudo password rejected here -- nothing sent anywhere"
 }

@@ -3974,6 +3974,59 @@ EARLYOOM_ARGS=\"$EARLYOOM_ARGS\"" "earlyoom thresholds"; then
 }
 
 
+# YubiKeys (station-maintenance beast-arch 88). The password stays the fallback everywhere.
+#  - udev: the seat user may reach a YubiKey's OTP interface (ykman otp, KeePassXC
+#    challenge-response). systemd's 60-fido-id.rules grants the FIDO interface only.
+#  - sudo by touch: pam_u2f, `sufficient`, ahead of the password, for the keys in secrets
+#    yubikey/u2f_mappings. One origin (pam://fleet) for every machine, so one file serves all.
+#    No PIN: whoever reaches sudo is already logged in. A guard skips the key, straight to the
+#    password, when sudo reads a pipe (sudo -S: fleet push, scripts) or runs under ssh, where
+#    the key is at the other end; otherwise it would wait out a touch nobody can give.
+setup_yubikey() {
+  if put_etc_file /etc/udev/rules.d/70-yubikey-uaccess.rules \
+'# Written by arch-bootstrap: YubiKey OTP interface for the seat user (beast-arch 88).
+ACTION=="add|change", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1050", TAG+="uaccess"' "YubiKey OTP access"; then
+    run sudo udevadm control --reload; run sudo udevadm trigger --subsystem-match=hidraw
+  fi
+
+  local map="$SECRETS_DIR/yubikey/u2f_mappings" pamfile=/etc/pam.d/sudo
+  local guard=/usr/local/lib/arch-bootstrap/sudo-u2f-skip
+  if [[ ! -s $map ]]; then info "no $map -- sudo stays password-only"; return 0; fi
+  [[ -f /usr/lib/security/pam_u2f.so ]] || { warn "pam-u2f not installed -- sudo stays password-only"; return 0; }
+  put_etc_file /etc/u2f_mappings "$(cat "$map")" "YubiKeys allowed for sudo" || true
+  if put_etc_file "$guard" '#!/bin/sh
+# Written by arch-bootstrap. pam_exec (seteuid) runs this from /etc/pam.d/sudo; exit 0 skips the
+# YubiKey for this sudo: stdin is not a terminal (sudo -S), or an ancestor is sshd.
+p=$PPID
+case $(readlink "/proc/$p/fd/0") in /dev/pts/*|/dev/tty*) ;; *) exit 0 ;; esac
+while [ "$p" -gt 1 ]; do
+  case $(cat "/proc/$p/comm") in sshd*) exit 0 ;; esac
+  p=$(sed "s/.*) //" "/proc/$p/stat" | cut -d" " -f2)
+done
+exit 1' "sudo: password-only under ssh or sudo -S"; then
+    run sudo chmod 755 "$guard"
+  fi
+
+  if grep -q pam_u2f "$pamfile"; then ok "pam_u2f already in $pamfile"; return 0; fi
+  if (( DRY_RUN )); then info "(dry run) would add pam_u2f to $pamfile"; return 0; fi
+  local tmp; tmp="$(mktemp)"
+  awk -v g="$guard" '
+    /^auth/ && !d {
+      print "auth\t\t[success=1 default=ignore]\tpam_exec.so quiet seteuid " g
+      print "auth\t\tsufficient\tpam_u2f.so authfile=/etc/u2f_mappings origin=pam://fleet appid=pam://fleet cue nouserok"
+      d=1 }
+    { print }' "$pamfile" > "$tmp"
+  # A PAM file written from a bad match can lock sudo out; install only the exact expected shape.
+  if [[ $(grep -c pam_u2f "$tmp") -eq 1 && $(grep -c pam_exec "$tmp") -eq 1 ]] \
+     && grep -q '^auth.*include.*system-auth' "$tmp"; then
+    run sudo install -m 644 "$tmp" "$pamfile"
+    did "sudo: YubiKey touch, password fallback ($pamfile)"
+  else
+    warn "could not place pam_u2f in $pamfile -- left untouched"
+  fi
+  rm -f "$tmp"
+}
+
 stage_services() {
   stage_banner "60 services -- system and user units"
 
@@ -3985,6 +4038,7 @@ stage_services() {
   install_rclone_conf
   manage_tmp_storage
   install_system_dropins
+  setup_yubikey
   install_browser_search_policy
   tune_storage_and_swap
   apply_lean_profile
@@ -4285,6 +4339,8 @@ stage_verify() {
   have claude && have herdr && check "herdr claude integration" "herdr integration status | grep -q '^claude: current'"
   check "arch-bootstrap origin is SSH"  "git -C '$SCRIPT_DIR' remote get-url origin | grep -q '^git@'"
   check "bfq rule for rotational disks"  "[ -f /etc/udev/rules.d/60-ioscheduler.rules ]"
+  check "YubiKey OTP udev rule"          "[ -f /etc/udev/rules.d/70-yubikey-uaccess.rules ]"
+  if [[ -s $SECRETS_DIR/yubikey/u2f_mappings ]]; then check "sudo: YubiKey touch (pam_u2f)" "grep -q pam_u2f /etc/pam.d/sudo"; fi
   if zram_only_swap; then
     check "zram swap tuning live (swappiness 180)" "[ \"\$(sysctl -n vm.swappiness)\" = 180 ]"
   fi

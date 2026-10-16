@@ -143,6 +143,7 @@ HOME="$t/home-\$host" FLEET_HOST="\$host" SSH_ORIGINAL_COMMAND="\${req% }" exec 
 EOF
 printf '#!/bin/sh\necho "SSH_AUTH_SOCK=/x; export SSH_AUTH_SOCK; SSH_AGENT_PID=1; export SSH_AGENT_PID;"\n' > "$t/bin/ssh-agent"
 printf '#!/bin/sh\nexit 0\n' > "$t/bin/ssh-add"
+printf '#!/bin/sh\n[ "$*" = "list --serials" ] && [ -n "$YK_SERIALS" ] && echo "$YK_SERIALS"\nexit 0\n' > "$t/bin/ykman"   # no YubiKey unless YK_SERIALS
 printf '#!/bin/sh\necho "{\\"MagicDNSSuffix\\":\\"ts.test\\"}"\n' > "$t/bin/tailscale"
 chmod +x "$t/bin/"*; mkdir -p "$H/.ssh"; touch "$H/.ssh/id_ed25519_fleet"
 for h in self h1 h2; do git -C "$t/home-$h/secrets" pull -q; done
@@ -217,6 +218,11 @@ check "...holds listed with the date version, NEWER flagged" 'grep -qE "^  h1 +h
 rm -f "$t/ticket"; printf 'y\n' > "$t/answers"
 out=$(echo pw-ok | pf 2026-10-09 2>&1); rc=$?
 check "no newer day: nothing offered"                         '(( rc == 0 )) && grep -q "2026-10-09 is the newest day" <<<"$out" && ! grep -q "move the date" <<<"$out"'
+check "no YubiKey: the passphrase fleet key"                  '! grep -q "fleet key: YubiKey" <<<"$out"'
+touch "$H/.ssh/id_ed25519_sk_42"; rm -f "$t/ticket"; printf 'y\n' > "$t/answers"
+out=$(echo pw-ok | YK_SERIALS="7 42" pf 2026-10-09 2>&1)
+check "YubiKey with its own fleet key plugged in: that key"     'grep -q "fleet key: YubiKey 42" <<<"$out"'
+rm -f "$H/.ssh/id_ed25519_sk_42"
 check "fleet-apply status: repo holds of this host"           '[[ $(HOME=$t/home-h1 FLEET_HOST=h1 "$t/home-h1/projects/arch-bootstrap/tools/fleet-apply" status | head -1) == "hold held 1.0-1 repo" ]]'
 cp -r "$H/projects/arch-bootstrap" "$t/ab-due"; mkdir -p "$t/ab-due/chores/fleet-due"; cp "$root/chores/fleet-due/run.sh" "$t/ab-due/chores/fleet-due/"
 due() { FLEET_SNAPSHOTS=$SN FLEET_TODAY=$1 "$t/ab-due/chores/fleet-due/run.sh"; }
