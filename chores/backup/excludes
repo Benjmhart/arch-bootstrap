@@ -4,6 +4,19 @@
 # Also skipped without being named: any dir with a CACHEDIR.TAG (--exclude-caches; cargo's
 # target/ has one), and other filesystems (--one-file-system: media-center's USB library).
 
+# credentials (beast-arch 94, 2026-10-16): every host's restic key reads EVERY host's snapshots
+# (restic keys all unlock one master key), so a dirty host could restore micro's ~/.ssh. Keys and
+# tokens are reissued after a loss, never restored. ~/secrets is a git repo with a remote.
+/home/*/.ssh
+/home/*/secrets
+/home/*/.gnupg
+/home/*/.password-store
+/home/*/.config/rclone
+/home/*/.config/restic
+/home/*/.config/hcloud
+/home/*/.config/gh
+/home/*/.local/share/keyrings
+
 # caches and trash
 /home/*/.cache
 /home/*/.local/share/Trash
