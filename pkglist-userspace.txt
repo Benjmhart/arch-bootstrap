@@ -154,6 +154,7 @@ xorg-server
 xorg-xev
 xorg-xinit
 xorg-xrandr
+xorg-xset
 xorg-xsetroot
 xss-lock
 yazi
