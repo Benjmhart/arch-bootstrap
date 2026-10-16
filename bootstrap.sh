@@ -4000,6 +4000,7 @@ EARLYOOM_ARGS=\"$EARLYOOM_ARGS\"" "earlyoom thresholds"; then
 #    No PIN: whoever reaches sudo is already logged in. A guard skips the key, straight to the
 #    password, when sudo reads a pipe (sudo -S: fleet push, scripts) or runs under ssh, where
 #    the key is at the other end; otherwise it would wait out a touch nobody can give.
+#  - screen lock (i3lock) by touch: Enter, then touch; the password when no key is plugged in.
 setup_yubikey() {
   if put_etc_file /etc/udev/rules.d/70-yubikey-uaccess.rules \
 '# Written by arch-bootstrap: YubiKey OTP interface for the seat user (beast-arch 88).
@@ -4025,23 +4026,29 @@ exit 1' "sudo: password-only under ssh or sudo -S"; then
     run sudo chmod 755 "$guard"
   fi
 
-  if grep -q pam_u2f "$pamfile"; then ok "pam_u2f already in $pamfile"; return 0; fi
-  if (( DRY_RUN )); then info "(dry run) would add pam_u2f to $pamfile"; return 0; fi
-  local tmp; tmp="$(mktemp)"
-  awk -v g="$guard" '
-    /^auth/ && !d {
-      print "auth\t\t[success=1 default=ignore]\tpam_exec.so quiet seteuid " g
-      print "auth\t\tsufficient\tpam_u2f.so authfile=/etc/u2f_mappings origin=pam://fleet appid=pam://fleet cue nouserok"
-      d=1 }
-    { print }' "$pamfile" > "$tmp"
-  # A PAM file written from a bad match can lock sudo out; install only the exact expected shape.
-  if [[ $(grep -c pam_u2f "$tmp") -eq 1 && $(grep -c pam_exec "$tmp") -eq 1 ]] \
-     && grep -q '^auth.*include.*system-auth' "$tmp"; then
-    run sudo install -m 644 "$tmp" "$pamfile"
-    did "sudo: YubiKey touch, password fallback ($pamfile)"
-  else
-    warn "could not place pam_u2f in $pamfile -- left untouched"
-  fi
+  local u2f="pam_u2f.so authfile=/etc/u2f_mappings origin=pam://fleet appid=pam://fleet cue nouserok"
+  pam_prepend "$pamfile" "sudo: YubiKey touch, password fallback" \
+    "auth\t\t[success=1 default=ignore]\tpam_exec.so quiet seteuid $guard" "auth\t\tsufficient\t$u2f"
+  # Screen lock (Ben, 2026-10-16): Enter then touch; with no key plugged in pam_u2f fails at once and
+  # the typed password is checked. No guard: i3lock is always local.
+  [[ -f /etc/pam.d/i3lock ]] && pam_prepend /etc/pam.d/i3lock "screen lock: YubiKey touch, password fallback" "auth\t\tsufficient\t$u2f"
+  return 0
+}
+
+# pam_prepend <pam file> <what> <line>...: put the lines ahead of the file's first auth line, once
+# (skipped when pam_u2f is already there). A PAM file written from a bad match can lock you out,
+# so it installs only when every line landed and the original auth line is still there.
+pam_prepend() {
+  local f=$1 what=$2; shift 2
+  if grep -q pam_u2f "$f"; then ok "$what already in place ($f)"; return 0; fi
+  if (( DRY_RUN )); then info "(dry run) would add pam_u2f to $f"; return 0; fi
+  local tmp first l; tmp="$(mktemp)"; first=$(grep -m1 '^auth' "$f")
+  awk -v add="$(printf '%b\n' "$@")" '/^auth/ && !d { print add; d=1 } { print }' "$f" > "$tmp"
+  local ok=1
+  for l in "$@"; do grep -qxF "$(printf '%b' "$l")" "$tmp" || ok=0; done
+  [[ -n $first ]] && grep -qxF "$first" "$tmp" || ok=0
+  if (( ok )); then run sudo install -m 644 "$tmp" "$f"; did "$what ($f)"
+  else warn "could not place pam_u2f in $f -- left untouched"; fi
   rm -f "$tmp"
 }
 
