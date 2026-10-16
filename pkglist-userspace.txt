@@ -51,6 +51,7 @@ kdenlive
 keepassxc
 kmscon
 less
+libfido2
 libisoburn
 libnotify
 libpulse
@@ -82,6 +83,7 @@ ollama
 openbsd-netcat
 openssh
 pacman-contrib
+pam-u2f
 pandoc-cli
 pango
 pastebinit
@@ -153,6 +155,7 @@ xorg-xinit
 xorg-xrandr
 xorg-xsetroot
 yazi
+yubikey-manager
 zip
 zoxide
 zsh
