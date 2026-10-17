@@ -22,7 +22,9 @@ ask() { read -rp "$1 " REPLY </dev/tty; }
 [[ $(findmnt -no SOURCE /) == /dev/mapper/root ]] || fail "/ is not /dev/mapper/root"
 [[ -x /etc/grub.d/10_arch ]] || fail "/etc/grub.d/10_arch missing: run bootstrap (fpush) first"
 root_dev=$(cryptsetup status root | awk '$1=="device:"{print $2}')
-tokens() { cryptsetup luksDump "$root_dev" | grep -c systemd-fido2 || true; }
+# The JSON dump: the plain one hands each FIDO2 token to systemd's plugin, which prints past stdout, so only
+# the first token was counted (beast-arch, 2026-10-16: 3 enrolled, "1" shown, the dumps spilled into the log).
+tokens() { cryptsetup luksDump --dump-json-metadata "$root_dev" | grep -o '"type": *"systemd-fido2"' | wc -l; }
 echo "/ is LUKS on $root_dev; FIDO2 keys enrolled now: $(tokens)"
 
 # 1. /home by keyfile

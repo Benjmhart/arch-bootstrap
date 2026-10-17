@@ -4115,8 +4115,10 @@ fallback_options="-S autodetect"' "mkinitcpio: fallback image only" && rebuild=1
     run sudo rm -f /boot/EFI/Linux/arch-linux.efi /boot/EFI/Linux/arch-linux-fallback.efi && did "old UKI removed"
   fi
   [[ -f /etc/kernel/cmdline ]] && run sudo rm -f /etc/kernel/cmdline && did "/etc/kernel/cmdline removed (UKI only)"
-  sudo cryptsetup luksDump "$(sudo cryptsetup status root | awk '$1=="device:"{print $2}')" 2>/dev/null \
-    | grep -q systemd-fido2 || todo "no YubiKey enrolled for / here: sudo $SCRIPT_DIR/tools/luks-fido2"
+  # --dump-json-metadata: the plain dump hands each FIDO2 token to systemd's plugin, which prints past stdout,
+  # so a grep saw only the first token (beast-arch, 2026-10-16: 3 keys enrolled, "1" counted).
+  grep -q systemd-fido2 <<<"$(sudo cryptsetup luksDump --dump-json-metadata \
+    "$(sudo cryptsetup status root | awk '$1=="device:"{print $2}')" 2>/dev/null)" || todo "no YubiKey enrolled for / here: sudo $SCRIPT_DIR/tools/luks-fido2"
   return 0
 }
 
@@ -4139,7 +4141,7 @@ root_fs=$(findmnt -no FSTYPE /)
 luks_dev=$(cryptsetup status root | awk '"'"'$1=="device:"{print $2}'"'"')
 luks_uuid=$(blkid -s UUID -o value "$luks_dev")
 [ -n "$boot_uuid" ] && [ -n "$root_uuid" ] && [ -n "$luks_uuid" ] || { echo "10_arch: could not read a UUID (not root?)" >&2; exit 1; }
-keys=$(cryptsetup luksDump "$luks_dev" | grep -c systemd-fido2 || true)
+keys=$(cryptsetup luksDump --dump-json-metadata "$luks_dev" | grep -o "\"type\": *\"systemd-fido2\"" | wc -l)
 ucode=
 for u in intel-ucode.img amd-ucode.img; do if [ -f "/boot/$u" ]; then ucode="$ucode$p/$u "; fi; done
 # zswap off: every machine swaps to zram.
