@@ -11,8 +11,10 @@
 #
 # Inputs, none secret: build-in-guest, pkglist-headless.txt, this host's mirrorlist,
 # a clean clone of this repo's HEAD (never the gitignored bootstrap.conf), the herdr
-# pin read out of bootstrap.sh, and DOTFILES_REMOTE (from bootstrap.conf, rewritten to
-# its public https form -- the image has no GitHub key).
+# pin read out of bootstrap.sh, and a bare clone of this host's dotfiles (DOTFILES_DIR,
+# default ~/.dot: committed state only, origin set to DOTFILES_REMOTE from bootstrap.conf).
+# The dotfiles repo is private since 2026-10-16 and the image has no GitHub key, so the
+# guest cannot clone it; it gets this copy instead (station-maintenance beast-arch 85).
 #
 # BUILD_DEBUG=1 traces build-in-guest (set -x) into the log, OUT.img.log.
 #
@@ -38,14 +40,16 @@ cp "$here/build-in-guest" "$repo/pkglist-headless.txt" /etc/pacman.d/mirrorlist 
 git clone -q --no-local "$repo" "$tmp/arch-bootstrap"
 git -C "$tmp/arch-bootstrap" remote set-url origin https://github.com/Benjmhart/arch-bootstrap
 tar -C "$tmp" -cf "$tmp/in/arch-bootstrap.tar" arch-bootstrap
+mkdir "$tmp/dot"
+git clone -q --bare --no-local "${DOTFILES_DIR:-$HOME/.dot}" "$tmp/dot/.dot"
+git -C "$tmp/dot/.dot" remote set-url origin "$DOTFILES_REMOTE"
+tar -C "$tmp/dot" -cf "$tmp/in/dotfiles.tar" .dot
 herdr_ver=$(sed -n 's/^ *local ver=\([0-9.]*\) arch sum asset$/\1/p' "$repo/bootstrap.sh")
 herdr_sum=$(sed -n 's/^ *x86_64) .*sum=\([0-9a-f]\{64\}\) ;;$/\1/p' "$repo/bootstrap.sh")
 [[ -n $herdr_ver && -n $herdr_sum ]] || { echo "could not read the herdr pin from bootstrap.sh"; exit 1; }
-dot_url=$DOTFILES_REMOTE
-[[ $dot_url =~ ^git@github\.com:(.*)$ ]] && dot_url="https://github.com/${BASH_REMATCH[1]}"
 commit=$(git -C "$repo" log -1 --format=%h)
 [[ -z $(git -C "$repo" status --porcelain) ]] || commit+="+uncommitted"
-printf '%s\n' "BUILD_DEBUG=${BUILD_DEBUG:-}" "HERDR_VER=$herdr_ver" "HERDR_SUM=$herdr_sum" "DOTFILES_URL=$dot_url" \
+printf '%s\n' "BUILD_DEBUG=${BUILD_DEBUG:-}" "HERDR_VER=$herdr_ver" "HERDR_SUM=$herdr_sum" \
   "BOOTSTRAP_COMMIT=$commit" > "$tmp/in/build.env"
 tar -cf "$tmp/in.tar" -C "$tmp/in" .
 

@@ -18,7 +18,7 @@
 set -Eeuo pipefail
 disk=${1:?usage: build-in-guest DISK}
 in=$(dirname "$(readlink -f "$0")")
-. "$in/build.env"      # HERDR_VER HERDR_SUM DOTFILES_URL BOOTSTRAP_COMMIT
+. "$in/build.env"      # HERDR_VER HERDR_SUM BOOTSTRAP_COMMIT
 step() { printf '\n==== %s\n' "$*"; }
 trap 'echo "build-in-guest FAILED at line $LINENO: $BASH_COMMAND"' ERR
 
@@ -151,10 +151,12 @@ step "user ben"
 c useradd -m -G wheel -s /usr/bin/zsh ben
 c passwd -l ben >/dev/null
 u() { arch-chroot -u ben /mnt env HOME=/home/ben bash -c "$1"; }
-u "git clone -q --bare '$DOTFILES_URL' ~/.dot \
+cp "$in/dotfiles.tar" /mnt/var/tmp/          # the host's ~/.dot: the repo is private, the image has no key
+u "tar -xf /var/tmp/dotfiles.tar -C ~ \
    && git --git-dir ~/.dot --work-tree ~ checkout -f \
    && git --git-dir ~/.dot config status.showUntrackedFiles no \
    && git --git-dir ~/.dot config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'"
+rm /mnt/var/tmp/dotfiles.tar
 cp "$in/arch-bootstrap.tar" /mnt/var/tmp/   # not /tmp: arch-chroot mounts a tmpfs there
 u "mkdir -p ~/projects ~/.local/bin && tar -xf /var/tmp/arch-bootstrap.tar -C ~/projects"; rm /mnt/var/tmp/arch-bootstrap.tar
 u "curl -fsSL https://github.com/herdrdev/herdr/releases/download/v$HERDR_VER/herdr-linux-x86_64 -o ~/.local/bin/herdr \
