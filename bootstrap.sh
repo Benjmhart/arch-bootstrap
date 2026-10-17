@@ -1093,6 +1093,25 @@ ${pkgs:+IgnorePkg = $pkgs}"
   did "holds in pacman.conf: ${1:-none}"
 }
 
+# host_pkgs FILE...: the package names in package lists, minus lines ending "# only: host[,host]" that do
+# not name this machine (steam and the Stream Deck: beast-arch alone).
+host_pkgs() {
+  awk -v h="$(uname -n)" '!/^[[:space:]]*(#|$)/ {
+      if (match($0, /# *only: *[^#]*/)) { n = split(substr($0, RSTART, RLENGTH), w, /[:, \t]+/); ok = 0
+        for (i = 2; i <= n; i++) if (w[i] == h) ok = 1
+        if (!ok) next }
+      print $1 }' "$@"
+}
+
+# ensure_multilib: the [multilib] repo (32-bit libraries) on, for steam (beast-arch). On everywhere: it only adds
+# a database; nothing from it is installed unless a list names it.
+ensure_multilib() {
+  grep -qx '\[multilib\]' /etc/pacman.conf && { ok "multilib repo on"; return 0; }
+  grep -qx '#\[multilib\]' /etc/pacman.conf || { warn "no [multilib] section in /etc/pacman.conf to enable"; return 1; }
+  run sudo sed -i '/^#\[multilib\]$/{N;s/^#\[multilib\]\n#Include/[multilib]\nInclude/}' /etc/pacman.conf || return 1
+  did "multilib repo on"
+}
+
 stage_packages() {
   stage_banner "10 packages -- user-space only"
 
@@ -1104,13 +1123,13 @@ stage_packages() {
   info "installing from pkglist-userspace.txt -- no kernel, microcode, GPU or firmware"
 
   local -a all=() want=() missing=()
-  mapfile -t all < <(grep -vE '^[[:space:]]*(#|$)' "$SCRIPT_DIR/pkglist-userspace.txt")
+  mapfile -t all < <(host_pkgs "$SCRIPT_DIR/pkglist-userspace.txt")
   local p plist
   for p in $PROFILES; do
     plist="$SCRIPT_DIR/pkglist-profile-$p.txt"
     [[ -f $plist ]] || die "PROFILES names '$p', but there is no ${plist##*/}"
     info "profile $p: adding ${plist##*/}"
-    mapfile -t -O "${#all[@]}" all < <(grep -vE '^[[:space:]]*(#|$)' "$plist")
+    mapfile -t -O "${#all[@]}" all < <(host_pkgs "$plist")
   done
   partition_by_exclusion "${all[@]}"
   want=("${EX_WANT[@]}")
@@ -1129,6 +1148,7 @@ stage_packages() {
   [[ -n $held ]] && ignore=${ignore:+$ignore,}$held
   [[ -n $ignore ]] && info "holding back: $ignore"
   hold_in_pacman_conf "$ignore" || return 1
+  ensure_multilib || return 1   # before the sync below, so its database comes down with the rest
 
   local date=""
   [[ -f $SCRIPT_DIR/repo-date ]] && date=$(<"$SCRIPT_DIR/repo-date")
@@ -1452,12 +1472,7 @@ stage_aur() {
   # version is not its pin's, and each is built from exactly that commit with makepkg -- forward or back,
   # so every machine converges on the reviewed build. yay is just one more pinned package (for hand use).
   local -a all=() want=() plan=() failed=()
-  # "# only: host[,host]" at a line's end limits a pin to those machines (streamdeck-ui: beast-arch's deck).
-  mapfile -t all < <(awk -v h="$(uname -n)" '!/^[[:space:]]*(#|$)/ {
-      if (match($0, /# *only: *[^#]*/)) { n = split(substr($0, RSTART, RLENGTH), w, /[:, \t]+/); ok = 0
-        for (i = 2; i <= n; i++) if (w[i] == h) ok = 1
-        if (!ok) next }
-      print $1 }' "$SCRIPT_DIR/pkglist-aur.txt")
+  mapfile -t all < <(host_pkgs "$SCRIPT_DIR/pkglist-aur.txt")   # "# only: host" lines: see host_pkgs
   partition_by_exclusion "${all[@]}"
   want=("${EX_WANT[@]}")
   report_exclusions

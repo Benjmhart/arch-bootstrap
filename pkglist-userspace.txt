@@ -179,3 +179,10 @@ zoxide
 zsh
 ffmpeg
 dracut
+
+# Steam, beast-arch only (Ben, 2026-10-17; station-maintenance beast-arch 110). From [multilib], which stage 10
+# turns on (ensure_multilib). lib32-vulkan-radeon / lib32-mesa named so --noconfirm picks the RX 580's drivers
+# for steam's lib32-vulkan-driver / lib32-libgl, not the first provider pacman lists.
+steam                 # only: beast-arch
+lib32-vulkan-radeon   # only: beast-arch
+lib32-mesa            # only: beast-arch
