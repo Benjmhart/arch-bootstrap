@@ -3286,6 +3286,19 @@ ExecStartPre=/usr/bin/timeout 60 /bin/sh -c 'until ip -o addr show | grep -qF \"
 # always the newer one and must never be overwritten by the snapshot's.
 install_rclone_conf() {
   local src="$SECRETS_DIR/rclone/rclone.conf" dst="${XDG_CONFIG_HOME:-$HOME/.config}/rclone/rclone.conf"
+  # The Drive token lives on micro alone (station-maintenance beast-arch 92, decision 4): whoever holds it can
+  # delete the backups outright (files.delete skips the trash). A dirty machine's copy is removed when Drive is
+  # its only remote; one with other remotes is left, with a warning, for Ben.
+  if [[ $(uname -n) != "${FLEET_SELF_HOST:-micro}" ]]; then
+    [[ -f $dst ]] || { ok "no rclone config (the Drive token is on micro only)"; return 0; }
+    if [[ "$(grep '^\[' "$dst")" == "[personal drive]" ]]; then
+      run rm -f "$dst"
+      did "removed the Drive token: it lives on micro only now"
+    else
+      warn "rclone.conf holds remotes besides [personal drive]: remove that section by hand (beast-arch 92)"
+    fi
+    return 0
+  fi
   [[ -f $src ]] || { info "no rclone/rclone.conf in secrets -- no rclone remotes"; return 0; }
   if [[ -f $dst ]]; then
     ok "rclone config present ($(grep -c '^\[' "$dst") remote(s); kept, rclone refreshes its tokens there)"
@@ -3367,9 +3380,16 @@ install_chores() {
   for unit in "$d/chore@.service" "$d"/*/chore-*.timer; do
     run systemctl --user --quiet link "$unit"
   done
-  # fleet-due only on the fleet controller (tools/fleet's FLEET_SELF_HOST, micro).
-  local extra=""; [[ $(uname -n) == "${FLEET_SELF_HOST:-micro}" ]] && extra=fleet-due
-  for c in low-disk backup $extra $CHORES; do
+  # fleet-due and backup only on the fleet controller (tools/fleet's FLEET_SELF_HOST, micro). backup: micro
+  # backs up every machine through an append-only tunnel (station-maintenance beast-arch 92, decision 4), so
+  # a dirty machine's own timer, enabled by earlier runs, is switched off here.
+  local extra=""
+  if [[ $(uname -n) == "${FLEET_SELF_HOST:-micro}" ]]; then extra="fleet-due backup"
+  elif systemctl --user is-enabled --quiet chore-backup.timer 2>/dev/null; then
+    run systemctl --user disable --now chore-backup.timer
+    did "chore backup off here: micro backs this machine up over its tunnel"
+  fi
+  for c in low-disk $extra $CHORES; do
     [[ -f $d/$c/chore-$c.timer ]] || { warn "CHORES names '$c', but there is no chores/$c/chore-$c.timer"; continue; }
     if systemctl --user is-enabled --quiet "chore-$c.timer" 2>/dev/null; then
       ok "chore $c scheduled"
