@@ -3232,6 +3232,19 @@ espanso_skip_wizard() {
   did "espanso first-run wizard marked done (xinitrc starts it, not an enabled unit)"
 }
 
+# KeePassXC settings (station-maintenance beast-arch task 76). keepassxc.ini itself is NOT
+# tracked: KeePassXC writes its KeeShare signing key (an RSA private key) into it, and that
+# put the key in the dotfiles from 2022-09-21 (5d9c0c8). The dotfiles track
+# keepassxc.defaults.ini, the same settings minus [KeeShare]; copy it into place only when
+# keepassxc.ini is missing (a new machine, or the fpush that untracked it), never over it.
+keepassxc_seed_config() {
+  local d="$HOME/.config/keepassxc"
+  [[ -f $d/keepassxc.defaults.ini ]] || return 0
+  [[ -e $d/keepassxc.ini ]] && { ok "keepassxc.ini present (left as is)"; return 0; }
+  run install -m 600 "$d/keepassxc.defaults.ini" "$d/keepassxc.ini"
+  did "keepassxc.ini seeded from keepassxc.defaults.ini"
+}
+
 # Chores: regular jobs as systemd user timers (chores/, beast-arch task 69). chore-run
 # and chores go on PATH; every chore shares the chore@.service template, and only the
 # timers named in CHORES are enabled. `systemctl --user link` rather than copying, so a
@@ -4204,6 +4217,7 @@ stage_services() {
   install_chores
   install_rclone_conf
   espanso_skip_wizard
+  keepassxc_seed_config
   manage_tmp_storage
   install_system_dropins
   setup_yubikey
