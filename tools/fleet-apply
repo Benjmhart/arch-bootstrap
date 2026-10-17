@@ -116,6 +116,28 @@ move() {
   fi
 }
 
+# repos: work that has not reached origin, on this machine (station-maintenance beast-arch 76). Every system repo and
+# every ~/projects/* checkout, one line each: branch, ahead/behind its upstream AS OF ITS LAST FETCH (nothing is
+# fetched here: read-only, and fast), tracked files changed, and how old that fetch is. Made after a session on
+# beast-arch sat on an unpushed commit, 41 behind, that collided with pushed work and cited a SHA nobody else had.
+repo_report() {
+  local d a b dirty fetched now; local -a g
+  now=$(date +%s)
+  for d in "$DOTDIR" "$SECRETS" "$HOME"/projects/*/; do
+    d=${d%/}
+    if [[ $d == "$DOTDIR" ]]; then [[ -d $d ]] || continue; g=(git --git-dir="$d" --work-tree="$HOME")
+    else [[ -e $d/.git ]] || continue; g=(git -C "$d"); fi
+    fetched=$(stat -c %Y "$("${g[@]}" rev-parse --absolute-git-dir)/FETCH_HEAD" 2>/dev/null || echo 0)
+    fetched=$(( fetched ? (now - fetched) / 3600 : -1 ))
+    dirty=$("${g[@]}" status --porcelain -uno 2>/dev/null | wc -l)
+    if ! "${g[@]}" symbolic-ref -q HEAD >/dev/null; then
+      echo "repo ${d/#$HOME/\~} detached ahead=- behind=- dirty=$dirty fetched=${fetched}h"; continue; fi
+    if ! read -r a b < <("${g[@]}" rev-list --left-right --count 'HEAD...@{u}' 2>/dev/null); then
+      echo "repo ${d/#$HOME/\~} $("${g[@]}" branch --show-current) no-upstream dirty=$dirty fetched=${fetched}h"; continue; fi
+    echo "repo ${d/#$HOME/\~} $("${g[@]}" branch --show-current) ahead=$a behind=$b dirty=$dirty fetched=${fetched}h"
+  done
+}
+
 read -r -a req <<<"${SSH_ORIGINAL_COMMAND:-$*}"
 case ${req[0]:-} in
   status)       # held packages first ("hold <pkg> <installed> <source>"), the applied line LAST
@@ -125,8 +147,9 @@ case ${req[0]:-} in
                   echo "hold $p $(pacman -Q "$p" 2>/dev/null | cut -d' ' -f2) repo"; done
                 cat "$STATE/applied" 2>/dev/null || echo "none"; exit 0 ;;
   secrets-push) secrets_push; exit 0 ;;
+  repos)        repo_report; exit 0 ;;
   apply)        ;;
-  *)            die "request must be: status | secrets-push | apply <ab> <dot> <sec> [stage ...|keys]" ;;
+  *)            die "request must be: status | repos | secrets-push | apply <ab> <dot> <sec> [stage ...|keys]" ;;
 esac
 ab=${req[1]:-} dot=${req[2]:-} sec=${req[3]:-}
 for s in "$ab" "$dot" "$sec"; do

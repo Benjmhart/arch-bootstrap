@@ -246,4 +246,14 @@ cp "$t/peer.pub" "$s/ssh/pubkeys/micro.pub"; cp "$t/fleetkey.pub" "$s/ssh/fleet/
   printf 'from="100.64.0.9",command="%s/tools/fleet-apply",restrict %s\n' "/x" "$(cat "$t/fleetkey.pub")"; } > "$s/ssh/authorized_keys/box"
 check "fleet forced-command line passes authorized-keys check" 'SECRETS_DIR=$s AK_HOST=box AK_LIVE=$t/live "$root/tools/authorized-keys" check >/dev/null'
 
+# ================= repos: work not on origin, on every machine (beast-arch 76)
+git clone -q "$t/dot.git" "$t/home-h1/projects/side" 2>/dev/null
+git -C "$t/home-h1/projects/side" commit -q --allow-empty -m "local only"     # h1: one unpushed commit
+echo x >> "$t/home-h1/projects/side/.zshrc"                                  # ...and one uncommitted change
+out=$(fa h1 repos)
+check "repos: the unpushed commit and the change counted"   'grep -q "^repo ~/projects/side master ahead=1 behind=0 dirty=1 " <<<"$out"'
+check "repos: read-only (nothing fetched, nothing changed)" '[[ $(git -C "$t/home-h1/projects/side" status --porcelain -uno) == " M .zshrc" ]]'
+out=$(fleet status 2>&1)
+check "fleet status names it under 'work not on origin'"   'grep -q "^h1 .*~/projects/side \[master\] *1 unpushed; 1 uncommitted" <<<"$out"'
+
 echo; echo "$pass passed, $fail failed"; (( fail == 0 ))

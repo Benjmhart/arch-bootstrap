@@ -7,7 +7,8 @@
 # snapshot, with its time and the files it touches, and Ben can exclude any of them. The machines
 # then move to exactly the approved commits (fleet-apply), micro first.
 #
-#   fleet status                  each machine's applied snapshot, and the last approved one
+#   fleet status                  each machine's applied snapshot, the last approved one, and every
+#                                 repo with unpushed, diverged or uncommitted work (fleet-apply `repos`)
 #   fleet push [stage ...|keys]   1. every machine pushes its own secrets commits (beast-arch first:
 #                                    it is the vault's source of truth); out-of-sync machines are
 #                                    reported and skipped
@@ -295,6 +296,34 @@ unlock() {  # the fleet key (one passphrase) and the sudo password (stdin), both
   printf '%s\n' "$pw" | sudo -S -p '' -k -v 2>/dev/null || die "sudo password rejected here -- nothing sent anywhere"
 }
 
+# Work that has not reached origin, on every machine (fleet-apply `repos`; station-maintenance beast-arch 76):
+# unpushed or diverged commits and uncommitted changes in the system repos and every ~/projects/* checkout.
+# Only what needs a person is printed; "behind" alone is not lost work (fpush or a pull fixes it).
+repos_report() {
+  local h path br a b d f note any=0 out
+  echo; echo "=== work not on origin (as of each repo's last fetch)"
+  for h in "$SELF" "${hosts[@]}"; do
+    out=$(on "$h" repos 2>/dev/null | grep '^repo ')
+    # No lines is never "clean": the host's fleet-apply predates `repos`, or it did not answer.
+    [[ -n $out ]] || { printf '%-13s %s\n' "$h" "NO REPORT (unreachable, or its fleet-apply predates \`repos\`: next fpush)"; any=1; continue; }
+    while read -r _ path br rest; do
+      a=0 b=0 d=0 f=?
+      [[ $rest =~ ahead=([0-9]+)\ behind=([0-9]+) ]] && a=${BASH_REMATCH[1]} b=${BASH_REMATCH[2]}
+      [[ $rest =~ dirty=([0-9]+) ]] && d=${BASH_REMATCH[1]}
+      [[ $rest =~ fetched=(-?[0-9]+)h ]] && f=${BASH_REMATCH[1]}
+      note=""
+      if (( a && b )); then note="DIVERGED: $a unpushed, $b behind"; elif (( a )); then note="$a unpushed"; fi
+      [[ $br == detached ]] && (( d == 0 )) && continue
+      (( d )) && note+="${note:+; }$d uncommitted"
+      [[ $rest == no-upstream* ]] && note+="${note:+; }no upstream"
+      [[ -z $note ]] && continue
+      printf '%-13s %-42s %s  (fetched %sh ago)\n' "$h" "$path [$br]" "$note" "$f"; any=1
+    done <<<"$out"
+  done
+  (( any )) || echo "nothing: every repo on every machine is pushed and clean"
+  return 0
+}
+
 table() {  # print results; nonzero if anything failed
   local h bad=0; echo; echo "=== $1"
   for h in "$SELF" "${hosts[@]}"; do printf '%-14s %s\n' "$h" "${result[$h]:-}"; [[ ${result[$h]:-} == ok || ${result[$h]:-} == skip* || ${result[$h]:-} == "not touched"* ]] || bad=1; done
@@ -329,6 +358,7 @@ status)
     printf '%-14s %s\n' "$h" "$st"
   done
   if [[ -s $SNAPS ]]; then read -r t a d s _ < <(tail -1 "$SNAPS"); echo "approved       ${a:0:7} ${d:0:7} ${s:0:7} $t"; else echo "approved       none yet"; fi
+  repos_report
   ;;
 push)
   stages=("$@")
@@ -366,7 +396,9 @@ push)
     [[ $last == "$ab $dot $sec" ]] || echo "$(date -Iseconds) $ab $dot $sec" >> "$SNAPS"
   fi
   unset pw
-  table "fleet push: arch-bootstrap ${ab:0:7}  dotfiles ${dot:0:7}  secrets ${sec:0:7}"
+  table "fleet push: arch-bootstrap ${ab:0:7}  dotfiles ${dot:0:7}  secrets ${sec:0:7}"; rc=$?
+  repos_report
+  exit $rc
   ;;
 rollback)
   scope=${1:-micro}; [[ $scope == micro || $scope == all ]] || die "usage: fleet rollback [all]"
