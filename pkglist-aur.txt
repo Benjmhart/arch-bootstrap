@@ -6,6 +6,7 @@ google-chrome
 handy-bin
 i3lock-color
 lightworks
+localsend-bin
 nitrogen
 otf-hasklig
 pacmixer

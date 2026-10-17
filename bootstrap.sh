@@ -3543,14 +3543,29 @@ install_browser_search_policy() {
   # Vimium in Vivaldi, fetched from Google's update service by the browser itself on
   # its next start -- no Web Store visit (task 22). normal_installed: installed and
   # kept installed, but it can be disabled. Settings come from tools/vimium-restore.
+  # KeePassXC-Browser (oboonakemofpalcgghocfoadofidjkkk) in Vivaldi and Chromium (task 100):
+  # it reaches KeePassXC through the native-messaging manifest the dotfiles track in each
+  # browser's NativeMessagingHosts/, and gets nothing until it is associated with the open
+  # vault by a click in KeePassXC. ExtensionSettings is ONE policy, so each browser keeps
+  # all its extensions in one file (two files naming it would conflict, not merge).
+  local kpxc='"oboonakemofpalcgghocfoadofidjkkk": {
+      "installation_mode": "normal_installed",
+      "update_url": "https://clients2.google.com/service/update2/crx"
+    }'
   put_etc_file /etc/vivaldi/policies/managed/extensions.json '{
   "ExtensionSettings": {
     "dbepggeogbaibhgnhhndojpepiihcmeb": {
       "installation_mode": "normal_installed",
       "update_url": "https://clients2.google.com/service/update2/crx"
-    }
+    },
+    '"$kpxc"'
   }
-}' "Vimium for Vivaldi (installed by policy)" || true
+}' "Vimium + KeePassXC-Browser for Vivaldi (installed by policy)" || true
+  put_etc_file /etc/chromium/policies/managed/extensions.json '{
+  "ExtensionSettings": {
+    '"$kpxc"'
+  }
+}' "KeePassXC-Browser for Chromium (installed by policy)" || true
   # Firefox reads one policies.json, not a directory; nothing else writes it yet.
   put_etc_file /etc/firefox/policies/policies.json \
     '{ "policies": { "SearchEngines": { "Default": "DuckDuckGo" } } }' \
