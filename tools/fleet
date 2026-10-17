@@ -317,8 +317,20 @@ unlock() {  # the fleet key (one passphrase) and the sudo password (stdin), both
     [[ -f $KEY ]] || die "no $KEY -- run: fleet setup"
     ssh-add -t 3600 "$KEY" || die "fleet key not loaded"
   fi
+  sudo_locked && die "sudo is locked here until $(sudo_locked) (pam_faillock, 3 failed tries) -- nothing sent anywhere"
   IFS= read -r -s -p "sudo password (shared by every machine): " pw; echo
-  printf '%s\n' "$pw" | sudo -S -p '' -k -v 2>/dev/null || die "sudo password rejected here -- nothing sent anywhere"
+  printf '%s\n' "$pw" | sudo -S -p '' -k -v 2>/dev/null || die "sudo password rejected here -- nothing sent anywhere.$(
+    sudo_locked >/dev/null && echo " sudo is now LOCKED until $(sudo_locked) (pam_faillock)")"
+}
+
+# pam_faillock locks sudo for 10 min after 3 failures in 15 min, and a wrong password piped to `sudo -S` costs TWO
+# (sudo asks again, stdin is empty, that counts too): two wrong fpush passwords lock it, and from then on the RIGHT
+# one is "rejected" too (micro, 2026-10-17 10:27). Prints the unlock time and succeeds while locked.
+sudo_locked() {
+  local -a t; mapfile -t t < <(faillock --user "$USER" 2>/dev/null | awk '$NF == "V" { print $1 " " $2 }')
+  (( ${#t[@]} >= 3 )) || return 1
+  local until; until=$(date -d "${t[-1]} 600 sec" +%s) || return 1
+  (( until > $(date +%s) )) && date -d "@$until" +%T
 }
 
 # Work that has not reached origin, on every machine (fleet-apply `repos`; station-maintenance beast-arch 76):

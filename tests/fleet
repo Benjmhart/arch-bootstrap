@@ -60,6 +60,7 @@ if [[ " \$* " == *" -v "* ]]; then IFS= read -r p; [[ \$p == pw-ok ]] && touch "
 if [[ " \$* " == *" -n "* ]]; then [[ -e "$t/ticket" ]]; exit; fi
 exit 0
 EOF
+printf '#!/bin/bash\n[[ -e "%s/locked" ]] && printf "When Type Source Valid\\n%%s TTY /dev/pts/0 V\\n" "$(date "+%%F %%T")" "$(date "+%%F %%T")" "$(date "+%%F %%T")"\nexit 0\n' "$t" > "$t/bin/faillock"   # stub: the real one reads THIS machine's lockouts
 printf '#!/bin/bash\n[[ "$*" == "-x keepassxc" && -e "%s/kpx.${FLEET_HOST:-x}" ]]\n' "$t" > "$t/bin/pgrep"
 chmod +x "$t/bin/"*; export PATH="$t/bin:$PATH"
 
@@ -263,5 +264,12 @@ check "identical local change: restored, the move goes on"   '(( rc == 0 )) && [
 dot7=$(commit "$t/dot-seed" .zshrc rc7 "dot seven"); echo something-else > "$H/.zshrc"
 out=$(echo pw-ok | fa self apply "$ab2" "$dot7" "$sec2" services 2>&1); rc=$?
 check "a DIFFERENT local change still stops it, file kept"    '(( rc != 0 )) && [[ $(dotat self) == "$dot6" && $(cat "$H/.zshrc") == something-else ]]'
+
+
+# ================= sudo locked by pam_faillock: said so, before the password is asked (micro, 2026-10-17)
+touch "$t/locked"
+out=$(echo pw-ok | FLEET_INPUT=/dev/null "$H/projects/arch-bootstrap/tools/fleet" push 2>&1); rc=$?
+check "faillock lockout: named with its unlock time, not 'rejected'"  '(( rc != 0 )) && grep -q "sudo is locked here until [0-9:]* (pam_faillock" <<<"$out"'
+rm -f "$t/locked"
 
 echo; echo "$pass passed, $fail failed"; (( fail == 0 ))
