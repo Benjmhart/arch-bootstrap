@@ -4,6 +4,7 @@
 # machine runs the same reviewed build. Move a pin with `tools/aur-pin bump NAME` (it shows the PKGBUILD diff
 # first); `tools/aur-pin status` lists what the AUR has newer. The change then shows in fpush's review.
 # fpush moves pins itself (tools/aur-pin auto: 3-day cooldown + checks); `# hold: why` at a line's end keeps it.
+# `# only: host[,host]` at a line's end installs it on those machines alone (bootstrap.sh stage 20).
 # ORDER MATTERS: a package depending on another AUR package comes after it (gtkmm before nitrogen).
 # First pins 2026-10-17: the newest version then installed anywhere in the fleet (carbon unreachable).
 gtkmm                                4b7d0537a5c345d5ba7783f1748cfbd27c8cfc06
@@ -20,9 +21,9 @@ localsend-bin                        f35ec0d6bd56c3c9fc4611f91972c31c38210654
 nitrogen                             360d5a30480e36917bc7c222795ebd8ca9bae732
 otf-hasklig                          12f4872ff1eca9b913ef68ec5f97cb004c2d8875
 pacmixer                             138b40fef079b75acc8a812811e2a7fde99cab3b
-python-elgato-streamdeck             8d104c56189aa8973453605b23a331d31e92a882
+python-elgato-streamdeck             8d104c56189aa8973453605b23a331d31e92a882   # only: beast-arch
 rambox-pro-bin                       dfb2567775540f8bbe0ecf5f6209644d9061701e
-streamdeck-ui                        0d20461e6f26dedaee365f31955e095f2eab1bd2
+streamdeck-ui                        0d20461e6f26dedaee365f31955e095f2eab1bd2   # only: beast-arch
 ventoy-bin                           b185aeda22473076cc0cb7d330bc8bc0b43c8a0e
 xdg-desktop-portal-termfilechooser   81e819b47bcaf14e59cdc4dab9e1b9187210f7b7
 yay                                  a36cea074d8851a66fb7cd50a396876f8cdf4f07

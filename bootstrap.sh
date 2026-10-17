@@ -1452,7 +1452,12 @@ stage_aur() {
   # version is not its pin's, and each is built from exactly that commit with makepkg -- forward or back,
   # so every machine converges on the reviewed build. yay is just one more pinned package (for hand use).
   local -a all=() want=() plan=() failed=()
-  mapfile -t all < <(awk '!/^[[:space:]]*(#|$)/ {print $1}' "$SCRIPT_DIR/pkglist-aur.txt")
+  # "# only: host[,host]" at a line's end limits a pin to those machines (streamdeck-ui: beast-arch's deck).
+  mapfile -t all < <(awk -v h="$(uname -n)" '!/^[[:space:]]*(#|$)/ {
+      if (match($0, /# *only: *[^#]*/)) { n = split(substr($0, RSTART, RLENGTH), w, /[:, \t]+/); ok = 0
+        for (i = 2; i <= n; i++) if (w[i] == h) ok = 1
+        if (!ok) next }
+      print $1 }' "$SCRIPT_DIR/pkglist-aur.txt")
   partition_by_exclusion "${all[@]}"
   want=("${EX_WANT[@]}")
   report_exclusions
