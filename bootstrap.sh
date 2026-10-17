@@ -3847,6 +3847,41 @@ remove_kmscon() {
   ok "no kmscon: every tty is agetty"
 }
 
+# The lid (station-maintenance beast-arch 111; Ben 2026-10-17). On AC a closed lid only LOCKS: the laptop stays up and on
+# the network and anything running carries on. On battery it suspends, as before. "shutting the lid should always screen
+# lock" -- logind's `lock` action sends the session's Lock signal, which xss-lock (.xinitrc) and swayidle's `lock`
+# hook (sway config) answer. Docked counts as AC here: logind's default for it is `ignore`, which would not lock.
+# logind does not look at the lid again when the power goes, so "if i unplug while the lid is shut, the laptop should
+# go to sleep within 5 minutes" is a udev rule on the mains supply going offline: it starts lid-unplugged.service,
+# which waits 2 minutes (a cable knocked out and back is not a reason to sleep) and suspends if the lid is still shut
+# and the power still out. Laptops only (a lid switch in /proc/acpi). logind reads its drop-in at its next start: the
+# next boot. Not yet exercised by closing a real lid.
+setup_lid() {
+  compgen -G '/proc/acpi/button/lid/*/state' >/dev/null || { ok "no lid: lid handling skipped"; return 0; }
+  put_etc_file /etc/systemd/logind.conf.d/50-lid.conf \
+"# Written by arch-bootstrap (setup_lid, station-maintenance beast-arch 111). Edit bootstrap.sh, not this file.
+[Login]
+HandleLidSwitch=suspend
+HandleLidSwitchExternalPower=lock
+HandleLidSwitchDocked=lock" "lid: lock on AC, suspend on battery (from the next boot)" || true
+  local unit_changed=0
+  put_etc_file /etc/systemd/system/lid-unplugged.service \
+"# Written by arch-bootstrap (setup_lid, station-maintenance beast-arch 111). Started by 90-lid-unplugged.rules.
+[Unit]
+Description=Suspend if the power is still out and the lid still shut 2 minutes after unplugging
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'sleep 120; for f in /sys/class/power_supply/*/online; do [ \"\$\$(cat \$\${f%%online}type)\" = Mains ] && [ \"\$\$(cat \$\$f)\" = 1 ] && exit 0; done; grep -q closed /proc/acpi/button/lid/*/state && exec systemctl suspend'" \
+    "lid: suspend when unplugged with the lid shut" && unit_changed=1
+  put_etc_file /etc/udev/rules.d/90-lid-unplugged.rules \
+"# Written by arch-bootstrap (setup_lid, station-maintenance beast-arch 111).
+SUBSYSTEM==\"power_supply\", ATTR{type}==\"Mains\", ATTR{online}==\"0\", RUN+=\"/usr/bin/systemctl start --no-block lid-unplugged.service\"" \
+    "lid: udev rule for unplugging" && run sudo udevadm control --reload
+  (( unit_changed )) && run sudo systemctl daemon-reload
+  return 0
+}
+
 # Host firewall (beast-arch task 76, 2026-10-03): none was active on beast-arch,
 # carbon or micro. Inbound is dropped except loopback, the tailnet (tailscale0 --
 # the tailnet policy is the access control there), docker's bridges, ICMP,
@@ -4314,6 +4349,7 @@ stage_services() {
   set_console_font
   set_console_palette
   remove_kmscon
+  setup_lid
   setup_firewall
   disable_llmnr
   set_wireless_regdom
