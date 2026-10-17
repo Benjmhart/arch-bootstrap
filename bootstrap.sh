@@ -3788,7 +3788,7 @@ set_console_font() {
   grep -Eq '^HOOKS=.*\<consolefont\>' /etc/mkinitcpio.conf && run sudo mkinitcpio -P
 }
 
-# Dracula on the kernel console (tty1 and wherever agetty runs; kmscon draws its own).
+# Dracula on the kernel console (every tty: all agetty since kmscon went, 2026-10-17).
 # Alacritty's palette (dotfiles alacritty.toml) with two console substitutions: the VT
 # uses colour 0 as its background and 7 as its foreground, so those take Alacritty's
 # primary background/foreground (282a36, f8f8f2) instead of its black/white.
@@ -3827,64 +3827,24 @@ WantedBy=sysinit.target" "console palette unit" && run sudo systemctl daemon-rel
   return 0
 }
 
-# kmscon on tty2-6: a userspace console that draws with real fonts (pango, so
-# fallback glyphs too), full Unicode and truecolor -- what the kernel console's
-# 512-glyph, 16-colour bitmap cannot. Only the autovt@ alias is pointed at it, so
-# tty1, where X is started, keeps agetty, and so does the initramfs passphrase
-# prompt (that one gets CONSOLE_FONT above). kmsconvt@ falls back to getty@ on its
-# own failure (OnFailure=). From a kmscon tty, X needs `kmscon-launch-gui startx`:
-# kmscon has to let go of the display first. Ttys already spawned keep agetty
-# until they are released (logout, or a reboot).
-#
-# KMSCON_TTY1=yes moves tty1 too: kmsconvt@tty1 enabled, getty@tty1 disabled (the
-# unit Conflicts= with it). =no (the default) keeps agetty on tty1.
-# OFF by default again since 2026-10-08: tried on micro, X CANNOT start from a kmscon
-# login. kmscon runs login on a pty (sudo logs TTY=pts/0), so Xorg.wrap refuses it --
-# "only console users are allowed to run the X server" -- and the dotfiles' startx
-# alias, which tests $TTY for /dev/ttyN, never fires either. kmscon-launch-gui only
-# makes kmscon release DRM; it does not make the session a console one. Turning this
-# back on needs a real answer for X first (station-maintenance beast-arch 71).
-KMSCON_FONT="${KMSCON_FONT:-Fira Code}"   # Alacritty's font
-KMSCON_TTY1="${KMSCON_TTY1:-no}"
-setup_kmscon() {
-  if ! pacman -Qq kmscon >/dev/null 2>&1; then
-    (( DRY_RUN )) || warn "kmscon not installed -- console left on agetty"
-    return 0
-  fi
-  put_etc_file /etc/kmscon/kmscon.conf \
-"# Written by arch-bootstrap. Edit bootstrap.sh, not this file.
-font-engine=pango
-font-name=$KMSCON_FONT" "kmscon font" || true
-
+# kmscon is GONE (Ben 2026-10-17: "i want true ttys when i move to another session"). It ran on tty2-6 from
+# 2026-10-04 (beast-arch 71), but a kmscon login sits on a pty, not a VT: neither X (Xorg.wrap: "only console users
+# are allowed to run the X server", 2026-10-08) nor sway (micro 2026-10-17, which then needed a hard reboot) can start
+# from one. This undoes what setup_kmscon did -- the autovt@ -> kmsconvt@ link, an enabled kmsconvt@tty1, its config,
+# the package -- so every tty is agetty again. Ttys kmscon already serves keep it until the next reboot.
+remove_kmscon() {
   local link=/etc/systemd/system/autovt@.service
-  local target=/usr/lib/systemd/system/kmsconvt@.service
-  if [[ "$(readlink "$link" 2>/dev/null)" == "$target" ]]; then
-    ok "kmscon already serves tty2-6 (autovt@)"
-  else
-    run sudo ln -sfn "$target" "$link"
-    run sudo systemctl daemon-reload
-    did "kmscon on tty2-6 (autovt@ -> kmsconvt@)"
+  if [[ $(readlink "$link" 2>/dev/null) == */kmsconvt@.service ]]; then
+    run sudo rm -f "$link"; run sudo systemctl daemon-reload; did "tty2-6: agetty from the next boot (kmscon link removed)"
   fi
-
-  # Enable/disable only, never --now: switching the tty under a logged-in session
-  # would kill it. Takes effect at the next boot.
-  local on=kmsconvt@tty1.service off=getty@tty1.service
-  [[ $KMSCON_TTY1 == yes ]] || { on=getty@tty1.service; off=kmsconvt@tty1.service; }
-  # Both units carry Alias=autovt@.service, so enabling either writes autovt@tty1.service
-  # (what logind starts when you switch to tty1), and `disable` of the other leaves it:
-  # on 2026-10-08 the switch back to getty failed on three machines with "autovt@tty1.service
-  # already exists and is a symlink to kmsconvt@.service". So the alias is part of the
-  # check, and `enable --force` replaces it.
-  local alias=/etc/systemd/system/autovt@tty1.service
-  if systemctl is-enabled --quiet "$on" 2>/dev/null \
-     && ! systemctl is-enabled --quiet "$off" 2>/dev/null \
-     && { [[ ! -L $alias ]] || [[ $(readlink "$alias") == */${on%@*}@.service ]]; }; then
-    ok "tty1: ${on%@*} (KMSCON_TTY1=$KMSCON_TTY1)"
-  else
-    run sudo systemctl disable "$off"
-    run sudo systemctl enable --force "$on"
-    did "tty1: ${on%@*} from the next boot (KMSCON_TTY1=$KMSCON_TTY1)"
+  if systemctl is-enabled --quiet kmsconvt@tty1.service 2>/dev/null || [[ $(readlink /etc/systemd/system/autovt@tty1.service 2>/dev/null) == */kmsconvt@.service ]]; then
+    run sudo systemctl disable kmsconvt@tty1.service; run sudo systemctl enable --force getty@tty1.service; did "tty1: agetty from the next boot"
   fi
+  if pacman -Qq kmscon >/dev/null 2>&1; then
+    run sudo pacman -Rns --noconfirm kmscon && did "kmscon removed"
+  fi
+  [[ -e /etc/kmscon ]] && run sudo rm -rf /etc/kmscon
+  ok "no kmscon: every tty is agetty"
 }
 
 # Host firewall (beast-arch task 76, 2026-10-03): none was active on beast-arch,
@@ -4353,7 +4313,7 @@ stage_services() {
   apply_lean_profile
   set_console_font
   set_console_palette
-  setup_kmscon
+  remove_kmscon
   setup_firewall
   disable_llmnr
   set_wireless_regdom

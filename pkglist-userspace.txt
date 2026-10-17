@@ -52,7 +52,6 @@ inotify-tools
 jq
 kdenlive
 keepassxc
-kmscon
 kvantum
 kvantum-qt5
 less
