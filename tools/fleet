@@ -121,6 +121,11 @@ list_repo() {  # list_repo <repo> <base>: print its new commits; fills HEADS and
       while IFS= read -r t; do echo "        !! POSSIBLE SECRET  $t"; (( ++SECRET_HITS )); done \
         < <(gitr "$r" show --no-renames --format= -p "$c" | "$here/secret-scan")
     fi
+    # A moved AUR pin is code that will run as root on every machine: name each move with its versions.
+    if [[ $r == ab ]] && printf '%s\n' "${files[@]}" | grep -qx pkglist-aur.txt; then
+      while IFS= read -r t; do echo "        AUR pin  $t"; done \
+        < <("$here/aur-pin" changes <(gitr ab show "$c^:pkglist-aur.txt" 2>/dev/null) <(gitr ab show "$c:pkglist-aur.txt") 2>&1)
+    fi
   done
 }
 

@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+"""aur-pin: AUR packages pinned to a commit of their AUR git repo (station-maintenance beast-arch 76).
+
+pkglist-aur.txt lines:  <pkgname> <aur-commit> [<pkgbase>]     (pkgbase only when it differs, e.g. espanso)
+Order matters: a package whose dependency is itself an AUR package comes after it (gtkmm before nitrogen).
+
+  aur-pin status              pinned version vs the AUR's current one, per package
+  aur-pin bump NAME...        show what changed in the AUR repo since the pin (PKGBUILD, .install, patches),
+                              ask, and move the pin in pkglist-aur.txt (commit and push it yourself; fpush reviews it)
+  aur-pin find NAME VERSION   the AUR commit whose .SRCINFO says VERSION ([epoch:]pkgver-pkgrel)
+  aur-pin plan                "name commit base version" for every pin whose version is not the one installed
+                              (bootstrap.sh stage 20 builds exactly these)
+  aur-pin changes OLD NEW     the pins that differ between two copies of pkglist-aur.txt, as "name: old -> new"
+                              (fpush's review calls it for every commit that touches the list)
+
+Repos are cached bare under ~/.cache/aur-pin. AUR_URL overrides https://aur.archlinux.org (tests)."""
+import os, re, subprocess, sys
+
+AUR = os.environ.get("AUR_URL", "https://aur.archlinux.org")
+CACHE = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")), "aur-pin")
+LIST = os.environ.get("AUR_PIN_LIST", os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "pkglist-aur.txt"))
+
+def git(repo, *args, check=True):
+    r = subprocess.run(["git", "--git-dir", repo, *args], capture_output=True, text=True)
+    if check and r.returncode:
+        sys.exit(f"aur-pin: git {' '.join(args)} in {repo}: {r.stderr.strip()}")
+    return r.stdout
+
+def repo(base, fetch=True):
+    path = os.path.join(CACHE, base + ".git")
+    if not os.path.isdir(path):
+        os.makedirs(CACHE, exist_ok=True)
+        r = subprocess.run(["git", "clone", "-q", "--bare", f"{AUR}/{base}.git", path], capture_output=True, text=True)
+        if r.returncode:
+            sys.exit(f"aur-pin: cannot clone {AUR}/{base}.git: {r.stderr.strip()}")
+    elif fetch:
+        git(path, "fetch", "-q", "origin", "+refs/heads/*:refs/heads/*")
+    return path
+
+def version(path, commit):
+    """[epoch:]pkgver-pkgrel from .SRCINFO at commit (the pkgbase section)."""
+    info = {}
+    for line in git(path, "show", f"{commit}:.SRCINFO").splitlines():
+        if line.startswith("pkgname"):
+            break
+        m = re.match(r"\s*(pkgver|pkgrel|epoch)\s*=\s*(\S+)", line)
+        if m:
+            info[m.group(1)] = m.group(2)
+    v = f"{info['pkgver']}-{info['pkgrel']}"
+    return f"{info['epoch']}:{v}" if info.get("epoch", "0") != "0" else v
+
+def entries(path=None):
+    out = []
+    for n, line in enumerate(open(path or LIST), 1):
+        f = line.split("#", 1)[0].split()
+        if not f:
+            continue
+        if len(f) < 2 or not re.fullmatch(r"[0-9a-f]{40}", f[1]):
+            sys.exit(f"aur-pin: {path or LIST}:{n}: '{line.strip()}' -- want '<pkgname> <40-hex aur commit> [<pkgbase>]'")
+        out.append((f[0], f[1], f[2] if len(f) > 2 else f[0], n))
+    return out
+
+def installed(name):
+    r = subprocess.run(["pacman", "-Q", name], capture_output=True, text=True)
+    return r.stdout.split()[1] if r.returncode == 0 else None
+
+def head(path):
+    return git(path, "rev-parse", "HEAD").strip()
+
+def cmd_status(_):
+    for name, pin, base, _n in entries():
+        p = repo(base); h = head(p)
+        pv, hv = version(p, pin), version(p, h)
+        mark = "" if pin == h else f"   AUR now {hv} ({h[:8]})"
+        print(f"{name:36} pinned {pv:24} installed {installed(name) or '-':24}{mark}")
+
+def cmd_find(args):
+    name, want = args
+    base = next((b for n, _c, b, _l in entries() if n == name), name)
+    p = repo(base)
+    for c in git(p, "log", "--format=%H", "HEAD", "--", ".SRCINFO").split():
+        if version(p, c) == want:
+            print(c); return
+    sys.exit(f"aur-pin: no commit of {base} has version {want}")
+
+def cmd_plan(_):
+    for name, pin, base, _n in entries():
+        p = repo(base, fetch=False)
+        if subprocess.run(["git", "--git-dir", p, "cat-file", "-e", f"{pin}^{{commit}}"]).returncode:
+            p = repo(base)            # the pin is newer than the cache: fetch
+        v = version(p, pin)
+        if installed(name) != v:
+            print(name, pin, base, v)
+
+def cmd_bump(names):
+    lines = open(LIST).read().splitlines(keepends=True)
+    byname = {n: (c, b, l) for n, c, b, l in entries()}
+    for name in names:
+        if name not in byname:
+            sys.exit(f"aur-pin: {name} is not in {LIST}")
+        pin, base, lineno = byname[name]
+        p = repo(base); h = head(p)
+        if h == pin:
+            print(f"{name}: already at the AUR's head ({version(p, h)})"); continue
+        print(f"\n===== {name}: {version(p, pin)} -> {version(p, h)}   ({pin[:8]}..{h[:8]})")
+        print(git(p, "log", "--format=  %h %ad %an  %s", "--date=short", f"{pin}..{h}"))
+        print(git(p, "diff", "--stat", pin, h))
+        print(git(p, "diff", pin, h, "--", ".", ":(exclude).SRCINFO", ":(exclude)*.zst", ":(exclude)*.tar.*"))
+        try:
+            ans = input(f"move {name}'s pin to {h[:8]}? [y/N] ")
+        except EOFError:
+            ans = ""
+        if ans.strip().lower() == "y":
+            lines[lineno - 1] = re.sub(r"\b[0-9a-f]{40}\b", h, lines[lineno - 1], count=1)
+            open(LIST, "w").write("".join(lines))
+            print(f"pinned {name} at {h[:8]} -- commit and push pkglist-aur.txt; fpush shows it in the review")
+
+def loose(path):
+    """name -> (commit or None, base): also reads the pre-2026-10-17 list of bare names."""
+    out = {}
+    for line in open(path):
+        f = line.split("#", 1)[0].split()
+        if f:
+            pin = f[1] if len(f) > 1 and re.fullmatch(r"[0-9a-f]{40}", f[1]) else None
+            out[f[0]] = (pin, f[2] if len(f) > 2 else f[0])
+    return out
+
+def cmd_changes(args):
+    old = loose(args[0])
+    new = {n: (c, b) for n, c, b, _l in entries(args[1])}
+    for name in sorted(set(old) | set(new)):
+        o, n = old.get(name), new.get(name)
+        if o == n:
+            continue
+        if not n:
+            print(f"{name}: removed"); continue
+        p = repo(n[1])
+        nv = version(p, n[0])
+        if not o:
+            print(f"{name}: NEW at {nv} ({n[0][:8]})"); continue
+        if not o[0]:
+            print(f"{name}: unpinned -> {nv} ({n[0][:8]})"); continue
+        ov = version(p, o[0])
+        span = git(p, "rev-list", "--count", f"{o[0]}..{n[0]}", check=False).strip() or "?"
+        print(f"{name}: {ov} -> {nv}  ({span} AUR commit(s); see them: tools/aur-pin bump {name} on a checkout at the OLD pin)")
+
+if __name__ == "__main__":
+    cmds = {"status": cmd_status, "find": cmd_find, "plan": cmd_plan, "bump": cmd_bump, "changes": cmd_changes}
+    if len(sys.argv) < 2 or sys.argv[1] not in cmds:
+        sys.exit(__doc__)
+    cmds[sys.argv[1]](sys.argv[2:])

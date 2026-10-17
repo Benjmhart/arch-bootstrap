@@ -1,18 +1,26 @@
-antigravity-cli
-bemoji
-claude-desktop
-dracula-gtk-theme
-espanso-x11
-google-chrome
-handy-bin
-i3lock-color
-lightworks
-localsend-bin
-nitrogen
-otf-hasklig
-pacmixer
-rambox-pro-bin
-ventoy-bin
-xdg-desktop-portal-termfilechooser
-yay
-zoom
+# AUR packages, each PINNED to a commit of its AUR git repo (station-maintenance beast-arch 76):
+#   <pkgname> <aur commit> [<pkgbase>]        pkgbase only when it differs (espanso-x11 comes from espanso)
+# bootstrap.sh stage 20 builds exactly that commit with makepkg wherever the installed version differs, so every
+# machine runs the same reviewed build. Move a pin with `tools/aur-pin bump NAME` (it shows the PKGBUILD diff
+# first); `tools/aur-pin status` lists what the AUR has newer. The change then shows in fpush's review.
+# ORDER MATTERS: a package depending on another AUR package comes after it (gtkmm before nitrogen).
+# First pins 2026-10-17: the newest version then installed anywhere in the fleet (carbon unreachable).
+gtkmm                                4b7d0537a5c345d5ba7783f1748cfbd27c8cfc06
+antigravity-cli                      dc01494d00b076563362460fa9ac3c9396ded29f
+bemoji                               90ed093966261043a7b0045b8fc0c8f339013e61
+claude-desktop                       20669f623d1ec1e14848c0220624eba4375b344b
+dracula-gtk-theme                    3f4c6f263e23a97a63e5be911474541053946456
+espanso-x11                          f66257bbb59116dea6d002ab486be930c06c6d19 espanso
+google-chrome                        22f911574697bc9a89160773f0f6c7828ab3d06d
+handy-bin                            2f19d9a38b8585de2715a657e891c89a66013e3d
+i3lock-color                         886bdde4481265bef7461ff3f40a992250354ed8
+lightworks                           c8738dd8d57e25cda3adb1f9caf1f5dec5715497
+localsend-bin                        f35ec0d6bd56c3c9fc4611f91972c31c38210654
+nitrogen                             360d5a30480e36917bc7c222795ebd8ca9bae732
+otf-hasklig                          12f4872ff1eca9b913ef68ec5f97cb004c2d8875
+pacmixer                             138b40fef079b75acc8a812811e2a7fde99cab3b
+rambox-pro-bin                       dfb2567775540f8bbe0ecf5f6209644d9061701e
+ventoy-bin                           b185aeda22473076cc0cb7d330bc8bc0b43c8a0e
+xdg-desktop-portal-termfilechooser   81e819b47bcaf14e59cdc4dab9e1b9187210f7b7
+yay                                  a36cea074d8851a66fb7cd50a396876f8cdf4f07
+zoom                                 9cf1e9686715d0677db2eb4106c2d59aee6d7ca0

@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# tests/aur-pin: tools/aur-pin against a fake AUR (local git repos) and a stub pacman (station-maintenance beast-arch 76).
+set -u
+root="$(cd "$(dirname "$0")/.." && pwd)"; t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
+pass=0 fail=0
+check() { if eval "$2"; then pass=$((pass+1)); echo "pass  $1"; else fail=$((fail+1)); echo "FAIL  $1"; fi; }
+mkrepo() {  # mkrepo <base> then commits of "<pkgver> <pkgrel> [epoch]"
+  local b=$1; shift; git init -q -b master "$t/aur/$b.git.src"
+  for v in "$@"; do read -r pv pr ep <<<"$v"
+    { echo "pkgbase = $b"; echo "	pkgver = $pv"; echo "	pkgrel = $pr"; [[ -n ${ep:-} ]] && echo "	epoch = $ep"; echo; echo "pkgname = $b"; } > "$t/aur/$b.git.src/.SRCINFO"
+    git -C "$t/aur/$b.git.src" add -A; git -C "$t/aur/$b.git.src" commit -qm "$pv-$pr"; done
+  git clone -q --bare "$t/aur/$b.git.src" "$t/aur/$b.git"; }
+mkrepo foo "1.0 1" "1.1 1" "1.1 2"
+mkrepo bar "2.24 5 1"
+mkdir -p "$t/bin"; printf '#!/bin/sh\n[ "$1" = -Q ] && grep "^$2 " "%s/installed" && exit 0; exit 1\n' "$t" > "$t/bin/pacman"; chmod +x "$t/bin/pacman"
+export PATH="$t/bin:$PATH" AUR_URL="$t/aur" XDG_CACHE_HOME="$t/cache" AUR_PIN_LIST="$t/list"
+ap() { python3 "$root/tools/aur-pin" "$@"; }
+c11=$(git -C "$t/aur/foo.git" log --format=%H --skip=1 -1)   # foo 1.1-1
+cbar=$(git -C "$t/aur/bar.git" rev-parse HEAD)
+printf '# comment\nbar %s\nfoo %s\n' "$cbar" "$c11" > "$t/list"
+check "find: the commit of a version"          '[[ $(ap find foo 1.1-1) == "$c11" ]]'
+check "find: epoch is part of the version"     '[[ $(ap find bar 1:2.24-5) == "$cbar" ]]'
+check "find: an unknown version fails"         '! ap find foo 9.9-9 2>/dev/null'
+printf 'foo 1.1-1\nbar 1:2.24-5\n' > "$t/installed"
+check "plan: everything at its pin -> nothing" '[[ -z $(ap plan) ]]'
+printf 'foo 1.0-1\n' > "$t/installed"
+check "plan: older, newer or missing -> rebuild" '[[ $(ap plan) == "bar $cbar bar 1:2.24-5"$'"'"'\n'"'"'"foo $c11 foo 1.1-1" ]]'
+printf 'foo deadbeef\n' > "$t/list"
+check "a malformed line is refused with its line number" 'ap plan 2>&1 | grep -q "list:1: .foo deadbeef."'
+c10=$(git -C "$t/aur/foo.git" log --format=%H --skip=2 -1); c12=$(git -C "$t/aur/foo.git" rev-parse HEAD)
+printf 'foo %s\nbar %s\n' "$c10" "$cbar" > "$t/old"; printf 'foo %s\nbaz %s\n' "$c12" "$cbar" > "$t/new"
+mkrepo baz "3.0 1"; printf 'foo %s\nbaz %s\n' "$c12" "$(git -C "$t/aur/baz.git" rev-parse HEAD)" > "$t/new"
+out=$(ap changes "$t/old" "$t/new")
+check "changes: a moved pin with both versions and the span" 'grep -qx "foo: 1.0-1 -> 1.1-2  (2 AUR commit(s); see them: tools/aur-pin bump foo on a checkout at the OLD pin)" <<<"$out"'
+check "changes: new and removed pins named"              'grep -qx "bar: removed" <<<"$out" && grep -q "^baz: NEW at 3.0-1" <<<"$out"'
+: > "$t/empty"; check "changes: from no list at all (first commit)" '[[ $(ap changes "$t/empty" "$t/new" | wc -l) == 2 ]]'
+echo; echo "$pass passed, $fail failed"; (( fail == 0 ))

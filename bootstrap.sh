@@ -602,8 +602,8 @@ $(wc -l < "$SCRIPT_DIR/pkglist-aur.txt") AUR)"
     # matches nothing. Check every name against the lists it is meant to filter.
     local -a unknown=() e
     for e in "${!PKG_EXCLUDED[@]}"; do
-      grep -qxF "$e" "$SCRIPT_DIR/pkglist-userspace.txt" "$SCRIPT_DIR/pkglist-aur.txt" \
-        2>/dev/null || unknown+=("$e")
+      awk '{print $1}' "$SCRIPT_DIR/pkglist-userspace.txt" "$SCRIPT_DIR/pkglist-aur.txt" 2>/dev/null \
+        | grep -qxF "$e" || unknown+=("$e")
     done
     if (( ${#unknown[@]} )); then
       warn "${#unknown[@]} excluded name(s) match nothing in the package lists:"
@@ -1401,6 +1401,29 @@ stage_hardware() {
 
 # --------------------------------------------------------------------------- 20
 
+# aur_build_pinned <name> <aur-commit> <pkgbase> <version>: build that commit (from aur-pin's cache) and install
+# the one package <name> from it -- a split pkgbase (espanso) builds several. Earned only by pacman then
+# reporting exactly <version>.
+aur_build_pinned() {
+  local name=$1 pin=$2 base=$3 ver=$4 tmp f rc=0; local -a pkgs=()
+  tmp=$(mktemp -d)
+  if ! git clone -q "${XDG_CACHE_HOME:-$HOME/.cache}/aur-pin/$base.git" "$tmp/$base" || ! git -C "$tmp/$base" checkout -q "$pin"; then
+    warn "$name: cannot check out $base@${pin:0:8}"; rm -rf "$tmp"; return 1
+  fi
+  info "$name: building $ver from $base@${pin:0:8}"
+  if ( cd "$tmp/$base" && makepkg -s --noconfirm ); then
+    while IFS= read -r f; do
+      [[ -f $f && $(pacman -Qqp "$f" 2>/dev/null) == "$name" ]] && pkgs+=("$f")
+    done < <(cd "$tmp/$base" && makepkg --packagelist)
+    if (( ${#pkgs[@]} )); then run sudo pacman -U --noconfirm "${pkgs[@]}" || rc=1; else warn "$name: makepkg built no $name package"; rc=1; fi
+  else
+    warn "$name: makepkg failed"; rc=1
+  fi
+  rm -rf "$tmp"
+  [[ $(pacman -Q "$name" 2>/dev/null | cut -d' ' -f2) == "$ver" ]] || { warn "$name: installed $(pacman -Q "$name" 2>/dev/null | cut -d' ' -f2), pin says $ver"; return 1; }
+  did "$name $ver (pinned ${pin:0:8})"
+}
+
 stage_aur() {
   stage_banner "20 aur"
 
@@ -1420,57 +1443,46 @@ stage_aur() {
     fi
   fi
 
-  # yay is itself in the AUR list, so it has to be built from source first.
-  if have yay; then
-    ok "yay already installed"
-  else
-    info "building yay from source (it is in the AUR list but cannot install itself)"
-    local tmp; tmp="$(mktemp -d)"
-    run git clone --depth 1 https://aur.archlinux.org/yay.git "$tmp/yay"
-    if (( DRY_RUN )); then
-      printf '%s  would run:%s makepkg -si --noconfirm in %s/yay\n' "$C_DIM" "$C_RESET" "$tmp"
-    else
-      ( cd "$tmp/yay" && makepkg -si --noconfirm )
-    fi
-    run rm -rf "$tmp"
-    did "yay built"
-  fi
-
-  local -a all=() want=() missing=()
-  mapfile -t all < <(grep -vE '^[[:space:]]*(#|$)' "$SCRIPT_DIR/pkglist-aur.txt" | grep -vx 'yay')
+  # Every AUR package is PINNED to a commit of its AUR repo (pkglist-aur.txt; station-maintenance
+  # beast-arch 76). Until 2026-10-17 this stage ran `yay -S` for whatever was missing: a new install
+  # took the AUR's code of that moment, unreviewed, and nothing installed was ever updated (google-chrome
+  # sat a release behind on two machines). Now `tools/aur-pin plan` names every package whose installed
+  # version is not its pin's, and each is built from exactly that commit with makepkg -- forward or back,
+  # so every machine converges on the reviewed build. yay is just one more pinned package (for hand use).
+  local -a all=() want=() plan=() failed=()
+  mapfile -t all < <(awk '!/^[[:space:]]*(#|$)/ {print $1}' "$SCRIPT_DIR/pkglist-aur.txt")
   partition_by_exclusion "${all[@]}"
   want=("${EX_WANT[@]}")
   report_exclusions
 
-  # Same reasoning as stage 10. An AUR package is an ordinary pacman package once
-  # built, so -T answers for these too -- and asking pacman rather than yay avoids
-  # yay's habit of hitting the AUR RPC on every invocation.
-  mapfile -t missing < <(pacman -T "${want[@]}" 2>/dev/null || true)
-
-  if (( ${#missing[@]} == 0 )); then
-    ok "all ${#want[@]} AUR packages already installed"
-  else
-    info "${#missing[@]} missing from the AUR list: ${missing[*]}"
-    local n=${#missing[@]}
+  mapfile -t plan < <("$SCRIPT_DIR/tools/aur-pin" plan 2>&1; echo "rc=$?")
+  if [[ ${plan[-1]} != rc=0 ]]; then
+    warn "tools/aur-pin plan failed: ${plan[*]}"
+    return 1
+  fi
+  unset 'plan[-1]'
+  local line name pin base ver n=0
+  for line in "${plan[@]}"; do
+    read -r name pin base ver <<<"$line"
+    [[ " ${want[*]} " == *" $name "* ]] || continue
     # i3lock-color replaces i3lock (station-maintenance beast-arch 88). Both own /usr/bin/i3lock, and
-    # under --noconfirm pacman answers its "remove i3lock?" conflict prompt No, so remove it first.
-    # Its /etc/pam.d/i3lock goes with it (.pacsave); stage 60's setup_yubikey re-adds pam_u2f to the new one.
-    if [[ " ${missing[*]} " == *" i3lock-color "* ]] && pacman -Q i3lock >/dev/null 2>&1; then
+    # pacman -U --noconfirm answers the "remove i3lock?" conflict No, so remove it first. Its
+    # /etc/pam.d/i3lock goes with it (.pacsave); stage 60's setup_yubikey re-adds pam_u2f to the new one.
+    if [[ $name == i3lock-color ]] && pacman -Q i3lock >/dev/null 2>&1; then
       run sudo pacman -Rdd --noconfirm i3lock
     fi
-    # shellcheck disable=SC2086
-    run yay -S --needed --noconfirm "${missing[@]}"
-    if ! (( DRY_RUN )); then
-      # Ask pacman, not yay's exit status: this stage's "done" mark is what a
-      # later session trusts, so it is only earned by the packages being there.
-      mapfile -t missing < <(pacman -T "${want[@]}" 2>/dev/null || true)
-      if (( ${#missing[@]} )); then
-        warn "still missing after yay: ${missing[*]}"
-        return 1
-      fi
+    if (( DRY_RUN )); then
+      printf '%s  would build:%s %s %s (installed: %s) from %s@%s\n' "$C_DIM" "$C_RESET" "$name" "$ver" \
+        "$(pacman -Q "$name" 2>/dev/null | cut -d' ' -f2 || echo none)" "$base" "${pin:0:8}"
+      n=$((n + 1)); continue
     fi
-    did "$n AUR package(s) installed"
+    if aur_build_pinned "$name" "$pin" "$base" "$ver"; then n=$((n + 1)); else failed+=("$name"); fi
+  done
+  if (( ${#failed[@]} )); then
+    warn "AUR packages not at their pins: ${failed[*]}"
+    return 1
   fi
+  if (( n )); then did "$n AUR package(s) built at their pins"; else ok "all ${#want[@]} AUR packages at their pins"; fi
 
   if [[ " ${want[*]} " == *" rambox-pro-bin "* ]]; then
     install_rambox_perms_hook
