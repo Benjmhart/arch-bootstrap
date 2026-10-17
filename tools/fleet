@@ -354,7 +354,8 @@ repos_report() {
       (( d )) && note+="${note:+; }$d uncommitted"
       [[ $rest == no-upstream* ]] && note+="${note:+; }no upstream"
       [[ -z $note ]] && continue
-      printf '%-13s %-42s %s  (fetched %sh ago)\n' "$h" "$path [$br]" "$note" "$f"; any=1
+      [[ $f == -1 ]] && f="never fetched" || f="fetched ${f}h ago"   # -1: no FETCH_HEAD, never fetched (read as "-1h ago" 2026-10-17)
+      printf '%-13s %-42s %s  (%s)\n' "$h" "$path [$br]" "$note" "$f"; any=1
     done <<<"$out"
   done
   (( any )) || echo "nothing: every repo on every machine is pushed and clean"
