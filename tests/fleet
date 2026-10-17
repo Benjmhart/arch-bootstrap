@@ -256,4 +256,12 @@ check "repos: read-only (nothing fetched, nothing changed)" '[[ $(git -C "$t/hom
 out=$(fleet status 2>&1)
 check "fleet status names it under 'work not on origin'"   'grep -q "^h1 .*~/projects/side \[master\] *1 unpushed; 1 uncommitted" <<<"$out"'
 
+# ================= a local change identical to the snapshot does not stop the move (2026-10-17)
+dot6=$(commit "$t/dot-seed" .zshrc rc6 "dot six"); echo rc6 > "$H/.zshrc"      # changed here exactly as dot six does
+out=$(echo pw-ok | fa self apply "$ab2" "$dot6" "$sec2" services 2>&1); rc=$?
+check "identical local change: restored, the move goes on"   '(( rc == 0 )) && [[ $(dotat self) == "$dot6" ]] && grep -q "was already as in" <<<"$out"'
+dot7=$(commit "$t/dot-seed" .zshrc rc7 "dot seven"); echo something-else > "$H/.zshrc"
+out=$(echo pw-ok | fa self apply "$ab2" "$dot7" "$sec2" services 2>&1); rc=$?
+check "a DIFFERENT local change still stops it, file kept"    '(( rc != 0 )) && [[ $(dotat self) == "$dot6" && $(cat "$H/.zshrc") == something-else ]]'
+
 echo; echo "$pass passed, $fail failed"; (( fail == 0 ))

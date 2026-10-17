@@ -98,6 +98,15 @@ move() {
   "${g[@]}" merge-base --is-ancestor "$sha" "origin/$branch" || die "$label: ${sha:0:7} is not on origin/$branch"
   cur=$("${g[@]}" rev-parse HEAD)
   if "${g[@]}" merge-base --is-ancestor "$cur" "$sha"; then
+    # A tracked file changed here in exactly the way the snapshot changes it (KeePassXC rewrites its browser manifests
+    # at every start; dotfiles 52fef68 then committed that content): git refuses to fast-forward over it although
+    # nothing would be lost, which failed a whole fpush on 2026-10-17. Put such files back first; a file changed in
+    # any OTHER way still stops the move below.
+    local f
+    while IFS= read -r f; do
+      [[ -n $f ]] && cmp -s <("${g[@]}" show "$sha:$f" 2>/dev/null) "$("${g[@]}" rev-parse --show-toplevel)/$f" \
+        && "${g[@]}" checkout -q -- ":/$f" && echo "note  $label: $f was already as in ${sha:0:7} here; restored so the move can go on"
+    done < <("${g[@]}" diff --name-only)
     if [[ $label == secrets ]] && touches "$("${g[@]}" diff --name-only "$cur" "$sha")" && pgrep -x keepassxc >/dev/null; then
       die "secrets: the snapshot changes $VAULT and KeePassXC is running on $HOST -- close it, then re-run"
     fi
