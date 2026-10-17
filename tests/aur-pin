@@ -34,4 +34,28 @@ out=$(ap changes "$t/old" "$t/new")
 check "changes: a moved pin with both versions and the span" 'grep -qx "foo: 1.0-1 -> 1.1-2  (2 AUR commit(s); see them: tools/aur-pin bump foo on a checkout at the OLD pin)" <<<"$out"'
 check "changes: new and removed pins named"              'grep -qx "bar: removed" <<<"$out" && grep -q "^baz: NEW at 3.0-1" <<<"$out"'
 : > "$t/empty"; check "changes: from no list at all (first commit)" '[[ $(ap changes "$t/empty" "$t/new" | wc -l) == 2 ]]'
+
+# ================= auto (Ben 2026-10-17: pins move themselves, a cooldown and checks guard the move)
+src=$t/aur/foo.git.src
+up() {  # up <file> <line to add> [author]: a new AUR commit of foo, published to the fake AUR
+  echo "$2" >> "$src/$1"; git -C "$src" add -A
+  git -C "$src" -c user.name="${3:-Same}" -c user.email="${3:-same}@x" commit -qm "$1"
+  git --git-dir "$t/aur/foo.git" fetch -q "$src" '+refs/heads/*:refs/heads/*'; git -C "$src" rev-parse HEAD; }
+git -C "$src" config user.name Same; git -C "$src" config user.email same@x
+printf 'pkgname=foo\nsource=(https://example.org/foo.tar.gz)\n' > "$src/PKGBUILD"; base=$(up PKGBUILD '# base')
+printf 'foo %s\n' "$base" > "$t/list"
+export AUR_PIN_COOLDOWN_DAYS=0
+clean=$(up PKGBUILD 'build() { make; }')
+check "auto: a clean update moves the pin"        'ap auto | grep -q "^move   foo" && grep -q "^foo $clean" "$t/list"'
+npm=$(up PKGBUILD 'prepare() { npm install atomic-lockfile; }')
+check "auto: an added npm install is flagged, pin kept" 'ap auto | grep -q "^flag   foo.*PKGBUILD adds .npm." && grep -q "^foo $clean" "$t/list"'
+printf 'foo %s\n' "$npm" > "$t/list"; stranger=$(up PKGBUILD '# 2' Mallory)
+check "auto: a new committer is flagged"           'ap auto | grep -q "new committer Mallory <Mallory@x>"'
+inst=$(up foo.install 'post_install() { :; }')
+check "auto: a changed .install is flagged"        'ap auto | grep -q "changes foo.install"'
+printf 'foo %s  # hold: broke at 1.1\n' "$npm" > "$t/list"
+check "auto: '# hold' keeps the pin"               'ap auto | grep -q "^hold   foo: broke at 1.1" && grep -q "^foo $npm" "$t/list"'
+printf 'foo %s\n' "$npm" > "$t/list"; AUR_PIN_COOLDOWN_DAYS=1
+check "auto: commits first seen under the cooldown wait" 'ap auto | grep -q "^wait   foo" && grep -q "^foo $npm" "$t/list"'
+
 echo; echo "$pass passed, $fail failed"; (( fail == 0 ))

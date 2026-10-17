@@ -3,6 +3,7 @@
 # bootstrap.sh stage 20 builds exactly that commit with makepkg wherever the installed version differs, so every
 # machine runs the same reviewed build. Move a pin with `tools/aur-pin bump NAME` (it shows the PKGBUILD diff
 # first); `tools/aur-pin status` lists what the AUR has newer. The change then shows in fpush's review.
+# fpush moves pins itself (tools/aur-pin auto: 3-day cooldown + checks); `# hold: why` at a line's end keeps it.
 # ORDER MATTERS: a package depending on another AUR package comes after it (gtkmm before nitrogen).
 # First pins 2026-10-17: the newest version then installed anywhere in the fleet (carbon unreachable).
 gtkmm                                4b7d0537a5c345d5ba7783f1748cfbd27c8cfc06

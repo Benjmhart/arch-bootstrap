@@ -16,7 +16,8 @@
 #                                    arch-bootstrap's repo-date, how many of the fleet's packages
 #                                    change (the kernel, mesa, xorg... listed); y commits the new
 #                                    date. Then every held package (arch-bootstrap `holds`, and
-#                                    local ~/.config/fleet/hold) with what the date has
+#                                    local ~/.config/fleet/hold) with what the date has. Then the AUR
+#                                    pins move themselves (aur-pin auto; held/flagged ones stay)
 #                                 3. review, per repo (arch-bootstrap, dotfiles, secrets): every new
 #                                    commit with its time, author, subject and files, the risky files
 #                                    marked. Exclude any by number: micro reverts them in a throwaway
@@ -229,6 +230,30 @@ bump_date() {  # offer the newest archive day; a yes commits it to arch-bootstra
   cp "$PKGDIR/new" "$PKGDIR/date"
 }
 
+# AUR pins move themselves (Ben 2026-10-17: "I don't want to be manually updating pins"): aur-pin auto moves each to
+# the newest AUR commit micro first saw 3+ days ago, unless the line says "# hold" or its checks flag the change
+# (new committer, an added npm/bun/curl/..., a new download host, a SKIP checksum, a changed .install). The commit
+# is pushed and shows in the review like any other, so it can still be excluded. micro's own reviewed aur-pin runs.
+bump_aur() {
+  local tmp out n
+  gitr ab show origin/main:pkglist-aur.txt >/dev/null 2>&1 || return 0
+  echo; echo "=== AUR pins: each moves to the newest AUR commit seen ${AUR_PIN_COOLDOWN_DAYS:-3}+ days ago, unless held or flagged"
+  tmp=$(mktemp -d)
+  gitr ab worktree add -q --detach "$tmp" origin/main || die "arch-bootstrap: worktree failed"
+  if ! out=$(AUR_PIN_LIST="$tmp/pkglist-aur.txt" "$here/aur-pin" auto 2>&1); then
+    echo "warn  aur-pin auto failed, no pin moves: $(tail -1 <<<"$out")"; out=; git -C "$tmp" checkout -q -- .
+  fi
+  [[ -n $out ]] && sed 's/^/  /' <<<"$out"
+  n=$(grep -c '^move ' <<<"$out")
+  if (( n )); then
+    if git -C "$tmp" commit -q -m "aur: $n pin(s) moved by aur-pin auto" -m "$out" -- pkglist-aur.txt \
+       && git -C "$tmp" push -q origin HEAD:refs/heads/main; then
+      echo "did   $n AUR pin(s) committed and pushed ($(git -C "$tmp" rev-parse --short HEAD)); in the review below"
+    else echo "warn  committing or pushing the AUR pins failed (origin moved?): they stay"; fi
+  else echo "ok    no AUR pin moves"; fi
+  gitr ab worktree remove --force "$tmp"; gitr ab fetch -q origin
+}
+
 show_holds() {  # every held package on every machine: installed, what the pinned day has, what broke
   local date h p ver src broke why have; local -A inst=()
   date=$(gitr ab show origin/main:repo-date 2>/dev/null) || return 0
@@ -375,7 +400,7 @@ push)
   done
 
   # 2. The weekly package date, if it is time (its commit then shows in the review), and every hold.
-  bump_date; show_holds
+  bump_date; bump_aur; show_holds
 
   # 3. Review against the last approved snapshot (the first time: what micro has checked out).
   if [[ -s $SNAPS ]]; then read -r _ b_ab b_dot b_sec _ < <(tail -1 "$SNAPS")

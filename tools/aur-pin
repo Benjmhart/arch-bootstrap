@@ -12,16 +12,28 @@ Order matters: a package whose dependency is itself an AUR package comes after i
                               (bootstrap.sh stage 20 builds exactly these)
   aur-pin changes OLD NEW     the pins that differ between two copies of pkglist-aur.txt, as "name: old -> new"
                               (fpush's review calls it for every commit that touches the list)
+  aur-pin auto                move every pin to the AUR's newest commit this cache first saw AUR_PIN_COOLDOWN_DAYS
+                              (3) or more days ago -- unless its line says "# hold: why", or the checks flag it
+                              (fpush runs it before the review, Ben 2026-10-17: no hand-kept pins). Prints
+                              move/flag/wait/hold per package; a flagged one waits for a hand `bump`
 
 Repos are cached bare under ~/.cache/aur-pin. AUR_URL overrides https://aur.archlinux.org (tests)."""
-import os, re, subprocess, sys
+import os, re, subprocess, sys, time
 
 AUR = os.environ.get("AUR_URL", "https://aur.archlinux.org")
 CACHE = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")), "aur-pin")
+COOLDOWN = float(os.environ.get("AUR_PIN_COOLDOWN_DAYS", "3")) * 86400
+# Tokens an AUR update may not ADD to a file that did not already use them: they fetch or run code no checksum
+# pins, or reach for root, keys or persistence. The June 2026 "Atomic Arch" hijacks (orphans adopted by a new
+# account, `npm install atomic-lockfile` / `bun install js-digest` added to PKGBUILD or .install) had this shape.
+RISKY = re.compile(r"\b(?:npm|npx|pnpm|yarn|bunx?|pipx?|pip3|uvx?|gem|cargo install|go install|go run|curl|wget|nc|ncat"
+                   r"|socat|base64|eval|sudo|systemctl|crontab|setcap|LD_PRELOAD|authorized_keys)\b"
+                   r"|/dev/tcp|\\x[0-9a-fA-F]{2}|python3? -c|perl -e|chmod [ugo]*\+s|\.ssh/")
+QUIET = {"PKGBUILD", ".SRCINFO", ".gitignore", ".nvchecker.toml"}    # any other changed file is flagged (.install runs as root)
 LIST = os.environ.get("AUR_PIN_LIST", os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "pkglist-aur.txt"))
 
 def git(repo, *args, check=True):
-    r = subprocess.run(["git", "--git-dir", repo, *args], capture_output=True, text=True)
+    r = subprocess.run(["git", "--git-dir", repo, *args], capture_output=True, text=True, errors="replace")
     if check and r.returncode:
         sys.exit(f"aur-pin: git {' '.join(args)} in {repo}: {r.stderr.strip()}")
     return r.stdout
@@ -33,9 +45,53 @@ def repo(base, fetch=True):
         r = subprocess.run(["git", "clone", "-q", "--bare", f"{AUR}/{base}.git", path], capture_output=True, text=True)
         if r.returncode:
             sys.exit(f"aur-pin: cannot clone {AUR}/{base}.git: {r.stderr.strip()}")
+        seen(path)
     elif fetch:
         git(path, "fetch", "-q", "origin", "+refs/heads/*:refs/heads/*")
+        seen(path)
     return path
+
+def seen(path):
+    """commit -> when this cache first saw it. The cooldown counts from here, not from the commit's own date, which
+    its author sets. The first record of a repo trusts the commit dates once."""
+    f = os.path.join(path, "aur-pin-seen")
+    known = dict(l.split() for l in open(f)) if os.path.exists(f) else {}
+    first, new = not known, []
+    for line in git(path, "log", "--all", "--format=%H %ct").splitlines():
+        c, ct = line.split()
+        if c not in known:
+            known[c] = ct if first else str(int(time.time()))
+            new.append(f"{c} {known[c]}\n")
+    if new:
+        open(f, "a").writelines(new)
+    return {c: int(t) for c, t in known.items()}
+
+def checks(p, pin, new):
+    """Why moving pin -> new needs a human: [] when nothing is flagged."""
+    if subprocess.run(["git", "--git-dir", p, "merge-base", "--is-ancestor", pin, new]).returncode:
+        return ["the AUR history was rewritten (the pin is not an ancestor)"]
+    why = []
+    old = set(git(p, "log", "--format=%an <%ae>", pin).splitlines())
+    why += [f"new committer {a}" for a in sorted(set(git(p, "log", "--format=%an <%ae>", f"{pin}..{new}").splitlines()) - old)]
+    for f in git(p, "diff", "--name-only", pin, new).splitlines():
+        if f not in QUIET and not re.fullmatch(r"LICENSE.*|LICENSES/.*|REUSE\.toml", f):    # licence files run nothing
+            why.append(f"changes {f}")
+        if f == ".SRCINFO":
+            continue
+        had = {m.group(0) for m in RISKY.finditer(git(p, "show", f"{pin}:{f}", check=False))}
+        added = [l[1:] for l in git(p, "diff", "-U0", pin, new, "--", f).splitlines() if l.startswith("+") and not l.startswith("+++")]
+        why += [f"{f} adds '{t}'" for t in sorted({m.group(0) for l in added for m in RISKY.finditer(l)} - had)]
+        if f == "PKGBUILD" and any(re.match(r"#\s*(Maintainer|Contributor)", l) for l in added):
+            why.append("PKGBUILD changes its Maintainer/Contributor lines")
+    def srcinfo(c):
+        s = git(p, "show", f"{c}:.SRCINFO")
+        return ({m.group(1) for m in re.finditer(r"^\s*source\w*\s*=\s*(?:[^:\s]*::)?(?:\w+\+)?\w+://([^/\s]+)", s, re.M)},
+                len(re.findall(r"^\s*\w+sums\w*\s*=\s*SKIP\s*$", s, re.M)))
+    (h0, s0), (h1, s1) = srcinfo(pin), srcinfo(new)
+    why += [f"downloads from a new host {h}" for h in sorted(h1 - h0)]
+    if s1 > s0:
+        why.append("more sources without a checksum (SKIP)")
+    return why
 
 def version(path, commit):
     """[epoch:]pkgver-pkgrel from .SRCINFO at commit (the pkgbase section)."""
@@ -106,6 +162,8 @@ def cmd_bump(names):
         print(git(p, "log", "--format=  %h %ad %an  %s", "--date=short", f"{pin}..{h}"))
         print(git(p, "diff", "--stat", pin, h))
         print(git(p, "diff", pin, h, "--", ".", ":(exclude).SRCINFO", ":(exclude)*.zst", ":(exclude)*.tar.*"))
+        why = checks(p, pin, h)
+        print("CHECKS FLAG:\n" + "".join(f"  - {w}\n" for w in why) if why else "checks: nothing flagged")
         try:
             ans = input(f"move {name}'s pin to {h[:8]}? [y/N] ")
         except EOFError:
@@ -144,8 +202,29 @@ def cmd_changes(args):
         span = git(p, "rev-list", "--count", f"{o[0]}..{n[0]}", check=False).strip() or "?"
         print(f"{name}: {ov} -> {nv}  ({span} AUR commit(s); see them: tools/aur-pin bump {name} on a checkout at the OLD pin)")
 
+def cmd_auto(_):
+    lines = open(LIST).read().splitlines(keepends=True)
+    hold = {m.group(1): m.group(2) or "held" for m in (re.match(r"\s*(\S+)\s[^#]*#\s*hold\b:?\s*(.*)", l) for l in lines) if m}
+    cutoff, days = time.time() - COOLDOWN, COOLDOWN / 86400
+    for name, pin, base, lineno in entries():
+        if name in hold:
+            print(f"hold   {name}: {hold[name].strip()}"); continue
+        p = repo(base); when = seen(p); h = head(p)
+        if h == pin:
+            continue
+        ripe = [c for c in git(p, "rev-list", f"{pin}..{h}").split() if when.get(c, time.time()) <= cutoff]
+        if not ripe:
+            print(f"wait   {name}: {version(p, h)} is newer than {days:g} days here"); continue
+        span = f"{version(p, pin)} -> {version(p, ripe[0])}"
+        why = checks(p, pin, ripe[0])
+        if why:
+            print(f"flag   {name} {span}: {'; '.join(why)}   (look, then: tools/aur-pin bump {name})"); continue
+        lines[lineno - 1] = re.sub(r"\b[0-9a-f]{40}\b", ripe[0], lines[lineno - 1], count=1)
+        print(f"move   {name} {span}")
+    open(LIST, "w").write("".join(lines))
+
 if __name__ == "__main__":
-    cmds = {"status": cmd_status, "find": cmd_find, "plan": cmd_plan, "bump": cmd_bump, "changes": cmd_changes}
+    cmds = {"auto": cmd_auto, "status": cmd_status, "find": cmd_find, "plan": cmd_plan, "bump": cmd_bump, "changes": cmd_changes}
     if len(sys.argv) < 2 or sys.argv[1] not in cmds:
         sys.exit(__doc__)
     cmds[sys.argv[1]](sys.argv[2:])

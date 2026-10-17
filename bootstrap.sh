@@ -1406,7 +1406,9 @@ stage_hardware() {
 # reporting exactly <version>.
 aur_build_pinned() {
   local name=$1 pin=$2 base=$3 ver=$4 tmp f rc=0; local -a pkgs=()
-  tmp=$(mktemp -d)
+  # On disk, not /tmp: micro's /tmp is a 1.8 GB tmpfs, and claude-desktop (clone + src + pkg + .zst) filled it
+  # mid-compress on 2026-10-17 ("zstd: Disk quota exceeded"), failing a whole fpush.
+  tmp=$(mktemp -d -p "${XDG_CACHE_HOME:-$HOME/.cache}/aur-pin" build.XXXXXX)
   if ! git clone -q "${XDG_CACHE_HOME:-$HOME/.cache}/aur-pin/$base.git" "$tmp/$base" || ! git -C "$tmp/$base" checkout -q "$pin"; then
     warn "$name: cannot check out $base@${pin:0:8}"; rm -rf "$tmp"; return 1
   fi
