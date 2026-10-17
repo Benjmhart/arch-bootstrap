@@ -8,7 +8,7 @@
 # `# only: host[,host]` at a line's end installs it on those machines alone (bootstrap.sh stage 20).
 # ORDER MATTERS: a package depending on another AUR package comes after it (gtkmm before nitrogen).
 # First pins 2026-10-17: the newest version then installed anywhere in the fleet (carbon unreachable).
-gtkmm                                4b7d0537a5c345d5ba7783f1748cfbd27c8cfc06
+gtkmm                                68ca163d65cdbc5a49c69fd85ad97f807557aeff
 antigravity-cli                      dc01494d00b076563362460fa9ac3c9396ded29f
 bemoji                               90ed093966261043a7b0045b8fc0c8f339013e61
 claude-desktop                       ca627623637bcda2624ba4f9ff8889349078227a
@@ -19,8 +19,8 @@ handy-bin                            2f19d9a38b8585de2715a657e891c89a66013e3d
 i3lock-color                         886bdde4481265bef7461ff3f40a992250354ed8
 lightworks                           c8738dd8d57e25cda3adb1f9caf1f5dec5715497
 localsend-bin                        f35ec0d6bd56c3c9fc4611f91972c31c38210654
-nitrogen                             360d5a30480e36917bc7c222795ebd8ca9bae732
-otf-hasklig                          12f4872ff1eca9b913ef68ec5f97cb004c2d8875
+nitrogen                             616af0a3b4ceaeba9c0ef99999a585e8250a165c
+otf-hasklig                          4284295c6f73dcf3ffd60e00662159eb9a1f0a11
 pacmixer                             138b40fef079b75acc8a812811e2a7fde99cab3b
 python-elgato-streamdeck             8d104c56189aa8973453605b23a331d31e92a882   # only: beast-arch
 rambox-pro-bin                       f8bae0da2337e4777baca4ed20843926269eb05f
