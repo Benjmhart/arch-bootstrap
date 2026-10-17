@@ -2741,6 +2741,23 @@ EOF
 
 # --------------------------------------------------------------------------- 50
 
+# A recompile does not reach the running window manager: xmonad keeps the binary it
+# started from until it restarts, so a changed keybinding stayed dead after an fpush
+# (micro, 2026-10-17: Win+Shift+K still ran the removed ~/bin/keepass-unlock, two hours
+# after the revert landed). Restart it in place -- windows and layouts survive -- on the
+# display it runs on, read from its own environment (fleet-apply has no DISPLAY).
+xmonad_restart_running() {
+  local pid env
+  pid=$(pgrep -u "$USER" -o -x xmonad-x86_64-l) || { info "no xmonad running -- the next login starts the new one"; return 0; }
+  (( DRY_RUN )) && { info "(dry run) would restart xmonad (pid $pid)"; return 0; }
+  env=$(tr '\0' '\n' < "/proc/$pid/environ" | grep -E '^(DISPLAY|XAUTHORITY)=') || { warn "xmonad pid $pid has no DISPLAY -- restart it by hand (mod-q)"; return 0; }
+  if env $env xmonad --restart; then
+    did "running xmonad restarted in place (pid $pid)"
+  else
+    warn "xmonad --restart failed -- restart it by hand (mod-q)"
+  fi
+}
+
 stage_xmonad() {
   stage_banner "50 xmonad"
 
@@ -2801,6 +2818,7 @@ stage_xmonad() {
   if have xmonad; then
     if ( cd "$XMONAD_DIR" && xmonad --recompile ); then
       did "xmonad --recompile clean"
+      xmonad_restart_running
     else
       warn "recompile failed -- see $XMONAD_DIR/xmonad.errors"
       return 1
