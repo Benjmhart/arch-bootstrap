@@ -13,6 +13,7 @@
 /home/*/.password-store
 /home/*/.config/rclone
 /home/*/.config/restic
+/home/*/.local/share/restic-copy
 /home/*/.config/hcloud
 /home/*/.config/gh
 /home/*/.local/share/keyrings

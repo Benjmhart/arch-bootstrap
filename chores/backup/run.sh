@@ -13,7 +13,10 @@
 # compromised machine's key is revoked with `restic key remove` without touching the others (beast-arch 94).
 # Until a machine has one, this exits 75 (needs you) and says how to set it up.
 set -euo pipefail
-export RESTIC_REPOSITORY=${RESTIC_REPOSITORY:-"rclone:personal drive:restic"}
+# The repo's address is a file on micro, so moving it (Ben 2026-10-17: to a second Google account whose token only micro
+# holds, since every machine keeps the personal one) is one edit there, not a change timed against an fpush.
+repofile=$HOME/.config/restic/repository
+export RESTIC_REPOSITORY=${RESTIC_REPOSITORY:-$( [[ -s $repofile ]] && cat "$repofile" || echo "rclone:personal drive:restic")}
 export RESTIC_PASSWORD_FILE=${RESTIC_PASSWORD_FILE:-$HOME/.config/restic/password}
 here="$(dirname "$(readlink -f "$0")")"
 host=${BACKUP_HOST:-$(uname -n)} self=${FLEET_SELF_HOST:-micro} port=${BACKUP_PORT:-18731}
@@ -80,6 +83,20 @@ restic rewrite --retry-lock 2h --quiet --forget --exclude-file "$here/excludes"
 restic prune --retry-lock 2h --quiet
 # A weekly read of 5% of the data catches a damaged repo before the day a restore needs it.
 if [[ $(date +%u) == 7 ]]; then restic check --retry-lock 2h --read-data-subset=5%; fi
+
+# Copies (Ben 2026-10-17): micro's own disk every night, and an SD card labelled RESTIC whenever one is in (udiskie
+# mounts it at /run/media/$USER/RESTIC). Each is its own repo under micro's key, same chunker (dedups), same retention.
+for c in ${BACKUP_COPIES:-"$HOME/.local/share/restic-copy" "/run/media/$USER/RESTIC/restic"}; do
+  [[ -d $(dirname "$c") ]] || continue   # no card in
+  from=(--from-repo "$RESTIC_REPOSITORY" --from-password-file "$RESTIC_PASSWORD_FILE")
+  if [[ ! -f $c/config ]] && ! restic -r "$c" init --quiet "${from[@]}" --copy-chunker-params; then
+    echo "FAIL  copy $c: init"; failed=1; continue
+  fi
+  if restic -r "$c" copy --quiet "${from[@]}" &&
+     restic -r "$c" forget --prune --quiet --keep-daily 7 --keep-weekly 4 --keep-monthly 12; then
+    echo "copy  $c: $(restic -r "$c" snapshots --json | jq length) snapshots"
+  else echo "FAIL  copy $c"; failed=1; fi
+done
 
 # One line per machine; a machine with no snapshot in 3 days fails the run (off for days, or broken).
 now=$(date +%s)
