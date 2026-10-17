@@ -1438,12 +1438,33 @@ aur_build_pinned() {
       [[ -f $f && $(pacman -Qqp "$f" 2>/dev/null) == "$name" ]] && pkgs+=("$f")
     done < <(cd "$tmp/$base" && makepkg --packagelist)
     if (( ${#pkgs[@]} )); then run sudo pacman -U --noconfirm "${pkgs[@]}" || rc=1; else warn "$name: makepkg built no $name package"; rc=1; fi
+    if [[ $name == espanso-x11 ]] && (( ! rc )); then
+      f=$(cd "$tmp/$base" && makepkg --packagelist | grep '/espanso-wayland-[0-9]')
+      espanso_wayland_install "$f" "$ver" || rc=1
+    fi
   else
     warn "$name: makepkg failed"; rc=1
   fi
   rm -rf "$tmp"
   [[ $(pacman -Q "$name" 2>/dev/null | cut -d' ' -f2) == "$ver" ]] || { warn "$name: installed $(pacman -Q "$name" 2>/dev/null | cut -d' ' -f2), pin says $ver"; return 1; }
   did "$name $ver (pinned ${pin:0:8})"
+}
+
+# espanso's two builds side by side (station-maintenance beast-arch 91, Ben 2026-10-17). The X11 build is the
+# package; the Wayland one panics with NoCompositor outside a Wayland session (micro 2026-10-17) and the X11 one cannot
+# see sway's keys, and the two packages conflict (both own /usr/bin/espanso). So the Wayland binary is copied out of
+# the espanso-wayland package the same pinned build makes, into ESPANSO_WL, with the capability its post_install
+# sets (it reads /dev/input). The dotfiles' espanso-wayland.service runs it; sway starts that, .xinitrc the X11 one.
+ESPANSO_WL=/usr/local/lib/espanso-wayland
+espanso_wayland_install() {  # <espanso-wayland .pkg.tar.zst> <version>
+  local t; t=$(mktemp -d)
+  [[ -f $1 ]] && bsdtar -xf "$1" -C "$t" usr/bin/espanso && printf '%s\n' "$2" > "$t/version" \
+    && run sudo install -D -m755 "$t/usr/bin/espanso" "$ESPANSO_WL/espanso" \
+    && run sudo setcap cap_dac_override+p "$ESPANSO_WL/espanso" \
+    && run sudo install -m644 "$t/version" "$ESPANSO_WL/version"
+  local rc=$?; rm -rf "$t"
+  (( rc )) && { warn "espanso: Wayland build not installed at $ESPANSO_WL (from '${1:-no package}')"; return 1; }
+  did "espanso Wayland build $2 at $ESPANSO_WL/espanso"
 }
 
 stage_aur() {
@@ -1505,6 +1526,15 @@ stage_aur() {
     return 1
   fi
   if (( n )); then did "$n AUR package(s) built at their pins"; else ok "all ${#want[@]} AUR packages at their pins"; fi
+
+  # A machine whose espanso-x11 was already at its pin never went through the copy above: build once more for it.
+  if [[ " ${want[*]} " == *" espanso-x11 "* ]] && (( ! DRY_RUN )); then
+    ver=$(pacman -Q espanso-x11 2>/dev/null | cut -d' ' -f2)
+    if [[ $(cat "$ESPANSO_WL/version" 2>/dev/null) != "$ver" || $(getcap "$ESPANSO_WL/espanso" 2>/dev/null) != *cap_dac_override* ]]; then
+      read -r _ pin base _ < <(grep -m1 '^espanso-x11 ' "$SCRIPT_DIR/pkglist-aur.txt")
+      aur_build_pinned espanso-x11 "$pin" "$base" "$ver" || return 1
+    else ok "espanso Wayland build $ver at $ESPANSO_WL"; fi
+  fi
 
   if [[ " ${want[*]} " == *" rambox-pro-bin "* ]]; then
     install_rambox_perms_hook
