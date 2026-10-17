@@ -185,3 +185,6 @@ dracut
 steam                 # only: beast-arch
 lib32-vulkan-radeon   # only: beast-arch
 lib32-mesa            # only: beast-arch
+# adb/fastboot + udev rules, beast-arch only: phones are flashed from here (station-maintenance beast-arch 112).
+android-tools         # only: beast-arch
+android-udev          # only: beast-arch
