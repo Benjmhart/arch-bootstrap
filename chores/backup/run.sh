@@ -32,6 +32,12 @@ restic unlock --quiet
 restic forget --retry-lock 2h --quiet --host "$host" --keep-daily 7 --keep-weekly 4 --keep-monthly 12
 
 if [[ $host == "${FLEET_SELF_HOST:-micro}" ]]; then
+  # Old snapshots follow the CURRENT excludes (Ben 2026-10-17: backup cleanup "fully automatic"): rewrite drops
+  # excluded paths from every snapshot taken before they were excluded -- the credentials before d20c7bd, media-center's
+  # ~/media in 3d562073 -- and leaves the rest untouched (a no-op run says "no snapshots were modified"). prune below
+  # then deletes the data. ponytail: so a new exclude also strips history, which is the point for credentials and
+  # media; to keep old copies of something, stop excluding it rather than add it.
+  restic rewrite --retry-lock 2h --quiet --forget --exclude-file "$here/excludes"
   restic prune --retry-lock 2h --quiet
   # A weekly read of 5% of the data catches a damaged repo before the day a restore needs it.
   [[ $(date +%u) == 7 ]] && restic check --retry-lock 2h --read-data-subset=5%
