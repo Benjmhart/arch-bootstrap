@@ -13,9 +13,15 @@ Order matters: a package whose dependency is itself an AUR package comes after i
   aur-pin changes OLD NEW     the pins that differ between two copies of pkglist-aur.txt, as "name: old -> new"
                               (fpush's review calls it for every commit that touches the list)
   aur-pin auto                move every pin to the AUR's newest commit this cache first saw AUR_PIN_COOLDOWN_DAYS
-                              (3) or more days ago -- unless its line says "# hold: why", or the checks flag it
-                              (fpush runs it before the review, Ben 2026-10-17: no hand-kept pins). Prints
-                              move/flag/wait/hold per package; a flagged one waits for a hand `bump`
+                              (3) or more days ago, unless its line says "# hold: why" (fpush runs it before the
+                              review; Ben 2026-10-17: "always be on the latest", no hand approvals). The checks
+                              sort the change three ways, and none of them asks Ben:
+                                avoid  looks like a compromise (adds npm/curl/..., a new download host, a SKIP
+                                       checksum, rewritten history): the pin stays until the AUR drops it
+                                late   a new committer, new maintainer lines, a changed .install or patch: moves
+                                       once first seen AUR_PIN_SOFT_DAYS (14) ago, time for a hijack to be caught
+                                move   anything else, and a "late" change that runs nothing (only comments,
+                                       whitespace or licence files differ)
 
 Repos are cached bare under ~/.cache/aur-pin. AUR_URL overrides https://aur.archlinux.org (tests)."""
 import os, re, subprocess, sys, time
@@ -23,6 +29,7 @@ import os, re, subprocess, sys, time
 AUR = os.environ.get("AUR_URL", "https://aur.archlinux.org")
 CACHE = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")), "aur-pin")
 COOLDOWN = float(os.environ.get("AUR_PIN_COOLDOWN_DAYS", "3")) * 86400
+SOFT = float(os.environ.get("AUR_PIN_SOFT_DAYS", "14")) * 86400
 # Tokens an AUR update may not ADD to a file that did not already use them: they fetch or run code no checksum
 # pins, or reach for root, keys or persistence. The June 2026 "Atomic Arch" hijacks (orphans adopted by a new
 # account, `npm install atomic-lockfile` / `bun install js-digest` added to PKGBUILD or .install) had this shape.
@@ -66,32 +73,40 @@ def seen(path):
         open(f, "a").writelines(new)
     return {c: int(t) for c, t in known.items()}
 
+def inert(text):
+    """A file as the build sees it: comment lines and all whitespace gone."""
+    return "".join("".join(l.split()) for l in text.splitlines() if not l.lstrip().startswith("#"))
+
 def checks(p, pin, new):
-    """Why moving pin -> new needs a human: [] when nothing is flagged."""
+    """(hard, soft): reasons to avoid the move pin -> new, and reasons to let it age SOFT first."""
     if subprocess.run(["git", "--git-dir", p, "merge-base", "--is-ancestor", pin, new]).returncode:
-        return ["the AUR history was rewritten (the pin is not an ancestor)"]
-    why = []
+        return ["the AUR history was rewritten (the pin is not an ancestor)"], []
+    hard, soft, runs = [], [], False
     old = set(git(p, "log", "--format=%an <%ae>", pin).splitlines())
-    why += [f"new committer {a}" for a in sorted(set(git(p, "log", "--format=%an <%ae>", f"{pin}..{new}").splitlines()) - old)]
+    soft += [f"new committer {a}" for a in sorted(set(git(p, "log", "--format=%an <%ae>", f"{pin}..{new}").splitlines()) - old)]
     for f in git(p, "diff", "--name-only", pin, new).splitlines():
-        if f not in QUIET and not re.fullmatch(r"LICENSE.*|LICENSES/.*|REUSE\.toml", f):    # licence files run nothing
-            why.append(f"changes {f}")
+        if re.fullmatch(r"LICENSE.*|LICENSES/.*|REUSE\.toml|\.gitignore|\.nvchecker\.toml", f):    # run nothing
+            continue
+        a, b = git(p, "show", f"{pin}:{f}", check=False), git(p, "show", f"{new}:{f}", check=False)
+        runs |= inert(a) != inert(b)
+        if f not in QUIET:
+            soft.append(f"changes {f}")
         if f == ".SRCINFO":
             continue
-        had = {m.group(0) for m in RISKY.finditer(git(p, "show", f"{pin}:{f}", check=False))}
+        had = {m.group(0) for m in RISKY.finditer(a)}
         added = [l[1:] for l in git(p, "diff", "-U0", pin, new, "--", f).splitlines() if l.startswith("+") and not l.startswith("+++")]
-        why += [f"{f} adds '{t}'" for t in sorted({m.group(0) for l in added for m in RISKY.finditer(l)} - had)]
+        hard += [f"{f} adds '{t}'" for t in sorted({m.group(0) for l in added for m in RISKY.finditer(l)} - had)]
         if f == "PKGBUILD" and any(re.match(r"#\s*(Maintainer|Contributor)", l) for l in added):
-            why.append("PKGBUILD changes its Maintainer/Contributor lines")
+            soft.append("PKGBUILD changes its Maintainer/Contributor lines")
     def srcinfo(c):
         s = git(p, "show", f"{c}:.SRCINFO")
         return ({m.group(1) for m in re.finditer(r"^\s*source\w*\s*=\s*(?:[^:\s]*::)?(?:\w+\+)?\w+://([^/\s]+)", s, re.M)},
                 len(re.findall(r"^\s*\w+sums\w*\s*=\s*SKIP\s*$", s, re.M)))
     (h0, s0), (h1, s1) = srcinfo(pin), srcinfo(new)
-    why += [f"downloads from a new host {h}" for h in sorted(h1 - h0)]
+    hard += [f"downloads from a new host {h}" for h in sorted(h1 - h0)]
     if s1 > s0:
-        why.append("more sources without a checksum (SKIP)")
-    return why
+        hard.append("more sources without a checksum (SKIP)")
+    return hard, soft if runs else []
 
 def version(path, commit):
     """[epoch:]pkgver-pkgrel from .SRCINFO at commit (the pkgbase section)."""
@@ -162,8 +177,8 @@ def cmd_bump(names):
         print(git(p, "log", "--format=  %h %ad %an  %s", "--date=short", f"{pin}..{h}"))
         print(git(p, "diff", "--stat", pin, h))
         print(git(p, "diff", pin, h, "--", ".", ":(exclude).SRCINFO", ":(exclude)*.zst", ":(exclude)*.tar.*"))
-        why = checks(p, pin, h)
-        print("CHECKS FLAG:\n" + "".join(f"  - {w}\n" for w in why) if why else "checks: nothing flagged")
+        hard, soft = checks(p, pin, h)
+        print("".join(f"  avoid: {w}\n" for w in hard) + "".join(f"  late:  {w}\n" for w in soft) or "checks: nothing flagged")
         try:
             ans = input(f"move {name}'s pin to {h[:8]}? [y/N] ")
         except EOFError:
@@ -216,9 +231,12 @@ def cmd_auto(_):
         if not ripe:
             print(f"wait   {name}: {version(p, h)} is newer than {days:g} days here"); continue
         span = f"{version(p, pin)} -> {version(p, ripe[0])}"
-        why = checks(p, pin, ripe[0])
-        if why:
-            print(f"flag   {name} {span}: {'; '.join(why)}   (look, then: tools/aur-pin bump {name})"); continue
+        hard, soft = checks(p, pin, ripe[0])
+        if hard:
+            print(f"avoid  {name} {span}: {'; '.join(hard + soft)}   (stays until the AUR drops it)"); continue
+        if soft and when.get(ripe[0], time.time()) > time.time() - SOFT:
+            due = time.strftime("%Y-%m-%d", time.localtime(when.get(ripe[0], time.time()) + SOFT))
+            print(f"late   {name} {span}: {'; '.join(soft)}   (moves {due})"); continue
         lines[lineno - 1] = re.sub(r"\b[0-9a-f]{40}\b", ripe[0], lines[lineno - 1], count=1)
         print(f"move   {name} {span}")
     open(LIST, "w").write("".join(lines))

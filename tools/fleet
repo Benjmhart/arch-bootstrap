@@ -17,7 +17,7 @@
 #                                    change (the kernel, mesa, xorg... listed); y commits the new
 #                                    date. Then every held package (arch-bootstrap `holds`, and
 #                                    local ~/.config/fleet/hold) with what the date has. Then the AUR
-#                                    pins move themselves (aur-pin auto; held/flagged ones stay)
+#                                    pins move themselves (aur-pin auto; held/avoided ones stay)
 #                                 3. review, per repo (arch-bootstrap, dotfiles, secrets): every new
 #                                    commit with its time, author, subject and files, the risky files
 #                                    marked. Exclude any by number: micro reverts them in a throwaway
@@ -231,13 +231,13 @@ bump_date() {  # offer the newest archive day; a yes commits it to arch-bootstra
 }
 
 # AUR pins move themselves (Ben 2026-10-17: "I don't want to be manually updating pins"): aur-pin auto moves each to
-# the newest AUR commit micro first saw 3+ days ago, unless the line says "# hold" or its checks flag the change
-# (new committer, an added npm/bun/curl/..., a new download host, a SKIP checksum, a changed .install). The commit
+# the newest AUR commit micro first saw 3+ days ago, unless the line says "# hold". A change that looks like a compromise (an added npm/bun/curl/..., a new download
+# host, a SKIP checksum) is avoided; a new committer or a changed .install waits 14 days (aur-pin's docstring). The commit
 # is pushed and shows in the review like any other, so it can still be excluded. micro's own reviewed aur-pin runs.
 bump_aur() {
   local tmp out n
   gitr ab show origin/main:pkglist-aur.txt >/dev/null 2>&1 || return 0
-  echo; echo "=== AUR pins: each moves to the newest AUR commit seen ${AUR_PIN_COOLDOWN_DAYS:-3}+ days ago, unless held or flagged"
+  echo; echo "=== AUR pins: each moves to the newest AUR commit seen ${AUR_PIN_COOLDOWN_DAYS:-3}+ days ago, unless held or avoided"
   tmp=$(mktemp -d)
   gitr ab worktree add -q --detach "$tmp" origin/main || die "arch-bootstrap: worktree failed"
   if ! out=$(AUR_PIN_LIST="$tmp/pkglist-aur.txt" "$here/aur-pin" auto 2>&1); then

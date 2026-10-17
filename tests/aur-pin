@@ -48,11 +48,14 @@ export AUR_PIN_COOLDOWN_DAYS=0
 clean=$(up PKGBUILD 'build() { make; }')
 check "auto: a clean update moves the pin"        'ap auto | grep -q "^move   foo" && grep -q "^foo $clean" "$t/list"'
 npm=$(up PKGBUILD 'prepare() { npm install atomic-lockfile; }')
-check "auto: an added npm install is flagged, pin kept" 'ap auto | grep -q "^flag   foo.*PKGBUILD adds .npm." && grep -q "^foo $clean" "$t/list"'
-printf 'foo %s\n' "$npm" > "$t/list"; stranger=$(up PKGBUILD '# 2' Mallory)
-check "auto: a new committer is flagged"           'ap auto | grep -q "new committer Mallory <Mallory@x>"'
+check "auto: an added npm install is avoided, pin kept" 'ap auto | grep -q "^avoid  foo.*PKGBUILD adds .npm." && grep -q "^foo $clean" "$t/list"'
+printf 'foo %s\n' "$npm" > "$t/list"; stranger=$(up PKGBUILD '#   Maintainer: Mallory' Mallory)
+check "auto: a new committer touching only comments moves" 'ap auto | grep -q "^move   foo" && grep -q "^foo $stranger" "$t/list"'
+odd=$(up PKGBUILD 'package() { :; }' Mallory2)
+check "auto: a new committer changing the build is late" 'ap auto | grep -q "^late   foo.*new committer Mallory2.*(moves 20" && grep -q "^foo $stranger" "$t/list"'
+check "auto: ... and moves once SOFT days have passed" 'AUR_PIN_SOFT_DAYS=0 ap auto | grep -q "^move   foo" && grep -q "^foo $odd" "$t/list"'
 inst=$(up foo.install 'post_install() { :; }')
-check "auto: a changed .install is flagged"        'ap auto | grep -q "changes foo.install"'
+check "auto: a changed .install is late"           'ap auto | grep -q "^late   foo.*changes foo.install"'
 printf 'foo %s  # hold: broke at 1.1\n' "$npm" > "$t/list"
 check "auto: '# hold' keeps the pin"               'ap auto | grep -q "^hold   foo: broke at 1.1" && grep -q "^foo $npm" "$t/list"'
 printf 'foo %s\n' "$npm" > "$t/list"; AUR_PIN_COOLDOWN_DAYS=1
