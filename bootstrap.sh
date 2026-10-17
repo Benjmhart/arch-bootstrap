@@ -4084,6 +4084,8 @@ exit 1' "sudo: password-only under ssh or sudo -S"; then
   # Screen lock (Ben, 2026-10-16): Enter then touch; with no key plugged in pam_u2f fails at once and
   # the typed password is checked. No guard: i3lock is always local.
   [[ -f /etc/pam.d/i3lock ]] && pam_prepend /etc/pam.d/i3lock "screen lock: YubiKey touch, password fallback" "auth\t\tsufficient\t$u2f"
+  # The same for swaylock, the sway session's locker (station-maintenance beast-arch 44).
+  [[ -f /etc/pam.d/swaylock ]] && pam_prepend /etc/pam.d/swaylock "sway screen lock: YubiKey touch, password fallback" "auth\t\tsufficient\t$u2f"
   return 0
 }
 

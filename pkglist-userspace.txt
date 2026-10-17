@@ -10,6 +10,7 @@ bubblewrap
 cbatticon
 chromium
 clang
+cliphist
 clipmenu
 cmake
 direnv
@@ -34,6 +35,7 @@ flameshot
 flowblade
 fontconfig
 freetype2
+fuzzel
 fzf
 gcr
 gdu
@@ -44,6 +46,7 @@ glow
 gnome-keyring
 go
 godot
+grim
 gst-plugin-pipewire
 inotify-tools
 jq
@@ -111,10 +114,15 @@ rustup
 shellcheck
 shfmt
 signal-desktop
+slurp
 squashfs-tools
 stack
 stalonetray
 starship
+sway
+swaybg
+swayidle
+swaylock
 tailscale
 tealdeer
 terminus-font
@@ -139,12 +147,16 @@ vivaldi
 vlc
 vlc-plugin-ffmpeg
 volumeicon
+waybar
 wget
 wireless-regdb
 wireplumber
+wl-clipboard
+wtype
 x11-ssh-askpass
 xclip
 xdg-desktop-portal-gtk
+xdg-desktop-portal-wlr
 xdotool
 xmobar
 xmonad
@@ -155,6 +167,7 @@ xorg-xinit
 xorg-xrandr
 xorg-xset
 xorg-xsetroot
+xorg-xwayland
 xss-lock
 yazi
 yubikey-manager
