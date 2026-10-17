@@ -10,10 +10,10 @@
 gtkmm                                4b7d0537a5c345d5ba7783f1748cfbd27c8cfc06
 antigravity-cli                      dc01494d00b076563362460fa9ac3c9396ded29f
 bemoji                               90ed093966261043a7b0045b8fc0c8f339013e61
-claude-desktop                       20669f623d1ec1e14848c0220624eba4375b344b
+claude-desktop                       ca627623637bcda2624ba4f9ff8889349078227a
 dracula-gtk-theme                    3f4c6f263e23a97a63e5be911474541053946456
 espanso-x11                          f66257bbb59116dea6d002ab486be930c06c6d19 espanso
-google-chrome                        22f911574697bc9a89160773f0f6c7828ab3d06d
+google-chrome                        936bbd2d3fd15db29ed7318f9df04b0926f73136
 handy-bin                            2f19d9a38b8585de2715a657e891c89a66013e3d
 i3lock-color                         886bdde4481265bef7461ff3f40a992250354ed8
 lightworks                           c8738dd8d57e25cda3adb1f9caf1f5dec5715497
@@ -26,5 +26,5 @@ rambox-pro-bin                       f8bae0da2337e4777baca4ed20843926269eb05f
 streamdeck-ui                        0d20461e6f26dedaee365f31955e095f2eab1bd2   # only: beast-arch
 ventoy-bin                           b185aeda22473076cc0cb7d330bc8bc0b43c8a0e
 xdg-desktop-portal-termfilechooser   81e819b47bcaf14e59cdc4dab9e1b9187210f7b7
-yay                                  a36cea074d8851a66fb7cd50a396876f8cdf4f07
+yay                                  cb43f84828ab4f9700f7c6f9c6d7a923d4cfaff0
 zoom                                 9cf1e9686715d0677db2eb4106c2d59aee6d7ca0
