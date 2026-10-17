@@ -22,7 +22,7 @@ cat > "$t/ab-seed/bootstrap.sh" <<'EOF'
 { echo "args: $*"; echo "ignore: ${PACMAN_IGNORE:-}"; [ -t 0 ] && echo "tty: yes" || echo "tty: no"; sudo -n true && echo "sudo: cached" || echo "sudo: NOT cached"; } >> "$HOME/bootstrap.calls"
 [ ! -e "$HOME/bootstrap.fail" ]
 EOF
-mkdir -p "$t/ab-seed/tools"; cp "$root/tools/fleet-apply" "$root/tools/fleet" "$t/ab-seed/tools/"
+mkdir -p "$t/ab-seed/tools"; cp "$root/tools/fleet-apply" "$root/tools/fleet" "$root/tools/secret-scan" "$t/ab-seed/tools/"
 printf '#!/bin/sh\necho "ak: $*" >> "$HOME/ak.calls"\n' > "$t/ab-seed/tools/authorized-keys"
 chmod +x "$t/ab-seed/bootstrap.sh" "$t/ab-seed/tools/"*
 git -C "$t/ab-seed" add -A; git -C "$t/ab-seed" commit -qm "ab one"; git -C "$t/ab-seed" push -q origin main
@@ -170,9 +170,12 @@ check "...snapshot recorded"                                  '[[ $(wc -l < "$SN
 rm -f "$t/ticket"; : > "$t/ssh.log"; printf 'y\n' > "$t/answers"   # nothing new anywhere: only the confirm
 out=$(echo pw-ok | fleet push 2>&1); rc=$?
 check "push again, nothing new: all skipped, no new snapshot line" '(( rc == 0 )) && grep -q "nothing new" <<<"$out" && grep -q "^h1 .*skip (already at this snapshot)" <<<"$out" && ! grep -q " apply" "$t/ssh.log" && [[ $(wc -l < "$SN") == 1 ]]'
-dot4=$(commit "$t/dot-seed" .zshrc rc4 "dot four"); rm -f "$t/ticket"; printf 'q\n' > "$t/answers"   # dotfiles prompt: q
+fake="-----""BEGIN OPENSSH PRIVATE KEY-----"   # in two pieces, so this file does not trip secret-scan itself
+dot4=$(commit "$t/dot-seed" .config/app/key "$fake" "dot four"); rm -f "$t/ticket"; printf 'q\n' > "$t/answers"   # dotfiles prompt: q
 out=$(echo pw-ok | fleet push 2>&1); rc=$?
 check "q at the review: aborted, nothing applied"             '(( rc != 0 )) && grep -q "aborted at review" <<<"$out" && [[ $(dotat self) == "$dot3" && $(wc -l < "$SN") == 1 ]]'
+check "a key in a dotfiles commit is flagged by file and kind" 'grep -q "!! POSSIBLE SECRET  .config/app/key: private key block" <<<"$out" && grep -q "1 POSSIBLE SECRET(S) flagged" <<<"$out"'
+check "...and the key text itself is not printed"             '! grep -q "OPENSSH PRIVATE" <<<"$out"'
 rm -f "$t/ticket"; : > "$t/ssh.log"
 out=$(echo wrong | fleet push 2>&1); rc=$?
 check "wrong sudo password: stops before any ssh"             '(( rc != 0 )) && [[ ! -s $t/ssh.log ]]'

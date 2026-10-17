@@ -94,6 +94,7 @@ risk() {
 # the flow): every git call here runs with GIT_PAGER=cat.
 export GIT_PAGER=cat PAGER=cat
 declare -A HEADS=() CMT=()    # HEADS[ab]=sha; CMT[A2]=sha
+SECRET_HITS=0
 letter() { case $1 in ab) echo A ;; dot) echo D ;; sec) echo S ;; esac; }
 repo_of() { case $1 in A) echo ab ;; D) echo dot ;; S) echo sec ;; esac; }
 
@@ -113,6 +114,13 @@ list_repo() {  # list_repo <repo> <base>: print its new commits; fills HEADS and
     mapfile -t files < <(gitr "$r" show --format= --name-only "$c")
     for f in "${files[@]:0:6}"; do t=$(risk "$r" "$f"); echo "        $f${t:+    <- $t}"; done
     (( ${#files[@]} > 6 )) && echo "        ... and $(( ${#files[@]} - 6 )) more"
+    # Secrets that should not be in git (beast-arch 76): a KeeShare key and a browser profile went into the dotfiles
+    # unflagged. The secrets repo is where they belong, so it is not scanned. --no-renames: a moved file's content
+    # counts as added (the 2026-10-16 leak was a rename). Names the file and the kind, never the text.
+    if [[ $r != sec ]]; then
+      while IFS= read -r t; do echo "        !! POSSIBLE SECRET  $t"; (( ++SECRET_HITS )); done \
+        < <(gitr "$r" show --no-renames --format= -p "$c" | "$here/secret-scan")
+    fi
   done
 }
 
@@ -138,6 +146,7 @@ review_all() {  # review_all <base-ab> <base-dot> <base-sec>: one screen, one pr
   local ans tok r k; local -A ex=()
   list_repo ab "$1"; list_repo dot "$2"; list_repo sec "$3"
   if (( ${#CMT[@]} == 0 )); then echo; ab=${HEADS[ab]} dot=${HEADS[dot]} sec=${HEADS[sec]}; return; fi
+  (( SECRET_HITS )) && printf '\n!!  %d POSSIBLE SECRET(S) flagged above. "d <id>" shows the commit; exclude it unless it is a false alarm.\n' "$SECRET_HITS"
   while :; do
     printf '\nexclude which? e.g. "A2 S1"; "d A2" shows one (no pager); Enter = keep all; q = abort: '
     IFS= read -r ans <&3 || die "no answer -- aborted, nothing applied"
