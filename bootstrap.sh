@@ -4076,8 +4076,10 @@ fallback_options="-S autodetect"' "mkinitcpio: fallback image only" && rebuild=1
   if (( DRY_RUN )); then info "(dry run) would build the images and regenerate $cfg if needed"; return 0; fi
 
   # The images.
-  dracut_ok() { sudo lsinitrd "$img" 2>/dev/null | grep -q libcryptsetup-token-systemd-fido2 \
-    && sudo lsinitrd "$img" 2>/dev/null | grep -q 'systemd-cryptsetup$'; }
+  # The listing goes into a variable first: piped into `grep -q`, lsinitrd dies of SIGPIPE at the first match
+  # and pipefail makes that a failure (micro, 2026-10-16 20:43: a good image refused).
+  dracut_ok() { local l; l=$(sudo lsinitrd "$img" 2>/dev/null) || return 1
+    grep -q libcryptsetup-token-systemd-fido2 <<<"$l" && grep -q 'systemd-cryptsetup$' <<<"$l"; }
   if (( rebuild )) || ! dracut_ok || ! sudo test -f /boot/initramfs-linux-fallback.img; then
     local kver; kver=$(pacman -Qlq linux | grep -m1 '/vmlinuz$'); kver=${kver%/vmlinuz}; kver=${kver##*/}
     run sudo dracut --force "$img" "$kver" && run sudo mkinitcpio -p linux \
