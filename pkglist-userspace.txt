@@ -53,6 +53,8 @@ jq
 kdenlive
 keepassxc
 kmscon
+kvantum
+kvantum-qt5
 less
 libfido2
 libisoburn
@@ -89,6 +91,7 @@ pacman-contrib
 pam-u2f
 pandoc-cli
 pango
+papirus-icon-theme
 pastebinit
 patchelf
 picom

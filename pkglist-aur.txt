@@ -1,6 +1,7 @@
 antigravity-cli
 bemoji
 claude-desktop
+dracula-gtk-theme
 espanso-x11
 google-chrome
 handy-bin

@@ -3263,6 +3263,25 @@ keepassxc_seed_config() {
   did "keepassxc.ini seeded from keepassxc.defaults.ini"
 }
 
+# Dracula cursors (station-maintenance beast-arch 44): the theme's own release, pinned by checksum, into
+# ~/.local/share/icons (on libXcursor's default path, so X and Wayland both find it). No Arch package exists
+# except an unpinned -git AUR build. GTK comes from dracula-gtk-theme (AUR, the same release); the dotfiles
+# select both (environment.d/90-dracula.conf, gtk-3.0/4.0, .icons/default).
+install_dracula_cursors() {
+  local dir="$HOME/.local/share/icons/Dracula-cursors" tmp
+  local url=https://github.com/dracula/gtk/releases/download/v4.0.0/Dracula-cursors.tar.xz
+  local sum=81780e218fdda616016aedf42e731c86ed16290b9753a21616642023821b85f5
+  [[ -f $dir/index.theme ]] && { ok "Dracula cursors already installed"; return 0; }
+  (( DRY_RUN )) && { info "(dry run) would install Dracula cursors to $dir"; return 0; }
+  tmp=$(mktemp)
+  if curl -fsSL -o "$tmp" "$url" && echo "$sum  $tmp" | sha256sum -c --quiet; then
+    mkdir -p "${dir%/*}" && tar -xJf "$tmp" -C "${dir%/*}" && did "Dracula cursors installed ($dir)"
+  else
+    warn "Dracula cursors: download or checksum failed -- cursor stays the default"
+  fi
+  rm -f "$tmp"
+}
+
 # Chores: regular jobs as systemd user timers (chores/, beast-arch task 69). chore-run
 # and chores go on PATH; every chore shares the chore@.service template, and only the
 # timers named in CHORES are enabled. `systemctl --user link` rather than copying, so a
@@ -4253,6 +4272,7 @@ stage_services() {
   install_rclone_conf
   espanso_skip_wizard
   keepassxc_seed_config
+  install_dracula_cursors
   manage_tmp_storage
   install_system_dropins
   setup_yubikey
