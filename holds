@@ -5,3 +5,4 @@
 # ONE package per line: dropping one hold can never take another with it (task 87's hold was
 # lost exactly that way, on a shared line). `fleet push` lists every hold with the version the
 # new date carries; when that differs from the one that broke, try it and drop the line.
+beast-arch python-xcffib 1.7.0-1 -- 1.7.0 ships a compiled FFI that cairocffi 1.7.1 cannot ffi.include(), so streamdeck-ui dies at import (TypeError). Held at 1.6.2-1, station-maintenance beast-arch 110
