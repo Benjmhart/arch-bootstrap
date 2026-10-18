@@ -12,8 +12,9 @@
 #             (IdentitiesOnly) to ~/.ssh/config. Then commit + push secrets (still on the old
 #             account key at this point), and run `register` on beast-arch or carbon.
 #   register  on beast-arch/carbon (needs `gh`, repo scope). Adds every ssh/deploy/*/*.pub
-#             to its repo as a WRITE deploy key, titled "<host> (arch-bootstrap deploy-keys)".
-#             Keys GitHub already has are skipped.
+#             to its repo as a WRITE deploy key, titled "<host> (arch-bootstrap deploy-keys)", except
+#             DEPLOY_READONLY ("<host>/<repo> ...") as read-only. A registered key with the wrong access is
+#             deleted and added again; keys GitHub already has right are skipped.
 #   switch    on the machine. Points each local clone whose origin is
 #             git@github.com:<owner>/<repo>.git at git@github-<repo>:<owner>/<repo>.git --
 #             only after `git ls-remote` through the alias works (i.e. the key is registered).
@@ -67,18 +68,26 @@ setup)
   ;;
 register)
   shopt -s nullglob
+  # Read-only, not write (station-maintenance beast-arch 104, 2026-10-18): media-center is a dirty machine, and write
+  # access to arch-bootstrap is code fpush runs as root everywhere, to secrets the vault's repo. Its secrets commits
+  # (rare: peer keys) are made from micro instead.
+  ro_keys=${DEPLOY_READONLY:-"media-center/secrets media-center/arch-bootstrap"}
   for pub in "$reg"/*/*.pub; do
     h=$(basename "$(dirname "$pub")"); name=$(basename "$pub" .pub)
     r=$(awk '{print $NF}' "$pub")            # comment is "<host> deploy <owner/repo>"
     [[ $r == */"$name" ]] || { echo "skip  $pub: comment does not name owner/$name"; continue; }
     blob=$(awk '{print $2}' "$pub")
-    if gh api "repos/$r/keys" -q '.[].key' | grep -qF "$blob"; then
-      echo "ok    $r: $h's key already registered"
-    else
-      gh api -X POST "repos/$r/keys" -f title="$h (arch-bootstrap deploy-keys)" \
-        -f key="$(awk '{print $1, $2}' "$pub")" -F read_only=false >/dev/null
-      echo "did   $r: registered $h's key (write)"
+    ro=false; [[ " $ro_keys " == *" $h/$name "* ]] && ro=true
+    have=$(gh api "repos/$r/keys" -q ".[] | select(.key | contains(\"$blob\")) | \"\(.id) \(.read_only)\"")
+    if [[ -n $have && ${have#* } == "$ro" ]]; then
+      echo "ok    $r: $h's key already registered (read_only=$ro)"
+      continue
     fi
+    # GitHub cannot change a key's access in place, and refuses a key it already has: delete, then add.
+    [[ -n $have ]] && gh api -X DELETE "repos/$r/keys/${have%% *}" >/dev/null
+    gh api -X POST "repos/$r/keys" -f title="$h (arch-bootstrap deploy-keys$([[ $ro == true ]] && echo ', read-only'))" \
+      -f key="$(awk '{print $1, $2}' "$pub")" -F read_only=$ro >/dev/null
+    echo "did   $r: registered $h's key (read_only=$ro)"
   done
   ;;
 switch|status)
