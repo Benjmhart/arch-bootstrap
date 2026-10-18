@@ -3448,11 +3448,18 @@ ssh_tailnet_peers() {
 
   local begin="# >>> arch-bootstrap: tailnet peers (stage 60 -- edit SSH_PEERS, not this block)"
   local end="# <<< arch-bootstrap: tailnet peers"
-  local want="$begin" peer self; self="$(uname -n)"
+  local want="$begin" peer self k sk=(); self="$(uname -n)"
+  # YubiKey peer keys (touch per connection; micro, station-maintenance beast-arch 104 gap 5) go first, so the
+  # passphrase-protected $PEER_KEY is only the fallback when no YubiKey is plugged in. A shared connection keeps one
+  # touch good for 10 minutes per peer.
+  for k in "$HOME"/.ssh/id_ed25519_sk_peer_*; do [[ -f $k && $k != *.pub ]] && sk+=("$k"); done
   for peer in $SSH_PEERS; do
     [[ $peer == "$self" ]] && continue
     want+=$'\n'"Host $peer"$'\n'"    HostName $peer.$suffix"$'\n'"    HostKeyAlias $peer"
-    [[ -f $PEER_KEY ]] && want+=$'\n'"    IdentityFile $PEER_KEY"$'\n'"    IdentitiesOnly yes"
+    for k in "${sk[@]}"; do want+=$'\n'"    IdentityFile $k"; done
+    [[ -f $PEER_KEY ]] && want+=$'\n'"    IdentityFile $PEER_KEY"
+    { (( ${#sk[@]} )) || [[ -f $PEER_KEY ]]; } && want+=$'\n'"    IdentitiesOnly yes"
+    (( ${#sk[@]} )) && want+=$'\n'"    ControlMaster auto"$'\n'"    ControlPath ~/.ssh/cm-%C"$'\n'"    ControlPersist 10m"
   done
   want+=$'\n'"$end"
 
