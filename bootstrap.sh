@@ -3549,6 +3549,19 @@ enable_system_units() {
 # /tmp is emptied by the kernel at every boot. On disk, /tmp persists across
 # reboots and cleanup falls to systemd-tmpfiles, which ages files out rather than
 # truncating the tree. Expect stale files to accumulate where none did before.
+# TMPDIR is ~/.cache/tmp on /home, not /tmp on the root filesystem (dotfiles: .zshenv, environment.d, and
+# user-tmpfiles.d/tmp.conf clearing it after 10 days; station-maintenance beast-arch 116). The user instance's clean
+# timer is what applies that age; it ships disabled.
+user_tmp_cleanup() {
+  [[ -f $HOME/.config/user-tmpfiles.d/tmp.conf ]] || return 0
+  if systemctl --user is-enabled --quiet systemd-tmpfiles-clean.timer 2>/dev/null; then
+    ok "user tmpfiles clean timer on (TMPDIR aged out after 10 days)"
+  else
+    run systemctl --user enable --now systemd-tmpfiles-clean.timer
+    did "user tmpfiles clean timer on"
+  fi
+}
+
 manage_tmp_storage() {
   local unit=tmp.mount
   local state
@@ -4355,6 +4368,7 @@ stage_services() {
   keepassxc_seed_config
   install_dracula_cursors
   manage_tmp_storage
+  user_tmp_cleanup
   install_system_dropins
   setup_yubikey
   setup_boot
