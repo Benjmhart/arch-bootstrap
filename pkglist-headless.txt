@@ -37,6 +37,7 @@ uv
 vim
 wget
 yazi
+ouch
 zip
 zoxide
 zsh

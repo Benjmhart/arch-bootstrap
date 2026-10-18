@@ -172,6 +172,7 @@ xorg-xsetroot
 xorg-xwayland
 xss-lock
 yazi
+ouch
 yubikey-manager
 zip
 zoxide
