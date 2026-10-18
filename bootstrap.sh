@@ -3959,7 +3959,8 @@ AttrPressureRange=56:54" "touchpad pressure threshold for the ThinkPad X131e (ne
 # the tailnet policy is the access control there), docker's bridges, ICMP,
 # tailscale's direct UDP port, mDNS (cast discovery) and DHCP replies.
 # FIREWALL_LAN_TCP / FIREWALL_LAN_UDP open ports to the LAN; profile media-center
-# adds 8010/8011 (Jellyfin's 8096 and 7359 went with it, 2026-10-15): catt serves
+# adds 8010/8011 (Jellyfin's 8096 and 7359 went with it, 2026-10-15), every host but a no-inbound one adds
+# LocalSend's 53317 (tcp+udp; beast-arch 96). catt serves
 # the media stream (8010) and the subtitle file (8011)
 # over HTTP and the TV connects IN to fetch them (media-system catt cast).
 #
@@ -3983,6 +3984,9 @@ setup_firewall() {
     warn "kernel $(uname -r) is running but its modules are gone (upgraded, not rebooted) -- reboot, then --only services for the firewall"; return 0; }
   local tcp=$FIREWALL_LAN_TCP udp=$FIREWALL_LAN_UDP extra=""
   profile_on media-center && tcp+=" 8010 8011"
+  # LocalSend (beast-arch 96; Ben 2026-10-18: "open port 53317 to the home network"): discovery (UDP multicast) and
+  # transfers (TCP) both arrive on 53317. Not on a no-inbound host (micro): it sends only.
+  no_inbound || { tcp+=" 53317"; udp+=" 53317"; }
   tcp="$(echo $tcp | tr ' ' ',')"; udp="$(echo $udp | tr ' ' ',')"
   [[ -n $tcp ]] && extra+="
     tcp dport { $tcp } accept"
