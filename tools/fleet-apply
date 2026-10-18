@@ -193,6 +193,9 @@ if [[ -d $DOTDIR ]]; then
   move dotfiles "${FLEET_DOT_BRANCH:-master}" "$dot" 0 git --git-dir="$DOTDIR" --work-tree="$HOME"
 fi
 move secrets "${FLEET_SEC_BRANCH:-master}" "$sec" 1 git -C "$SECRETS"
+# git writes a changed file with the umask (644), so the vault turned world-readable on beast-arch when 19a3c2e was
+# fast-forwarded there (2026-10-17 09:59; station-maintenance beast-arch 104). KeePassXC keeps 600 when it saves.
+[[ -f $SECRETS/$VAULT ]] && chmod 600 "$SECRETS/$VAULT"
 
 # 2. Who may log in: only from the reviewed secrets commit (the weekly sync timer is gone).
 if [[ -x $REPO/tools/authorized-keys && -f $SECRETS/ssh/authorized_keys/$HOST ]]; then
