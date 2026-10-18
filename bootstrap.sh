@@ -3902,11 +3902,11 @@ HandleLidSwitchDocked=lock" "lid: lock on AC, suspend on battery (from the next 
   return 0
 }
 
-# Pointer speed under X, every machine (Ben 2026-10-17: "raise it 30 percent", then "an additional 30 percent": 0.6). libinput's AccelSpeed runs -1..1 with 0
-# the default; 0.3 is the nearest knob to "30% faster" (it is not a linear multiplier: nudge it here if it feels off).
-# Mice and trackpoints (MatchIsPointer), not touchpads. Sway has the same number in its config (dotfiles). Takes effect
-# at the next X start.
-POINTER_ACCEL="${POINTER_ACCEL:-0.6}"
+# Pointer speed under X, every machine: the maximum (Ben 2026-10-17: +30%, then +30% more, then "max it out on all
+# systems"). libinput's AccelSpeed runs -1..1, 0 the default. Mice and trackpoints (MatchIsPointer) AND touchpads
+# (MatchIsTouchpad): the first version matched pointers only, and micro's touchpad stayed at the default (its Xorg log:
+# only "libinput touchpad catchall" applied). Sway has the same numbers in its config (dotfiles). Next X start.
+POINTER_ACCEL="${POINTER_ACCEL:-1.0}"
 setup_pointer() {
   put_etc_file /etc/X11/xorg.conf.d/40-pointer.conf \
 "# Written by arch-bootstrap (setup_pointer). Edit bootstrap.sh, not this file.
@@ -3915,14 +3915,21 @@ Section \"InputClass\"
     MatchIsPointer \"on\"
     Driver \"libinput\"
     Option \"AccelSpeed\" \"$POINTER_ACCEL\"
-EndSection" "pointer speed $POINTER_ACCEL under X (next X start)" || true
+EndSection
+
+Section \"InputClass\"
+    Identifier \"touchpad speed\"
+    MatchIsTouchpad \"on\"
+    Driver \"libinput\"
+    Option \"AccelSpeed\" \"$POINTER_ACCEL\"
+EndSection" "pointer + touchpad speed $POINTER_ACCEL under X (next X start)" || true
 }
 
 # micro's touchpad (ThinkPad X131e, SynPS/2 Synaptics) reports a phantom contact with nobody touching it: pressure
 # 48-52, ~20 samples/s, charger in or out; a real finger presses 76 median, up to 152 (measured 2026-10-17 23:15).
 # libinput's default threshold counts the phantom as a finger, so the cursor jittered at rest and a real finger read as
-# "2 fingers" (a gesture), so the pad looked dead about half the time (Ben). A touch now has to press above 60 to
-# start and ends below 55. The match (model + device name) keeps it to that laptop; the file is inert anywhere else.
+# "2 fingers" (a gesture), so the pad looked dead about half the time (Ben). A touch now has to press above 56 to
+# start and ends below 54 (60:55 first: the jitter stopped but light swipes went missing, Ben 2026-10-17). The match (model + device name) keeps it to that laptop; the file is inert anywhere else.
 # libinput reads quirks when it starts: the next X or sway start.
 setup_touchpad_quirks() {
   put_etc_file /etc/libinput/local-overrides.quirks \
@@ -3930,7 +3937,7 @@ setup_touchpad_quirks() {
 [micro ThinkPad X131e touchpad: phantom contact at pressure ~50]
 MatchName=SynPS/2 Synaptics TouchPad
 MatchDMIModalias=dmi:*svnLENOVO:*pvrThinkPadX131e:*
-AttrPressureRange=60:55" "touchpad pressure threshold for the ThinkPad X131e (next X/sway start)" || true
+AttrPressureRange=56:54" "touchpad pressure threshold for the ThinkPad X131e (next X/sway start)" || true
 }
 
 # Host firewall (beast-arch task 76, 2026-10-03): none was active on beast-arch,
