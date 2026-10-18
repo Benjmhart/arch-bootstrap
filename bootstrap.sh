@@ -3875,7 +3875,7 @@ Description=Suspend if the power is still out and the lid still shut 2 minutes a
 
 [Service]
 Type=oneshot
-ExecStart=/bin/sh -c 'sleep 120; for f in /sys/class/power_supply/*/online; do [ \"\$\$(cat \$\${f%%online}type)\" = Mains ] && [ \"\$\$(cat \$\$f)\" = 1 ] && exit 0; done; grep -q closed /proc/acpi/button/lid/*/state && exec systemctl suspend'" \
+ExecStart=/bin/sh -c 'sleep 120; for f in /sys/class/power_supply/*/online; do [ \"\$\$(cat \$\${f%%online}type)\" = Mains ] && [ \"\$\$(cat \$\$f)\" = 1 ] && exit 0; done; grep -q closed /proc/acpi/button/lid/*/state && exec systemctl suspend; exit 0'" \
     "lid: suspend when unplugged with the lid shut" && unit_changed=1
   put_etc_file /etc/udev/rules.d/90-lid-unplugged.rules \
 "# Written by arch-bootstrap (setup_lid, station-maintenance beast-arch 111).
