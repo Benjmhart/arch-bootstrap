@@ -3134,7 +3134,7 @@ SYSTEM_UNITS=(
   "earlyoom|earlyoom.service|kills a memory hog before the box livelocks"
   "tailscale|tailscaled.service|mesh VPN; joining a tailnet is a separate manual step"
   "openssh|sshd.service|remote shell; harden_sshd() writes the config it needs"
-  "pacman-contrib|paccache.timer|weekly: keeps 3 versions per package in /var/cache/pacman, which is on the root filesystem"
+  "pacman-contrib|paccache.timer|weekly: keeps 1 version per package in /var/cache/pacman (root filesystem); see install_system_dropins"
   # Gated on the VLC plugin, not on avahi itself: avahi arrives as a dependency on
   # every host, and mDNS should not be switched on everywhere just because of that.
   "vlc-plugin-avahi|avahi-daemon.service|mDNS for VLC's Chromecast renderer discovery (profile media-center)"
@@ -3626,6 +3626,18 @@ MaxUse=1G" "coredump size limits" || true   # read per crash, nothing to restart
 [Journal]
 SyncIntervalSec=10s" "journald 10s sync"; then
     run sudo systemctl restart systemd-journald
+  fi
+
+  # The weekly pacman cache cleanup keeps 1 version per package, not 3, and drops packages no longer installed
+  # (Ben 2026-10-17, station-maintenance beast-arch 116: /var/cache/pacman held 5.3 G on a full root). The repos are
+  # pinned to the Arch Linux Archive, so any older version can be fetched again for a downgrade.
+  if put_etc_file /etc/systemd/system/paccache.service.d/keep-one.conf \
+"# Written by arch-bootstrap.
+[Service]
+ExecStart=
+ExecStart=/usr/bin/paccache -rk1
+ExecStart=/usr/bin/paccache -ruk0" "paccache keeps 1 version"; then
+    run sudo systemctl daemon-reload
   fi
 }
 
