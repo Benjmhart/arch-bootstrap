@@ -3898,6 +3898,22 @@ HandleLidSwitchDocked=lock" "lid: lock on AC, suspend on battery (from the next 
   return 0
 }
 
+# Pointer speed under X, every machine (Ben 2026-10-17: "raise it 30 percent"). libinput's AccelSpeed runs -1..1 with 0
+# the default; 0.3 is the nearest knob to "30% faster" (it is not a linear multiplier: nudge it here if it feels off).
+# Mice and trackpoints (MatchIsPointer), not touchpads. Sway has the same number in its config (dotfiles). Takes effect
+# at the next X start.
+POINTER_ACCEL="${POINTER_ACCEL:-0.3}"
+setup_pointer() {
+  put_etc_file /etc/X11/xorg.conf.d/40-pointer.conf \
+"# Written by arch-bootstrap (setup_pointer). Edit bootstrap.sh, not this file.
+Section \"InputClass\"
+    Identifier \"pointer speed\"
+    MatchIsPointer \"on\"
+    Driver \"libinput\"
+    Option \"AccelSpeed\" \"$POINTER_ACCEL\"
+EndSection" "pointer speed $POINTER_ACCEL under X (next X start)" || true
+}
+
 # Host firewall (beast-arch task 76, 2026-10-03): none was active on beast-arch,
 # carbon or micro. Inbound is dropped except loopback, the tailnet (tailscale0 --
 # the tailnet policy is the access control there), docker's bridges, ICMP,
@@ -4367,6 +4383,7 @@ stage_services() {
   set_console_palette
   remove_kmscon
   setup_lid
+  setup_pointer
   setup_firewall
   disable_llmnr
   set_wireless_regdom
