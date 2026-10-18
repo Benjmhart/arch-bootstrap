@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# rclone-own-client: move Google Drive remotes off rclone's shared client_id onto our own OAuth client
+# (station-maintenance micro task 12). rclone's shared client "will stop working during 2026", and its per-minute quota,
+# shared by every rclone user, throttled the backups on 2026-10-17. A token belongs to the client that made it, so
+# each remote needs a fresh login: this does the browser part HERE (rclone authorize, on micro) and writes the
+# client and the new token into the remote's config on each host over ssh. Ben runs it (credential op).
+#
+#   tools/rclone-own-client --dry-run [HOST...]   list the Drive remotes still on the shared client; changes nothing
+#   tools/rclone-own-client [HOST...]             fix them; asks for the client ID and secret once (not echoed)
+#
+# HOSTs default to beast-arch carbon media-center; "localhost" means this machine. Each remote's login is for the
+# Google account that remote belongs to -- the browser asks once per remote.
+set -euo pipefail
+dry=0; [[ ${1:-} == --dry-run ]] && { dry=1; shift; }
+hosts=("$@"); (( ${#hosts[@]} )) || hosts=(beast-arch carbon media-center)
+
+on() { if [[ $1 == localhost ]]; then bash -c "$2"; else ssh -o ConnectTimeout=10 "$1" "$2"; fi; }
+# "remote" per line for each type=drive remote with no (or an empty) client_id. Names only: no values read.
+shared='awk '\''/^\[/{if(d&&!c)print n; n=substr($0,2,length($0)-2); d=0; c=0} /^type *= *drive *$/{d=1} /^client_id *= *[^ ]/{c=1} END{if(d&&!c)print n}'\'' "${XDG_CONFIG_HOME:-$HOME/.config}/rclone/rclone.conf" 2>/dev/null'
+
+id= sec= rc=0
+for h in "${hosts[@]}"; do
+  if ! remotes=$(on "$h" "$shared"); then echo "FAIL  $h: unreachable or no rclone config"; rc=1; continue; fi
+  [[ -n $remotes ]] || { echo "ok    $h: every Drive remote has its own client"; continue; }
+  while IFS= read -r r; do
+    if (( dry )); then echo "would $h: '$r' -> own client (browser login here)"; continue; fi
+    if [[ -z $id ]]; then
+      IFS= read -rp "OAuth client ID (…apps.googleusercontent.com): " id </dev/tty
+      [[ $id == *.apps.googleusercontent.com ]] || { echo "FAIL  not a client ID"; exit 1; }
+      IFS= read -rsp "OAuth client secret: " sec </dev/tty; echo; [[ -n $sec ]] || { echo "FAIL  empty secret"; exit 1; }
+    fi
+    echo ">>> $h '$r': a browser opens here -- log in with the Google account '$r' belongs to"
+    tok=$(rclone authorize drive "$id" "$sec" </dev/null 2>/dev/null | grep -m1 -o '^{.*}$')
+    [[ $tok == '{'*'access_token'* ]] || { echo "FAIL  $h '$r': no token from the login"; rc=1; continue; }
+    # Values go over stdin, not the ssh command line.
+    if printf '%s\n%s\n%s\n%s\n' "$r" "$id" "$sec" "$tok" | on "$h" 'read -r r; read -r i; read -r s; read -r t
+         c=${XDG_CONFIG_HOME:-$HOME/.config}/rclone/rclone.conf
+         [[ -e $c.before-client-id ]] || install -m 600 "$c" "$c.before-client-id"
+         rclone config update "$r" client_id "$i" client_secret "$s" token "$t" config_refresh_token=false >/dev/null &&
+         rclone about "$r:" >/dev/null'; then
+      echo "did   $h '$r': own client, new login, works (old config: rclone.conf.before-client-id)"
+    else echo "FAIL  $h '$r': update or check failed (old config kept as rclone.conf.before-client-id)"; rc=1; fi
+  done <<<"$remotes"
+done
+exit $rc

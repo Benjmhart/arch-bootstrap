@@ -3289,6 +3289,10 @@ install_rclone_conf() {
   [[ -f $src ]] || { info "no rclone/rclone.conf in secrets -- no rclone remotes"; return 0; }
   if [[ -f $dst ]]; then
     ok "rclone config present ($(grep -c '^\[' "$dst") remote(s); kept, rclone refreshes its tokens there)"
+    # rclone's shared Google client retires in 2026 and its quota throttled the backups (station-maintenance micro 12).
+    local shared
+    shared=$(awk '/^\[/{if(d&&!c)print n; n=substr($0,2,length($0)-2); d=0; c=0} /^type *= *drive *$/{d=1} /^client_id *= *[^ ]/{c=1} END{if(d&&!c)print n}' "$dst" | paste -sd, -)
+    [[ -n $shared ]] && todo "rclone remote(s) on the shared Google client: $shared -- from micro: tools/rclone-own-client $(uname -n)"
     return 0
   fi
   run install -d -m 700 "$(dirname "$dst")"
