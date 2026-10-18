@@ -3898,11 +3898,11 @@ HandleLidSwitchDocked=lock" "lid: lock on AC, suspend on battery (from the next 
   return 0
 }
 
-# Pointer speed under X, every machine (Ben 2026-10-17: "raise it 30 percent"). libinput's AccelSpeed runs -1..1 with 0
+# Pointer speed under X, every machine (Ben 2026-10-17: "raise it 30 percent", then "an additional 30 percent": 0.6). libinput's AccelSpeed runs -1..1 with 0
 # the default; 0.3 is the nearest knob to "30% faster" (it is not a linear multiplier: nudge it here if it feels off).
 # Mice and trackpoints (MatchIsPointer), not touchpads. Sway has the same number in its config (dotfiles). Takes effect
 # at the next X start.
-POINTER_ACCEL="${POINTER_ACCEL:-0.3}"
+POINTER_ACCEL="${POINTER_ACCEL:-0.6}"
 setup_pointer() {
   put_etc_file /etc/X11/xorg.conf.d/40-pointer.conf \
 "# Written by arch-bootstrap (setup_pointer). Edit bootstrap.sh, not this file.
