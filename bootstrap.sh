@@ -3918,6 +3918,21 @@ Section \"InputClass\"
 EndSection" "pointer speed $POINTER_ACCEL under X (next X start)" || true
 }
 
+# micro's touchpad (ThinkPad X131e, SynPS/2 Synaptics) reports a phantom contact with nobody touching it: pressure
+# 48-52, ~20 samples/s, charger in or out; a real finger presses 76 median, up to 152 (measured 2026-10-17 23:15).
+# libinput's default threshold counts the phantom as a finger, so the cursor jittered at rest and a real finger read as
+# "2 fingers" (a gesture), so the pad looked dead about half the time (Ben). A touch now has to press above 60 to
+# start and ends below 55. The match (model + device name) keeps it to that laptop; the file is inert anywhere else.
+# libinput reads quirks when it starts: the next X or sway start.
+setup_touchpad_quirks() {
+  put_etc_file /etc/libinput/local-overrides.quirks \
+"# Written by arch-bootstrap (setup_touchpad_quirks). Edit bootstrap.sh, not this file.
+[micro ThinkPad X131e touchpad: phantom contact at pressure ~50]
+MatchName=SynPS/2 Synaptics TouchPad
+MatchDMIModalias=dmi:*svnLENOVO:*pvrThinkPadX131e:*
+AttrPressureRange=60:55" "touchpad pressure threshold for the ThinkPad X131e (next X/sway start)" || true
+}
+
 # Host firewall (beast-arch task 76, 2026-10-03): none was active on beast-arch,
 # carbon or micro. Inbound is dropped except loopback, the tailnet (tailscale0 --
 # the tailnet policy is the access control there), docker's bridges, ICMP,
@@ -4388,6 +4403,7 @@ stage_services() {
   remove_kmscon
   setup_lid
   setup_pointer
+  setup_touchpad_quirks
   setup_firewall
   disable_llmnr
   set_wireless_regdom
