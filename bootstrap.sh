@@ -3906,21 +3906,22 @@ HandleLidSwitchDocked=lock" "lid: lock on AC, suspend on battery (from the next 
 # systems"). libinput's AccelSpeed runs -1..1, 0 the default. Mice and trackpoints (MatchIsPointer) AND touchpads
 # (MatchIsTouchpad): the first version matched pointers only, and micro's touchpad stayed at the default (its Xorg log:
 # only "libinput touchpad catchall" applied). Sway has the same numbers in its config (dotfiles). Next X start.
-# micro's touchpad also scrolls from the right edge with one finger, 1.5x as fast (pixel distance 10, the driver's
-# minimum; default 15): two-finger scroll there drops the second finger, which presses as lightly as the phantom contact
-# below (station-maintenance micro 13, measured 2026-10-18; Ben: "edge scrolling seems to work really well").
+# micro's and carbon's touchpads scroll from the right edge with one finger, 1.5x as fast (pixel distance 10, the
+# driver's minimum; default 15). micro's two-finger scroll drops the second finger, which presses as lightly as the
+# phantom contact below (station-maintenance micro 13, measured 2026-10-18; Ben: "edge scrolling seems to work really
+# well"); carbon by Ben's choice ("can we also set edge scroll for carbon?").
 POINTER_ACCEL="${POINTER_ACCEL:-1.0}"
 setup_pointer() {
   local edge=""
-  [[ $(cat /sys/class/dmi/id/product_version 2>/dev/null) == "ThinkPad X131e" ]] && edge="
+  case $(cat /sys/class/dmi/id/product_version 2>/dev/null) in "ThinkPad X131e"|"ThinkPad X1 Carbon 6th") edge="
 
 Section \"InputClass\"
-    Identifier \"X131e touchpad: edge scroll\"
-    MatchProduct \"SynPS/2 Synaptics TouchPad\"
+    Identifier \"touchpad: edge scroll\"
+    MatchIsTouchpad \"on\"
     Driver \"libinput\"
     Option \"ScrollMethod\" \"edge\"
     Option \"ScrollPixelDistance\" \"10\"
-EndSection"
+EndSection" ;; esac
   put_etc_file /etc/X11/xorg.conf.d/40-pointer.conf \
 "# Written by arch-bootstrap (setup_pointer). Edit bootstrap.sh, not this file.
 Section \"InputClass\"
