@@ -1815,6 +1815,11 @@ install_tui_plugins() {
       fi
     done
   fi
+  # A running server keeps the config.toml it started with, so new key bindings (the navigator's prefix+t) did nothing
+  # after an fpush until a reload (station-maintenance beast-arch 118, 2026-10-18).
+  if have herdr && herdr status server 2>/dev/null | grep -q '^status: running'; then
+    run herdr server reload-config >/dev/null && ok "herdr server config reloaded"
+  fi
   if have ya; then
     for p in $YAZI_PLUGINS; do
       grep -qF "use = \"$p\"" "$XDG_CONFIG_HOME/yazi/package.toml" 2>/dev/null \
