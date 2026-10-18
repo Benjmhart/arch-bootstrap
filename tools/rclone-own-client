@@ -6,7 +6,7 @@
 # client and the new token into the remote's config on each host over ssh. Ben runs it (credential op).
 #
 #   tools/rclone-own-client --dry-run [HOST...]   list the Drive remotes still on the shared client; changes nothing
-#   tools/rclone-own-client [HOST...]             fix them; asks for the client ID and secret once (not echoed)
+#   tools/rclone-own-client [HOST...]             fix them; reuses the client in this machine's rclone.conf, else asks once
 #
 # HOSTs default to beast-arch carbon media-center; "localhost" means this machine. Each remote's login is for the
 # Google account that remote belongs to -- the browser asks once per remote.
@@ -18,7 +18,12 @@ on() { if [[ $1 == localhost ]]; then bash -c "$2"; else ssh -o ConnectTimeout=1
 # "remote" per line for each type=drive remote with no (or an empty) client_id. Names only: no values read.
 shared='awk '\''/^\[/{if(d&&!c)print n; n=substr($0,2,length($0)-2); d=0; c=0} /^type *= *drive *$/{d=1} /^client_id *= *[^ ]/{c=1} END{if(d&&!c)print n}'\'' "${XDG_CONFIG_HOME:-$HOME/.config}/rclone/rclone.conf" 2>/dev/null'
 
-id= sec= rc=0
+rc=0
+# Reuse the client this machine's remotes already have (micro's, set 2026-10-17); prompt only when there is none.
+conf=${XDG_CONFIG_HOME:-$HOME/.config}/rclone/rclone.conf
+id=$(awk -F' *= *' '$1=="client_id" && $2!=""{print $2; exit}' "$conf" 2>/dev/null)
+sec=$(awk -F' *= *' '$1=="client_secret" && $2!=""{print $2; exit}' "$conf" 2>/dev/null)
+[[ -n $id && -n $sec ]] || id= sec=
 for h in "${hosts[@]}"; do
   if ! remotes=$(on "$h" "$shared"); then echo "FAIL  $h: unreachable or no rclone config"; rc=1; continue; fi
   [[ -n $remotes ]] || { echo "ok    $h: every Drive remote has its own client"; continue; }
