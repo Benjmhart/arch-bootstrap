@@ -3833,9 +3833,12 @@ WantedBy=sysinit.target" "console palette unit" && run sudo systemctl daemon-rel
 # from one. This undoes what setup_kmscon did -- the autovt@ -> kmsconvt@ link, an enabled kmsconvt@tty1, its config,
 # the package -- so every tty is agetty again. Ttys kmscon already serves keep it until the next reboot.
 remove_kmscon() {
-  local link=/etc/systemd/system/autovt@.service
-  if [[ $(readlink "$link" 2>/dev/null) == */kmsconvt@.service ]]; then
-    run sudo rm -f "$link"; run sudo systemctl daemon-reload; did "tty2-6: agetty from the next boot (kmscon link removed)"
+  # autovt@ is what logind starts on tty2-6 when you switch to one, and it exists only as this link: getty@.service's
+  # Alias=, written when getty@ is enabled. The first version deleted the kmscon link and left none, so tty2-6 got
+  # no login at all (carbon, 2026-10-17: Ctrl+Alt+F2 to a blank screen). Point it back at getty@.
+  local link=/etc/systemd/system/autovt@.service target=/usr/lib/systemd/system/getty@.service
+  if [[ $(readlink "$link" 2>/dev/null) != "$target" ]]; then
+    run sudo ln -sfn "$target" "$link"; run sudo systemctl daemon-reload; did "tty2-6: agetty (autovt@ -> getty@)"
   fi
   if systemctl is-enabled --quiet kmsconvt@tty1.service 2>/dev/null || [[ $(readlink /etc/systemd/system/autovt@tty1.service 2>/dev/null) == */kmsconvt@.service ]]; then
     run sudo systemctl disable kmsconvt@tty1.service; run sudo systemctl enable --force getty@tty1.service; did "tty1: agetty from the next boot"
