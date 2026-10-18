@@ -1793,6 +1793,22 @@ install_herdr_integrations() {
       did "herdr $agent integration installed"
     fi
   done
+  # Plugins (beast-arch 118), pinned to a reviewed commit: a plugin is arbitrary code, built here with cargo, and the
+  # herdr-plugin topic is unreviewed. herdr-navigator v0.3.6 read 2026-10-18 (no build.rs, 7 deps, no network but a
+  # `git ls-remote` update check, off in its dotfiles config). Keys in the dotfiles' herdr config.toml. To bump: read the
+  # diff, change the commit.
+  local spec
+  for spec in "herdr-navigator thanhdat77/herdr-navigator f66b157bed31c079dba3a2bafc5fc930f835e041"; do
+    set -- $spec
+    if herdr plugin list 2>/dev/null | grep -qw "$1"; then
+      ok "herdr plugin $1 installed"
+    elif have cargo; then
+      run herdr plugin install "$2" --ref "$3" --yes
+      did "herdr plugin $1 installed at ${3:0:7}"
+    else
+      warn "herdr plugin $1 needs cargo -- not installed"
+    fi
+  done
 }
 
 # Claude Code. Ben's call 2026-08-24 to install it, unlike nono and zed which are
