@@ -1,5 +1,6 @@
 7zip
 adsb_deku
+age
 alacritty
 alsa-utils
 arandr
