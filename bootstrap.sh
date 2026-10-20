@@ -4181,6 +4181,12 @@ setup_encrypted_swap() {
 # plus an ACL for the user only, so the group cannot read it there; a udev rule
 # marks these UUIDs UDISKS_IGNORE. fstab lines are appended, never rewritten, as
 # for the encrypted swap.
+# An optional 4th field is the PARTUUID of a LUKS2 partition with a DETACHED header
+# (station-maintenance media-center 04): a crypttab line opens it as media-<name> at boot
+# from /etc/luks-media/<name>.hdr and /etc/cryptsetup-keys.d/media.key. The fstab line is
+# unchanged: the filesystem UUID inside is the same, now on /dev/mapper/media-<name>. The
+# bootstrap never encrypts a drive; it only writes the line when header and key are there.
+# They are backed up, age -p encrypted, in $SECRETS_DIR/luks/<host>.tar.gz.age.
 setup_media_drives() {
   [[ -n $MEDIA_DRIVES ]] || return 0
   [[ -r /etc/fstab ]] || { warn "/etc/fstab is not readable -- media drives not added"; return 0; }
@@ -4188,13 +4194,26 @@ setup_media_drives() {
   gid="$(getent group jellyfin | cut -d: -f3)"
   [[ -n $gid ]] || gid="$(id -g)"
 
-  local entry name uuid fstype mp line where rules="# Written by arch-bootstrap (MEDIA_DRIVES). Mounted by fstab, not udisks/udiskie."
+  local entry name uuid fstype luks ct mp line where rules="# Written by arch-bootstrap (MEDIA_DRIVES). Mounted by fstab, not udisks/udiskie."
   local -a units=()
   for entry in $MEDIA_DRIVES; do
-    IFS=: read -r name uuid fstype <<< "$entry"
+    IFS=: read -r name uuid fstype luks <<< "$entry"
     if [[ -z $name || -z $uuid || -z $fstype || $name == */* ]]; then
-      warn "MEDIA_DRIVES entry '$entry' is not name:uuid:fstype -- skipped"
+      warn "MEDIA_DRIVES entry '$entry' is not name:uuid:fstype[:luks-partuuid] -- skipped"
       continue
+    fi
+    if [[ -n $luks ]]; then
+      ct="media-$name PARTUUID=$luks /etc/cryptsetup-keys.d/media.key luks,header=/etc/luks-media/$name.hdr,nofail"
+      if grep -qxF "$ct" /etc/crypttab 2>/dev/null; then
+        ok "$name: encrypted, opened at boot (/etc/crypttab)"
+      elif grep -qE "^media-${name}[[:space:]]" /etc/crypttab 2>/dev/null; then
+        warn "/etc/crypttab already has a media-$name line that is not this one -- not touching it"
+      elif ! sudo test -s "/etc/luks-media/$name.hdr" || ! sudo test -s /etc/cryptsetup-keys.d/media.key; then
+        warn "$name: LUKS header or key missing -- restore: age -d $SECRETS_DIR/luks/$(uname -n).tar.gz.age | sudo tar -C /etc -xzf -"
+      else
+        printf '%s\n' "$ct" | run sudo tee -a /etc/crypttab
+        did "media drive $name added to /etc/crypttab (detached header)"
+      fi
     fi
     mp=/srv/media/$name
     line="UUID=$uuid  $mp  $fstype  nofail,x-systemd.automount,x-systemd.device-timeout=10s,uid=$(id -u),gid=$gid,dmask=0027,fmask=0137  0 0"
@@ -4770,6 +4789,13 @@ stage_verify() {
   fi
   have claude && have herdr && check "herdr claude integration" "herdr integration status | grep -q '^claude: current'"
   check "arch-bootstrap origin is SSH"  "git -C '$SCRIPT_DIR' remote get-url origin | grep -q '^git@'"
+  local m mn ml
+  for m in $MEDIA_DRIVES; do
+    IFS=: read -r mn _ _ ml <<< "$m"
+    [[ -n $ml ]] || continue
+    check "media drive $mn unlocked (/dev/mapper/media-$mn)" "[ -e /dev/mapper/media-$mn ]"
+    check "media drive $mn: LUKS backup in secrets" "[ -s '$SECRETS_DIR/luks/$(uname -n).tar.gz.age' ]"
+  done
   check "bfq rule for rotational disks"  "[ -f /etc/udev/rules.d/60-ioscheduler.rules ]"
   check "YubiKey OTP udev rule"          "[ -f /etc/udev/rules.d/70-yubikey-uaccess.rules ]"
   if [[ -s $SECRETS_DIR/yubikey/u2f_mappings ]]; then check "sudo: YubiKey touch (pam_u2f)" "grep -q pam_u2f /etc/pam.d/sudo"; fi

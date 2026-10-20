@@ -19,3 +19,4 @@ vlc-plugin-avahi
 wireguard-tools
 openvpn
 networkmanager-openvpn
+ntfs-3g
