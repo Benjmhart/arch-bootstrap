@@ -1538,7 +1538,56 @@ stage_aur() {
 
   if [[ " ${want[*]} " == *" rambox-pro-bin "* ]]; then
     install_rambox_perms_hook
+    install_rambox_ctrlk_hook
   fi
+}
+
+# Rambox 3.1.0 hard-codes ctrl+k to its Rambox-wide command palette, and forwards
+# every modified keypress from an app's webview to its own window first, so Slack's
+# ctrl+k (jump to conversation) never works. Settings > Shortcuts can only switch
+# shortcut groups on or off, not rebind them. A same-length byte patch of app.asar
+# moves the palette to alt+k (asar is uncompressed; Linux Electron does not check
+# its integrity). Every upgrade replaces app.asar, so a pacman hook re-applies it.
+# Ben, 2026-10-20; station-maintenance beast-arch 110. If a new Rambox no longer
+# has exactly one ["ctrl+k"], the script says so and leaves the file alone.
+RAMBOX_CTRLK=/etc/pacman.d/rambox-ctrlk.py
+install_rambox_ctrlk_hook() {
+  put_etc_file "$RAMBOX_CTRLK" "$(cat <<'EOF'
+# Installed by arch-bootstrap (install_rambox_ctrlk_hook); run by hooks/rambox-ctrlk.hook.
+import os, sys
+p = "/opt/rambox/resources/app.asar"
+old, new = b'["ctrl+k"]', b'["alt+k"] '
+try:
+    s = open(p, "rb").read()
+except OSError as e:
+    sys.exit(print("rambox-ctrlk:", e))
+if new in s and old not in s:
+    sys.exit()
+if s.count(old) != 1:
+    sys.exit(print(f"rambox-ctrlk: expected one {old!r}, found {s.count(old)}; app.asar left alone"))
+with open(p + ".tmp", "wb") as f:
+    f.write(s.replace(old, new))
+os.chmod(p + ".tmp", 0o644)
+os.replace(p + ".tmp", p)
+print("rambox-ctrlk: command palette moved from ctrl+k to alt+k")
+EOF
+)" "Rambox ctrl+k patch"
+  put_etc_file /etc/pacman.d/hooks/rambox-ctrlk.hook "$(cat <<EOF
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = rambox-pro-bin
+
+[Action]
+Description = Giving ctrl+k back to the apps in Rambox (palette on alt+k)
+When = PostTransaction
+Exec = /usr/bin/python3 -I $RAMBOX_CTRLK
+EOF
+)" "Rambox ctrl+k hook"
+  # The hook fires on the NEXT transaction; patch the Rambox installed now.
+  [[ -f /opt/rambox/resources/app.asar ]] && run sudo python3 -I "$RAMBOX_CTRLK"
+  return 0
 }
 
 # rambox-pro-bin installs /opt/rambox as drwx------ root, so `rambox` fails with
