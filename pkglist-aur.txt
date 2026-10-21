@@ -23,7 +23,7 @@ nitrogen                             616af0a3b4ceaeba9c0ef99999a585e8250a165c
 otf-hasklig                          4284295c6f73dcf3ffd60e00662159eb9a1f0a11
 pacmixer                             138b40fef079b75acc8a812811e2a7fde99cab3b
 python-elgato-streamdeck             8d104c56189aa8973453605b23a331d31e92a882   # only: beast-arch
-rambox-pro-bin                       f8bae0da2337e4777baca4ed20843926269eb05f
+rambox-pro-bin                       9320874cc0080a2b34e0b162de2bae7c91ca3e20
 streamdeck-ui                        fd887de11f6eaa3265e2fdc7645712136b3fc640   # only: beast-arch
 ventoy-bin                           b185aeda22473076cc0cb7d330bc8bc0b43c8a0e
 xdg-desktop-portal-termfilechooser   81e819b47bcaf14e59cdc4dab9e1b9187210f7b7
