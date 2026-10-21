@@ -24,6 +24,8 @@ cat > "$t/ab-seed/bootstrap.sh" <<'EOF'
 EOF
 mkdir -p "$t/ab-seed/tools"; cp "$root/tools/fleet-apply" "$root/tools/fleet" "$root/tools/secret-scan" "$t/ab-seed/tools/"
 printf '#!/bin/sh\necho "ak: $*" >> "$HOME/ak.calls"\n' > "$t/ab-seed/tools/authorized-keys"
+# a stub aur-pin: "auto" moves the one pin and says so; "changes" names it (the review calls it)
+printf '#!/bin/sh\ncase "$1" in auto) echo "pkg-a 2222222222222222222222222222222222222222" > "$AUR_PIN_LIST"; echo "move   pkg-a 1 -> 2" ;; changes) echo "pkg-a: 1 -> 2" ;; esac\n' > "$t/ab-seed/tools/aur-pin"
 chmod +x "$t/ab-seed/bootstrap.sh" "$t/ab-seed/tools/"*
 git -C "$t/ab-seed" add -A; git -C "$t/ab-seed" commit -qm "ab one"; git -C "$t/ab-seed" push -q origin main
 ab1=$(git -C "$t/ab-seed" rev-parse HEAD)
@@ -213,17 +215,21 @@ mkdb 2026-10-09 linux-7.2.9.arch1-1 foo-1.1-1 held-3.0-1 other-2-1
 printf '#!/bin/sh\ncase "$1" in -Qq) printf "linux\\nfoo\\nheld\\n" ;; -Q) echo "$2 1.0-1" ;; esac\n' > "$t/bin/pacman"; chmod +x "$t/bin/pacman"
 git -C "$t/ab-seed" pull -q
 echo 2026-10-02 > "$t/ab-seed/repo-date"; printf '# c\nh1 held 2.0-1 -- broke h1\n' > "$t/ab-seed/holds"
+# one AUR pin (the stub aur-pin, in every checkout from the start, moves it)
+echo "pkg-a 1111111111111111111111111111111111111111" > "$t/ab-seed/pkglist-aur.txt"
 git -C "$t/ab-seed" add -A; git -C "$t/ab-seed" commit -qm "pin the date"; git -C "$t/ab-seed" push -q
 pf() { FLEET_ARCHIVE_URL=file://$t/ala FLEET_TODAY=$1 fleet push; }
 rm -f "$t/ticket"; printf 'p\ny\n\ny\n' > "$t/answers"   # print the changes, take the date; review: keep all; confirm
 out=$(echo pw-ok | pf 2026-10-09 2>&1); rc=$?
 check "bump: offers the newest day, kernel listed to watch"  '(( rc == 0 )) && grep -q "move the date 2026-10-02 -> 2026-10-09" <<<"$out" && grep -q "^        linux 7.2.8.arch1-2 -> 7.2.9.arch1-1" <<<"$out"'
 check "...p prints every change of OUR packages only"        'grep -q "  foo 1.0-1 -> 1.1-1$" <<<"$out" && ! grep -q "other 1-1" <<<"$out"'
-check "...the new date is a commit, in the review"           'grep -q "^  A[0-9]  .*repo-date: 2026-10-09 (3 package changes since 2026-10-02)" <<<"$out" && [[ $(git -C "$t/home-h1/projects/arch-bootstrap" show HEAD:repo-date) == 2026-10-09 ]]'
+check "...the new date is a commit, in the review"           'grep -q "^  A[0-9]  .*packages: archive 2026-10-09 (3 package changes" <<<"$out" && [[ $(git -C "$t/home-h1/projects/arch-bootstrap" show HEAD:repo-date) == 2026-10-09 ]]'
+check "...the AUR pins moved IN the date commit"             'grep -q "^pkg-a 2222" "$t/home-h1/projects/arch-bootstrap/pkglist-aur.txt" && c=$(git -C "$t/home-h1/projects/arch-bootstrap" log -1 --format=%H -- repo-date) && [[ $(git -C "$t/home-h1/projects/arch-bootstrap" show --format= --name-only "$c" | sort | tr "\n" " ") == "pkglist-aur.txt repo-date " ]]'
 check "...holds listed with the date version, NEWER flagged" 'grep -qE "^  h1 +held +installed .* 2026-10-09 has 3.0-1 +broke at 2.0-1 <- NEWER" <<<"$out" && grep -q "broke h1" <<<"$out"'
 rm -f "$t/ticket"; printf 'y\n' > "$t/answers"
 out=$(echo pw-ok | pf 2026-10-09 2>&1); rc=$?
 check "no newer day: nothing offered"                         '(( rc == 0 )) && grep -q "2026-10-09 is the newest day" <<<"$out" && ! grep -q "move the date" <<<"$out"'
+check "...and no AUR commit without a date (pins only counted)" '[[ $(git -C "$t/ab.git" log -1 --format=%s main -- pkglist-aur.txt) == packages:* ]] && grep -q "1 pin(s) ready; they move with the next archive date" <<<"$out"'
 check "no YubiKey: the passphrase fleet key"                  '! grep -q "fleet key: YubiKey" <<<"$out"'
 touch "$H/.ssh/id_ed25519_sk_42"; rm -f "$t/ticket"; printf 'y\n' > "$t/answers"
 out=$(echo pw-ok | YK_SERIALS="7 42" pf 2026-10-09 2>&1)

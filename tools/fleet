@@ -15,9 +15,10 @@
 #                                 2. packages: when the Arch archive has a newer day than
 #                                    arch-bootstrap's repo-date, how many of the fleet's packages
 #                                    change (the kernel, mesa, xorg... listed); y commits the new
-#                                    date. Then every held package (arch-bootstrap `holds`, and
-#                                    local ~/.config/fleet/hold) with what the date has. Then the AUR
-#                                    pins move themselves (aur-pin auto; held/avoided ones stay)
+#                                    date AND the AUR pins (aur-pin auto; held/avoided ones stay) in
+#                                    ONE commit: the archive and the AUR move together (Ben
+#                                    2026-10-21). No new date, no pin moves (only counted). Then every
+#                                    held package (arch-bootstrap `holds`, local ~/.config/fleet/hold)
 #                                 3. review, per repo (arch-bootstrap, dotfiles, secrets): every new
 #                                    commit with its time, author, subject and files, the risky files
 #                                    marked. Exclude any by number: micro reverts them in a throwaway
@@ -237,11 +238,11 @@ bump_date() {  # offer the newest archive day; a yes commits it to arch-bootstra
   for d in "$TODAY" "$(date -d "$TODAY - 1 day" +%F)"; do
     curl -sfI --max-time 30 "$ALA/${d//-//}/core/os/x86_64/core.db" >/dev/null && { new=$d; break; }
   done
-  [[ -n ${new:-} ]] || { echo "note  the archive did not answer: the date stays $cur"; SUMMARY+=("packages  $cur (the archive did not answer)"); return 0; }
-  [[ $new > $cur ]] || { echo "ok    $cur is the newest day"; SUMMARY+=("packages  $cur, the newest day"); return 0; }
+  [[ -n ${new:-} ]] || { echo "note  the archive did not answer: the date stays $cur"; SUMMARY+=("packages  $cur (the archive did not answer)"); aur_ready; return 0; }
+  [[ $new > $cur ]] || { echo "ok    $cur is the newest day"; SUMMARY+=("packages  $cur, the newest day"); aur_ready; return 0; }
   PKGDIR=$(mktemp -d)
   pkgvers "$cur" "$PKGDIR" > "$PKGDIR/old"; pkgvers "$new" "$PKGDIR" > "$PKGDIR/new"
-  [[ -s $PKGDIR/old && -s $PKGDIR/new ]] || { echo "note  could not read the archive's package lists: the date stays $cur"; return 0; }
+  [[ -s $PKGDIR/old && -s $PKGDIR/new ]] || { echo "note  could not read the archive's package lists: the date stays $cur"; aur_ready; return 0; }
   # Only what the fleet has: this machine's packages and every pkglist.
   { pacman -Qq; for f in $(gitr ab ls-tree --name-only origin/main | grep '^pkglist'); do
       gitr ab show "origin/main:$f" | grep -vE '^[[:space:]]*(#|$)' | awk '{print $1}'; done; } | sort -u > "$PKGDIR/ours"
@@ -257,45 +258,47 @@ bump_date() {  # offer the newest archive day; a yes commits it to arch-bootstra
     case $ans in
       p) sed 's/^/  /' "$PKGDIR/changes" ;;
       y|Y) break ;;
-      *) echo "ok    the date stays $cur"; SUMMARY+=("packages  $cur kept ($new offered)"); return 0 ;;
+      *) echo "ok    the date stays $cur"; SUMMARY+=("packages  $cur kept ($new offered)"); aur_ready; return 0 ;;
     esac
   done
   tmp=$(mktemp -d)
   gitr ab worktree add -q --detach "$tmp" origin/main || die "arch-bootstrap: worktree failed"
   echo "$new" > "$tmp/repo-date"
-  git -C "$tmp" commit -q -m "repo-date: $new ($n package changes since $cur)" -m "$(cat "$PKGDIR/changes")" -- repo-date \
+  aur_pins "$tmp/pkglist-aur.txt"
+  git -C "$tmp" commit -q -m "packages: archive $new ($n package changes since $cur), $AUR_N AUR pin(s) moved" \
+      -m "$(cat "$PKGDIR/changes")" -m "${AUR_OUT:-}" -- repo-date $( (( AUR_N )) && echo pkglist-aur.txt) \
     && git -C "$tmp" push -q origin HEAD:refs/heads/main \
     || { gitr ab worktree remove --force "$tmp"; die "arch-bootstrap: committing or pushing the new date failed (origin moved? re-run)"; }
-  echo "did   repo-date $new committed and pushed ($(git -C "$tmp" rev-parse --short HEAD)); it is in the review below"
-  SUMMARY+=("packages  $cur -> $new ($n changes; a commit below)")
+  echo "did   archive $new + $AUR_N AUR pin(s) committed and pushed ($(git -C "$tmp" rev-parse --short HEAD)); it is in the review below"
+  SUMMARY+=("packages  $cur -> $new ($n changes) + $AUR_N AUR pin(s): one commit below")
   gitr ab worktree remove --force "$tmp"; gitr ab fetch -q origin
   cp "$PKGDIR/new" "$PKGDIR/date"
 }
 
-# AUR pins move themselves (Ben 2026-10-17: "I don't want to be manually updating pins"): aur-pin auto moves each to
-# the newest AUR commit micro first saw 3+ days ago, unless the line says "# hold". A change that looks like a compromise (an added npm/bun/curl/..., a new download
-# host, a SKIP checksum) is avoided; a new committer or a changed .install waits 14 days (aur-pin's docstring). The commit
-# is pushed and shows in the review like any other, so it can still be excluded. micro's own reviewed aur-pin runs.
-bump_aur() {
-  local tmp out n
-  gitr ab show origin/main:pkglist-aur.txt >/dev/null 2>&1 || return 0
+# AUR pins move themselves (Ben 2026-10-17: "I don't want to be manually updating pins"), and only together with the
+# archive date (Ben 2026-10-21: "arch archive + aur should move together"): aur-pin auto moves each to the newest AUR
+# commit micro first saw 3+ days ago, unless the line says "# hold". A change that looks like a compromise (an added
+# npm/bun/curl/..., a new download host, a SKIP checksum) is avoided; a new committer or a changed .install waits 14
+# days (aur-pin's docstring). The moves go into the date's commit, so the review can still exclude them.
+aur_pins() {  # aur_pins <pkglist-aur.txt>: run aur-pin auto on it; sets AUR_OUT and AUR_N (pins moved)
+  AUR_OUT=; AUR_N=0
+  [[ -f $1 ]] || return 0
   echo; echo "=== AUR pins: each moves to the newest AUR commit seen ${AUR_PIN_COOLDOWN_DAYS:-3}+ days ago, unless held or avoided"
-  tmp=$(mktemp -d)
-  gitr ab worktree add -q --detach "$tmp" origin/main || die "arch-bootstrap: worktree failed"
-  if ! out=$(AUR_PIN_LIST="$tmp/pkglist-aur.txt" "$here/aur-pin" auto 2>&1); then
-    echo "warn  aur-pin auto failed, no pin moves: $(tail -1 <<<"$out")"; out=; git -C "$tmp" checkout -q -- .
-    SUMMARY+=("AUR       aur-pin FAILED: $(tail -1 <<<"$out")")
+  if ! AUR_OUT=$(AUR_PIN_LIST="$1" "$here/aur-pin" auto 2>&1); then
+    echo "warn  aur-pin auto failed, no pin moves: $(tail -1 <<<"$AUR_OUT")"
+    SUMMARY+=("AUR       aur-pin FAILED: $(tail -1 <<<"$AUR_OUT")"); AUR_OUT=
+    gitr ab show origin/main:pkglist-aur.txt > "$1"; return 0
   fi
-  [[ -n $out ]] && sed 's/^/  /' <<<"$out"
-  n=$(grep -c '^move ' <<<"$out")
-  if (( n )); then
-    if git -C "$tmp" commit -q -m "aur: $n pin(s) moved by aur-pin auto" -m "$out" -- pkglist-aur.txt \
-       && git -C "$tmp" push -q origin HEAD:refs/heads/main; then
-      echo "did   $n AUR pin(s) committed and pushed ($(git -C "$tmp" rev-parse --short HEAD)); in the review below"
-      SUMMARY+=("AUR       $n pin(s) moved (tagged aur)")
-    else echo "warn  committing or pushing the AUR pins failed (origin moved?): they stay"; SUMMARY+=("AUR       pin commit FAILED, pins stay"); fi
-  else echo "ok    no AUR pin moves"; SUMMARY+=("AUR       no pin moves"); fi
-  gitr ab worktree remove --force "$tmp"; gitr ab fetch -q origin
+  [[ -n $AUR_OUT ]] && sed 's/^/  /' <<<"$AUR_OUT"
+  AUR_N=$(grep -c '^move ' <<<"$AUR_OUT")
+}
+
+aur_ready() {  # no new date: fetch the AUR (the 3-day cooldown counts from micro's first sight) and count, move nothing
+  local f; f=$(mktemp)
+  gitr ab show origin/main:pkglist-aur.txt > "$f" 2>/dev/null || { rm -f "$f"; return 0; }
+  aur_pins "$f" >/dev/null; rm -f "$f"
+  (( AUR_N )) && SUMMARY+=("AUR       $AUR_N pin(s) ready; they move with the next archive date")
+  return 0
 }
 
 show_holds() {  # every held package on every machine: installed, what the pinned day has, what broke
@@ -474,7 +477,7 @@ push)
   else SUMMARY+=("secrets   every machine's own commits are pushed"); fi
 
   # 2. The weekly package date, if it is time (its commit then shows in the review), and every hold.
-  bump_date; bump_aur; show_holds
+  bump_date; show_holds
 
   # 3. Review against the last approved snapshot (the first time: what micro has checked out).
   if [[ -s $SNAPS ]]; then read -r _ b_ab b_dot b_sec _ < <(tail -1 "$SNAPS")

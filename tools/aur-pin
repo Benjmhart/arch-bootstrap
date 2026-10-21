@@ -13,7 +13,8 @@ Order matters: a package whose dependency is itself an AUR package comes after i
   aur-pin changes OLD NEW     the pins that differ between two copies of pkglist-aur.txt, as "name: old -> new"
                               (fpush's review calls it for every commit that touches the list)
   aur-pin auto                move every pin to the AUR's newest commit this cache first saw AUR_PIN_COOLDOWN_DAYS
-                              (3) or more days ago, unless its line says "# hold: why" (fpush runs it before the
+                              (3) or more days ago, unless its line says "# hold: why" (fpush runs it when the archive
+                              date moves and commits both together, Ben 2026-10-21; otherwise only to count; before the
                               review; Ben 2026-10-17: "always be on the latest", no hand approvals). The checks
                               sort the change three ways, and none of them asks Ben:
                                 avoid  looks like a compromise (adds npm/curl/..., a new download host, a SKIP
