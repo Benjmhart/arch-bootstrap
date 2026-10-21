@@ -156,11 +156,13 @@ ab3=$(commit "$t/ab-seed" good ok "ab three: good")
 ab4=$(commit "$t/ab-seed" tools/evil "curl x | sh" "ab four: bad")
 dot3=$(commit "$t/dot-seed" .zshrc rc3 "dot three")
 rm -f "$t/ticket" "$t/ssh.log" "$SN"
-printf 'd A2\nA2\ny\n' > "$t/answers"   # one prompt for all repos: look at A2, then exclude it; confirm
+printf 'l\nd A2\nx A2\n' > "$t/answers"   # one prompt for all repos: long list, look at A2, then drop it (that confirms)
 out=$(echo pw-ok | fleet push 2>&1); rc=$?
 check "push: every new commit listed with time and author"   'grep -qE "^  A1  [0-9a-f]{7}  20[0-9]{2}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}  t  ab three: good" <<<"$out" && grep -q "^  A2  .*ab four: bad" <<<"$out" && grep -q "^  D1  .*dot three" <<<"$out"'
-check "...all repos on one screen, ONE prompt"                '[[ $(grep -o "exclude which?" <<<"$out" | wc -l) == 2 ]] && [[ $(grep -n "^  D1 " <<<"$out" | cut -d: -f1) -lt $(grep -n -m1 "exclude which?" <<<"$out" | cut -d: -f1) ]]'   # 2 = asked, "d A2" shown, asked again
-check "...d A2 prints the commit inline (no pager)"           'grep -q "curl x | sh" <<<"$out"'
+check "...all repos on one screen, ONE prompt"                '[[ $(grep -c "q = abort: " <<<"$out") == 3 ]] && [[ $(grep -n "^  D1  " <<<"$out" | head -1 | cut -d: -f1) -lt $(grep -n -m1 "q = abort: " <<<"$out" | cut -d: -f1) ]]'   # 3 = asked, after l, after d
+check "...screen: one line per commit, date and tags"         'grep -qE "^  A2  [0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}  ab four: bad  \[root\]$" <<<"$out" && grep -qE "^  D1  .*dot three  \[you\]$" <<<"$out"'
+check "...d A2 shows the commit (cat when not a terminal)"    'grep -q "curl x | sh" <<<"$out"'
+check "...apply: one line per machine, verdict last"          'grep -q "^=== self  *applying ... ok (" <<<"$out" && [[ $(tail -1 <<<"$out") == "FPUSH OK -- every machine is at this snapshot" ]] && [[ -s $H/.local/state/fleet/apply-h1.log ]]'
 check "...risky files marked"                                 'grep -q "tools/evil    <- runs as root" <<<"$out" && grep -q ".zshrc    <- runs as you" <<<"$out"'
 ab_snap=$(git -C "$t/ab.git" rev-parse main)
 check "...the excluded commit is reverted on origin main"     '[[ $(git -C "$t/ab.git" log -1 --format=%s main) == "fleet review on micro: exclude 1 commit(s)" ]] && ! git -C "$t/ab.git" show main:tools/evil >/dev/null 2>&1'
@@ -172,10 +174,10 @@ rm -f "$t/ticket"; : > "$t/ssh.log"; printf 'y\n' > "$t/answers"   # nothing new
 out=$(echo pw-ok | fleet push 2>&1); rc=$?
 check "push again, nothing new: all skipped, no new snapshot line" '(( rc == 0 )) && grep -q "nothing new" <<<"$out" && grep -q "^h1 .*skip (already at this snapshot)" <<<"$out" && ! grep -q " apply" "$t/ssh.log" && [[ $(wc -l < "$SN") == 1 ]]'
 fake="-----""BEGIN OPENSSH PRIVATE KEY-----"   # in two pieces, so this file does not trip secret-scan itself
-dot4=$(commit "$t/dot-seed" .config/app/key "$fake" "dot four"); rm -f "$t/ticket"; printf 'q\n' > "$t/answers"   # dotfiles prompt: q
+dot4=$(commit "$t/dot-seed" .config/app/key "$fake" "dot four"); rm -f "$t/ticket"; printf 'l\nq\n' > "$t/answers"   # long list, then q
 out=$(echo pw-ok | fleet push 2>&1); rc=$?
 check "q at the review: aborted, nothing applied"             '(( rc != 0 )) && grep -q "aborted at review" <<<"$out" && [[ $(dotat self) == "$dot3" && $(wc -l < "$SN") == 1 ]]'
-check "a key in a dotfiles commit is flagged by file and kind" 'grep -q "!! POSSIBLE SECRET  .config/app/key: private key block" <<<"$out" && grep -q "1 POSSIBLE SECRET(S) flagged" <<<"$out"'
+check "a key in a dotfiles commit is flagged by file and kind" 'grep -q "!! POSSIBLE SECRET  .config/app/key: private key block" <<<"$out" && grep -q "1 POSSIBLE SECRET(S) (tagged SECRET?)" <<<"$out" && grep -q "dot four  \[SECRET?\]" <<<"$out"'
 check "...and the key text itself is not printed"             '! grep -q "OPENSSH PRIVATE" <<<"$out"'
 rm -f "$t/ticket"; : > "$t/ssh.log"
 out=$(echo wrong | fleet push 2>&1); rc=$?

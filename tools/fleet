@@ -80,51 +80,58 @@ gitr() { local r=$1; shift
 title()  { case $1 in ab) echo arch-bootstrap ;; dot) echo dotfiles ;; sec) echo secrets ;; esac; }
 branch() { case $1 in ab) echo main ;; *) echo master ;; esac; }
 # Files whose change runs code or changes access, marked in the review.
-risk() {
+risk() {  # "<tag> <why>": the tag is shown on the review screen, the rest in the long form
   case $1:$2 in
-    ab:bootstrap.sh|ab:install.sh|ab:tools/*|ab:chores/*|ab:pkglist*) echo "runs as root" ;;
-    sec:arch-bootstrap/bootstrap.conf) echo "runs as root (sourced by bootstrap.sh)" ;;
-    sec:ssh/*) echo "who can log in / push" ;;
-    sec:Passwords.kdbx) echo "the vault" ;;
+    ab:bootstrap.sh|ab:install.sh|ab:tools/*|ab:chores/*|ab:pkglist*) echo "root runs as root" ;;
+    sec:arch-bootstrap/bootstrap.conf) echo "root runs as root (sourced by bootstrap.sh)" ;;
+    sec:ssh/*) echo "ssh who can log in / push" ;;
+    sec:Passwords.kdbx) echo "vault the vault" ;;
     dot:.zshrc|dot:.zshenv|dot:.zprofile|dot:.xinitrc|dot:.xprofile|dot:bin/*|dot:.local/bin/*|dot:.config/systemd/*|dot:.claude/*|dot:.config/xmonad/*|dot:.xmonad/*)
-      echo "runs as you" ;;
+      echo "you runs as you" ;;
   esac
 }
 
-# The review: every repo's new commits on ONE screen, numbered A1.. (arch-bootstrap), D1..
-# (dotfiles), S1.. (secrets), then ONE prompt. Never a pager (Ben: one commit per screen breaks
-# the flow): every git call here runs with GIT_PAGER=cat.
+# The review: every repo's new commits on ONE cleared screen, one line each, numbered A1..
+# (arch-bootstrap), D1.. (dotfiles), S1.. (secrets), fitted to the terminal (Ben 2026-10-21: small
+# screens, and a tty does not scroll), then ONE prompt that also confirms. The long form (files,
+# risk marks, secret-scan and AUR pin lines, held packages) goes to $STATE/review.txt; "l" and "d"
+# open it in less, which scrolls on a tty. git itself never pages: GIT_PAGER=cat.
 export GIT_PAGER=cat PAGER=cat
-declare -A HEADS=() CMT=()    # HEADS[ab]=sha; CMT[A2]=sha
+declare -A HEADS=() CMT=() ONE=() TAGS=() NEW=()   # HEADS[ab]=sha; CMT[A2]=sha; ONE[A2]="date subject"
+ORD=(); SUMMARY=()
 SECRET_HITS=0
 letter() { case $1 in ab) echo A ;; dot) echo D ;; sec) echo S ;; esac; }
 repo_of() { case $1 in A) echo ab ;; D) echo dot ;; S) echo sec ;; esac; }
 
 list_repo() {  # list_repo <repo> <base>: print its new commits; fills HEADS and CMT
-  local r=$1 base=$2 head i c t L; local -a commits files
+  local r=$1 base=$2 head i c t L id f; local -a commits files
   gitr "$r" fetch -q origin || die "$(title "$r"): fetch failed"
   head=$(gitr "$r" rev-parse "origin/$(branch "$r")"); HEADS[$r]=$head
   gitr "$r" merge-base --is-ancestor "$base" "$head" \
     || die "$(title "$r"): origin/$(branch "$r") no longer contains the last approved commit ${base:0:7} -- history was rewritten (a force push?). Stop and look before anything is applied."
   mapfile -t commits < <(gitr "$r" rev-list --reverse "$base..$head")
   L=$(letter "$r")
+  NEW[$r]=${#commits[@]}
   if (( ${#commits[@]} == 0 )); then printf '\n== %s: nothing new (at %s)\n' "$(title "$r")" "${head:0:7}"; return; fi
   printf '\n== %s: %d new since %s\n' "$(title "$r")" "${#commits[@]}" "${base:0:7}"
   for i in "${!commits[@]}"; do
-    c=${commits[i]}; CMT[$L$((i+1))]=$c
-    gitr "$r" log -1 --date=format-local:'%F %H:%M' --format="  $L$((i+1))  %h  %ad  %an  %s" "$c"
+    c=${commits[i]}; id=$L$((i+1)); CMT[$id]=$c; ORD+=("$id"); TAGS[$id]=""
+    ONE[$id]=$(gitr "$r" log -1 --date=format-local:'%m-%d %H:%M' --format='%ad  %s' "$c")
+    gitr "$r" log -1 --date=format-local:'%F %H:%M' --format="  $id  %h  %ad  %an  %s" "$c"
     mapfile -t files < <(gitr "$r" show --format= --name-only "$c")
-    for f in "${files[@]:0:6}"; do t=$(risk "$r" "$f"); echo "        $f${t:+    <- $t}"; done
+    for f in "${files[@]}"; do t=$(risk "$r" "$f"); [[ -n $t && " ${TAGS[$id]} " != *" ${t%% *} "* ]] && TAGS[$id]+=" ${t%% *}"; done
+    for f in "${files[@]:0:6}"; do t=$(risk "$r" "$f"); echo "        $f${t:+    <- ${t#* }}"; done
     (( ${#files[@]} > 6 )) && echo "        ... and $(( ${#files[@]} - 6 )) more"
     # Secrets that should not be in git (beast-arch 76): a KeeShare key and a browser profile went into the dotfiles
     # unflagged. The secrets repo is where they belong, so it is not scanned. --no-renames: a moved file's content
     # counts as added (the 2026-10-16 leak was a rename). Names the file and the kind, never the text.
     if [[ $r != sec ]]; then
-      while IFS= read -r t; do echo "        !! POSSIBLE SECRET  $t"; (( ++SECRET_HITS )); done \
+      while IFS= read -r t; do echo "        !! POSSIBLE SECRET  $t"; (( ++SECRET_HITS )); TAGS[$id]+=" SECRET?"; done \
         < <(gitr "$r" show --no-renames --format= -p "$c" | "$here/secret-scan")
     fi
     # A moved AUR pin is code that will run as root on every machine: name each move with its versions.
     if [[ $r == ab ]] && printf '%s\n' "${files[@]}" | grep -qx pkglist-aur.txt; then
+      TAGS[$id]+=" aur"
       while IFS= read -r t; do echo "        AUR pin  $t"; done \
         < <("$here/aur-pin" changes <(gitr ab show "$c^:pkglist-aur.txt" 2>/dev/null) <(gitr ab show "$c:pkglist-aur.txt") 2>&1)
     fi
@@ -149,23 +156,57 @@ exclude() {  # exclude <repo> <sha...>: revert them in a throwaway worktree, pus
   echo "did   $(title "$r"): excluded $#, revert ${picked:0:7} pushed"
 }
 
+REV=$STATE/review.txt
+pager() { if [[ -t 1 ]] && command -v less >/dev/null; then less -R; else cat; fi; }
+
+draw() {  # the review screen, fitted to the terminal
+  local rows cols budget cap r L id n shown line
+  rows=$(tput lines 2>/dev/null || echo 24); cols=$(tput cols 2>/dev/null || echo 80)
+  [[ -t 1 ]] && clear
+  echo "fpush review -- $(date '+%F %H:%M')"
+  printf '%s\n' "${SUMMARY[@]}"
+  (( SECRET_HITS )) && echo "!! $SECRET_HITS POSSIBLE SECRET(S) (tagged SECRET?): d <id> to look; drop it unless it is a false alarm"
+  # rows left for commit lines: header above, one title per repo, two prompt lines
+  budget=$(( rows - 1 - ${#SUMMARY[@]} - (SECRET_HITS ? 1 : 0) - 3 - 3 ))
+  cap=$(( budget / 3 )); (( cap < 2 )) && cap=2
+  for r in ab dot sec; do
+    L=$(letter "$r"); n=${NEW[$r]:-0}
+    printf '%-15s %s\n' "$(title "$r")" "$( (( n )) && echo "$n new" || echo "nothing new (${HEADS[$r]:0:7})")"
+    shown=0
+    for id in "${ORD[@]}"; do
+      [[ ${id:0:1} == "$L" ]] || continue
+      if (( shown == cap - 1 && n > cap )); then echo "  ... $(( n - shown )) more: l lists them"; break; fi
+      line="  $(printf '%-4s' "$id")${ONE[$id]}"
+      local tag=${TAGS[$id]# }; tag=${tag:+  [${tag}]}
+      (( ${#line} + ${#tag} > cols )) && line="${line:0:$(( cols - ${#tag} - 1 ))}~"
+      echo "$line$tag"; (( ++shown ))
+    done
+  done
+}
+
 review_all() {  # review_all <base-ab> <base-dot> <base-sec>: one screen, one prompt; sets ab dot sec
   local ans tok r k; local -A ex=()
-  list_repo ab "$1"; list_repo dot "$2"; list_repo sec "$3"
-  if (( ${#CMT[@]} == 0 )); then echo; ab=${HEADS[ab]} dot=${HEADS[dot]} sec=${HEADS[sec]}; return; fi
-  (( SECRET_HITS )) && printf '\n!!  %d POSSIBLE SECRET(S) flagged above. "d <id>" shows the commit; exclude it unless it is a false alarm.\n' "$SECRET_HITS"
+  { list_repo ab "$1"; list_repo dot "$2"; list_repo sec "$3"
+    [[ -s ${PKGDIR:-}/holds.txt ]] && cat "$PKGDIR/holds.txt"; } > "$REV"
+  for r in ab dot sec; do [[ -n ${HEADS[$r]:-} ]] || die "$(title "$r"): review failed (see above)"; done
   while :; do
-    printf '\nexclude which? e.g. "A2 S1"; "d A2" shows one (no pager); Enter = keep all; q = abort: '
+    draw
+    if (( ${#CMT[@]} )); then
+      printf '\ny = apply all   x A2 S1 = drop those, apply the rest\nd A2 = one commit   l = long list   q = abort: '
+    else printf '\nnothing new: y = re-apply the snapshot   l = long list   q = abort: '; fi
     IFS= read -r ans <&3 || die "no answer -- aborted, nothing applied"
     case $ans in
       q) die "aborted at review, nothing applied" ;;
-      d\ *) k=${ans#d }; k=${k^^}; if [[ -n ${CMT[$k]:-} ]]; then gitr "$(repo_of "${k:0:1}")" show --stat -p "${CMT[$k]}" | head -200; else echo "  no commit $k"; fi; continue ;;
+      y|Y) break ;;
+      l) pager < "$REV"; continue ;;
+      d\ *) k=${ans#d }; k=${k^^}
+            if [[ -n ${CMT[$k]:-} ]]; then gitr "$(repo_of "${k:0:1}")" show --stat -p "${CMT[$k]}" | head -400 | pager
+            else echo "  no commit $k"; sleep 1; fi; continue ;;
+      x\ *) ex=(); for tok in ${ans#x }; do tok=${tok^^}
+              [[ -n ${CMT[$tok]:-} ]] || { echo "  no commit $tok"; sleep 1; continue 2; }
+              ex[$(repo_of "${tok:0:1}")]+="${CMT[$tok]} "
+            done; break ;;
     esac
-    ex=(); for tok in ${ans^^}; do
-      [[ -n ${CMT[$tok]:-} ]] || { echo "  no commit $tok"; continue 2; }
-      ex[$(repo_of "${tok:0:1}")]+="${CMT[$tok]} "
-    done
-    break
   done
   for r in ab dot sec; do
     if [[ -n ${ex[$r]:-} ]]; then exclude "$r" ${ex[$r]}; else picked=${HEADS[$r]}; fi
@@ -196,8 +237,8 @@ bump_date() {  # offer the newest archive day; a yes commits it to arch-bootstra
   for d in "$TODAY" "$(date -d "$TODAY - 1 day" +%F)"; do
     curl -sfI --max-time 30 "$ALA/${d//-//}/core/os/x86_64/core.db" >/dev/null && { new=$d; break; }
   done
-  [[ -n ${new:-} ]] || { echo "note  the archive did not answer: the date stays $cur"; return 0; }
-  [[ $new > $cur ]] || { echo "ok    $cur is the newest day"; return 0; }
+  [[ -n ${new:-} ]] || { echo "note  the archive did not answer: the date stays $cur"; SUMMARY+=("packages  $cur (the archive did not answer)"); return 0; }
+  [[ $new > $cur ]] || { echo "ok    $cur is the newest day"; SUMMARY+=("packages  $cur, the newest day"); return 0; }
   PKGDIR=$(mktemp -d)
   pkgvers "$cur" "$PKGDIR" > "$PKGDIR/old"; pkgvers "$new" "$PKGDIR" > "$PKGDIR/new"
   [[ -s $PKGDIR/old && -s $PKGDIR/new ]] || { echo "note  could not read the archive's package lists: the date stays $cur"; return 0; }
@@ -216,7 +257,7 @@ bump_date() {  # offer the newest archive day; a yes commits it to arch-bootstra
     case $ans in
       p) sed 's/^/  /' "$PKGDIR/changes" ;;
       y|Y) break ;;
-      *) echo "ok    the date stays $cur"; return 0 ;;
+      *) echo "ok    the date stays $cur"; SUMMARY+=("packages  $cur kept ($new offered)"); return 0 ;;
     esac
   done
   tmp=$(mktemp -d)
@@ -226,6 +267,7 @@ bump_date() {  # offer the newest archive day; a yes commits it to arch-bootstra
     && git -C "$tmp" push -q origin HEAD:refs/heads/main \
     || { gitr ab worktree remove --force "$tmp"; die "arch-bootstrap: committing or pushing the new date failed (origin moved? re-run)"; }
   echo "did   repo-date $new committed and pushed ($(git -C "$tmp" rev-parse --short HEAD)); it is in the review below"
+  SUMMARY+=("packages  $cur -> $new ($n changes; a commit below)")
   gitr ab worktree remove --force "$tmp"; gitr ab fetch -q origin
   cp "$PKGDIR/new" "$PKGDIR/date"
 }
@@ -242,6 +284,7 @@ bump_aur() {
   gitr ab worktree add -q --detach "$tmp" origin/main || die "arch-bootstrap: worktree failed"
   if ! out=$(AUR_PIN_LIST="$tmp/pkglist-aur.txt" "$here/aur-pin" auto 2>&1); then
     echo "warn  aur-pin auto failed, no pin moves: $(tail -1 <<<"$out")"; out=; git -C "$tmp" checkout -q -- .
+    SUMMARY+=("AUR       aur-pin FAILED: $(tail -1 <<<"$out")")
   fi
   [[ -n $out ]] && sed 's/^/  /' <<<"$out"
   n=$(grep -c '^move ' <<<"$out")
@@ -249,8 +292,9 @@ bump_aur() {
     if git -C "$tmp" commit -q -m "aur: $n pin(s) moved by aur-pin auto" -m "$out" -- pkglist-aur.txt \
        && git -C "$tmp" push -q origin HEAD:refs/heads/main; then
       echo "did   $n AUR pin(s) committed and pushed ($(git -C "$tmp" rev-parse --short HEAD)); in the review below"
-    else echo "warn  committing or pushing the AUR pins failed (origin moved?): they stay"; fi
-  else echo "ok    no AUR pin moves"; fi
+      SUMMARY+=("AUR       $n pin(s) moved (tagged aur)")
+    else echo "warn  committing or pushing the AUR pins failed (origin moved?): they stay"; SUMMARY+=("AUR       pin commit FAILED, pins stay"); fi
+  else echo "ok    no AUR pin moves"; SUMMARY+=("AUR       no pin moves"); fi
   gitr ab worktree remove --force "$tmp"; gitr ab fetch -q origin
 }
 
@@ -266,6 +310,12 @@ show_holds() {  # every held package on every machine: installed, what the pinne
   } | sort > "$PKGDIR/holds"
   [[ -s $PKGDIR/holds ]] || return 0
   [[ -s $PKGDIR/date ]] || pkgvers "$date" "$PKGDIR" > "$PKGDIR/date"
+  show_holds_list | tee "$PKGDIR/holds.txt"
+  local newer; newer=$(grep -c 'NEWER now' "$PKGDIR/holds.txt")
+  SUMMARY+=("holds     $(wc -l < "$PKGDIR/holds") held package(s)$( (( newer )) && echo ", $newer NEWER now: try them"); l lists them")
+}
+show_holds_list() {
+  local h p broke why have
   echo; echo "=== held packages (kept at their installed version; the date $date has the version shown)"
   while read -r h p broke _ why; do
     have=$(awk -v p="$p" '$1 == p { print $2 }' "$PKGDIR/date")
@@ -284,9 +334,17 @@ apply_all() {
     if [[ -n ${secrets_bad[$h]:-} ]]; then result[$h]="FAILED secrets out of sync, not updated: ${secrets_bad[$h]#FAIL  secrets: }"; continue; fi
     st=$(on "$h" status 2>&1 | tail -1)
     if [[ ${stages[*]:-} != keys && $st == "$ab $dot $sec "*" rc=0 "* ]]; then result[$h]="skip (already at this snapshot)"; continue; fi
-    echo; echo "=== $h"
-    printf '%s\n' "$pw" | on "$h" apply "$ab" "$dot" "$sec" "${stages[@]}"; rc=$?
-    if (( rc == 0 )); then result[$h]="ok"; else result[$h]="FAILED rc=$rc -- see ~/.local/state/fleet/last.log on $h"; fi
+    # The bootstrap's output goes to a log here on micro, not the screen: one line per machine (Ben 2026-10-21).
+    local log=$STATE/apply-$h.log t0=$SECONDS
+    printf '=== %-13s applying ... ' "$h"
+    printf '%s\n' "$pw" | on "$h" apply "$ab" "$dot" "$sec" "${stages[@]}" > "$log" 2>&1; rc=$?
+    if (( rc == 0 )); then result[$h]="ok"; echo "ok ($(( (SECONDS - t0) / 60 ))m$(( (SECONDS - t0) % 60 ))s)"
+    else
+      result[$h]="FAILED rc=$rc -- $log"; echo "FAILED rc=$rc"
+      # what stopped it: the warnings and the stop line, colour codes stripped
+      sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g; s/\x1b\][^\x07\x1b]*\(\x07\|\x1b\\\)//g' "$log" \
+        | grep -E '(^| )(warn|FAIL|ERROR|error:|Stopped at)' | tail -6 | sed 's/^ */      /'
+    fi
     [[ $h == "$SELF" ]] && (( rc != 0 )) && micro_ok=0
   done
 }
@@ -400,9 +458,10 @@ status)
   ;;
 push)
   stages=("$@")
+  mkdir -p "$STATE"
   exec 3<"$IN" || die "no terminal for the review ($IN)"
   unlock
-  declare -A result secrets_bad
+  declare -A result=() secrets_bad=()
 
   # 1. Each machine hands its own secrets commits to origin, the vault's source of truth first.
   order=(); for h in "$SELF" "${hosts[@]}"; do [[ $h == "$VAULT_HOST" ]] && order=("$h" "${order[@]}") || order+=("$h"); done
@@ -411,6 +470,8 @@ push)
     out=$(on "$h" secrets-push 2>&1); rc=$?; echo "$out"
     (( rc == 0 )) || secrets_bad[$h]=$(tail -1 <<<"$out")
   done
+  if (( ${#secrets_bad[@]} )); then for h in "${!secrets_bad[@]}"; do SUMMARY+=("secrets   $h FAILED, it will not be updated: ${secrets_bad[$h]#FAIL  secrets: }"); done
+  else SUMMARY+=("secrets   every machine's own commits are pushed"); fi
 
   # 2. The weekly package date, if it is time (its commit then shows in the review), and every hold.
   bump_date; bump_aur; show_holds
@@ -420,10 +481,8 @@ push)
   else b_ab=$(gitr ab rev-parse HEAD); b_dot=$(gitr dot rev-parse HEAD); b_sec=$(gitr sec rev-parse HEAD)
        echo; echo "note  no approved snapshot yet: reviewing from what $SELF has checked out now"; fi
   review_all "$b_ab" "$b_dot" "$b_sec"
-  echo
-  printf 'apply snapshot  arch-bootstrap %s  dotfiles %s  secrets %s  to %s, then %s? [y/N] ' \
-    "${ab:0:7}" "${dot:0:7}" "${sec:0:7}" "$SELF" "${hosts[*]}"
-  IFS= read -r ans <&3; [[ $ans == y || $ans == Y ]] || die "not applied"
+  [[ -t 1 ]] && clear
+  echo "fpush: arch-bootstrap ${ab:0:7}  dotfiles ${dot:0:7}  secrets ${sec:0:7} -> $SELF, then ${hosts[*]}"
 
   # 4. micro first; it records the snapshot once it holds it.
   apply_all "$ab" "$dot" "$sec" "$SELF" "${hosts[@]}"
@@ -434,8 +493,11 @@ push)
     [[ $last == "$ab $dot $sec" ]] || echo "$(date -Iseconds) $ab $dot $sec" >> "$SNAPS"
   fi
   unset pw
-  table "fleet push: arch-bootstrap ${ab:0:7}  dotfiles ${dot:0:7}  secrets ${sec:0:7}"; rc=$?
   repos_report
+  table "fleet push: arch-bootstrap ${ab:0:7}  dotfiles ${dot:0:7}  secrets ${sec:0:7}"; rc=$?
+  echo
+  if (( rc == 0 )); then echo "FPUSH OK -- every machine is at this snapshot"
+  else echo "FPUSH FAILED -- see the lines above; full logs: $STATE/apply-<machine>.log"; fi
   exit $rc
   ;;
 rollback)

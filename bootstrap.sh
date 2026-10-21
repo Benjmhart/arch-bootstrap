@@ -1571,7 +1571,7 @@ os.chmod(p + ".tmp", 0o644)
 os.replace(p + ".tmp", p)
 print("rambox-ctrlk: command palette moved from ctrl+k to alt+k")
 EOF
-)" "Rambox ctrl+k patch"
+)" "Rambox ctrl+k patch" || true   # 1 = already in place, not an error (put_etc_file); unguarded it ended stage aur
   put_etc_file /etc/pacman.d/hooks/rambox-ctrlk.hook "$(cat <<EOF
 [Trigger]
 Operation = Install
@@ -1584,7 +1584,7 @@ Description = Giving ctrl+k back to the apps in Rambox (palette on alt+k)
 When = PostTransaction
 Exec = /usr/bin/python3 -I $RAMBOX_CTRLK
 EOF
-)" "Rambox ctrl+k hook"
+)" "Rambox ctrl+k hook" || true
   # The hook fires on the NEXT transaction; patch the Rambox installed now.
   [[ -f /opt/rambox/resources/app.asar ]] && run sudo python3 -I "$RAMBOX_CTRLK"
   return 0
