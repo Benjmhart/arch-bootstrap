@@ -2586,7 +2586,7 @@ stage_tailnet() {
   self="$(uname -n)"; keydir="$SECRETS_DIR/ssh/pubkeys"
   if [[ ! -f $PEER_KEY ]] && have_tty \
      && confirm "generate this machine's own key for ssh to the other machines ($PEER_KEY)?"; then
-    run_interactive ssh-keygen -t ed25519 -f "$PEER_KEY" -C "ben@$self peer" \
+    run_interactive ssh-keygen -t ed25519 -N '' -f "$PEER_KEY" -C "ben@$self peer" \
       && did "generated $PEER_KEY" || warn "ssh-keygen failed -- peers keep using the old key"
   fi
   ssh_tailnet_peers      # ~/.ssh/config stanzas (name $PEER_KEY once it exists); also stage 60
@@ -2682,8 +2682,9 @@ stage_tailnet() {
     # 6. Outbound: can this machine ssh to $peer? If not, offer to add this machine to
     # $peer's tracked file. It takes effect when $peer pulls secrets and applies.
     local pak="$akdir/$peer"
-    if ssh -o BatchMode=yes -o ConnectTimeout=8 "$peer" true 2>/dev/null; then
-      ok "ssh to $peer works"
+    # A fresh connection (no shared master), so this proves the key works without a prompt.
+    if ssh -o BatchMode=yes -o ConnectTimeout=8 -o ControlMaster=no -o ControlPath=none "$peer" true 2>/dev/null; then
+      ok "ssh to $peer works (no prompt)"
     elif [[ -z ${mine:-} || ! -f $pak ]] || grep -qx '# no-inbound' "$pak"; then
       info "ssh to $peer does not work; left alone (no tracked file for it, or # no-inbound)"
     elif grep -qF "$(awk '{print $2}' <<<"$mine")" "$pak"; then
@@ -3498,15 +3499,14 @@ ssh_tailnet_peers() {
   local begin="# >>> arch-bootstrap: tailnet peers (stage 60 -- edit SSH_PEERS, not this block)"
   local end="# <<< arch-bootstrap: tailnet peers"
   local want="$begin" peer self k sk=(); self="$(uname -n)"
-  # YubiKey peer keys (touch per connection; micro, station-maintenance beast-arch 104 gap 5) go first, so the
-  # passphrase-protected $PEER_KEY is only the fallback when no YubiKey is plugged in. A shared connection keeps one
-  # touch good for 10 minutes per peer.
+  # $PEER_KEY goes first and has no passphrase: ssh between the machines is passwordless (Ben 2026-10-21, replacing
+  # beast-arch 104 gap 5's touch-first order). YubiKey peer keys (micro) stay listed as the fallback.
   for k in "$HOME"/.ssh/id_ed25519_sk_peer_*; do [[ -f $k && $k != *.pub ]] && sk+=("$k"); done
   for peer in $SSH_PEERS; do
     [[ $peer == "$self" ]] && continue
     want+=$'\n'"Host $peer"$'\n'"    HostName $peer.$suffix"$'\n'"    HostKeyAlias $peer"
-    for k in "${sk[@]}"; do want+=$'\n'"    IdentityFile $k"; done
     [[ -f $PEER_KEY ]] && want+=$'\n'"    IdentityFile $PEER_KEY"
+    for k in "${sk[@]}"; do want+=$'\n'"    IdentityFile $k"; done
     { (( ${#sk[@]} )) || [[ -f $PEER_KEY ]]; } && want+=$'\n'"    IdentitiesOnly yes"
     (( ${#sk[@]} )) && want+=$'\n'"    ControlMaster auto"$'\n'"    ControlPath ~/.ssh/cm-%C"$'\n'"    ControlPersist 10m"
   done
