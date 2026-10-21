@@ -4235,7 +4235,8 @@ setup_encrypted_swap() {
 # from /etc/luks-media/<name>.hdr and /etc/cryptsetup-keys.d/media.key. The fstab line is
 # unchanged: the filesystem UUID inside is the same, now on /dev/mapper/media-<name>. The
 # bootstrap never encrypts a drive; it only writes the line when header and key are there.
-# They are backed up, age -p encrypted, in $SECRETS_DIR/luks/<host>.tar.gz.age.
+# They are backed up, age -p encrypted, in $SECRETS_DIR/luks/<host>.tar.gz.age as volume keys
+# plus restore.sh, which rebuilds the headers (steps in $SECRETS_DIR/luks/README).
 setup_media_drives() {
   [[ -n $MEDIA_DRIVES ]] || return 0
   [[ -r /etc/fstab ]] || { warn "/etc/fstab is not readable -- media drives not added"; return 0; }
@@ -4258,7 +4259,7 @@ setup_media_drives() {
       elif grep -qE "^media-${name}[[:space:]]" /etc/crypttab 2>/dev/null; then
         warn "/etc/crypttab already has a media-$name line that is not this one -- not touching it"
       elif ! sudo test -s "/etc/luks-media/$name.hdr" || ! sudo test -s /etc/cryptsetup-keys.d/media.key; then
-        warn "$name: LUKS header or key missing -- restore: age -d $SECRETS_DIR/luks/$(uname -n).tar.gz.age | sudo tar -C /etc -xzf -"
+        warn "$name: LUKS header or key missing -- restore: see $SECRETS_DIR/luks/README"
       else
         printf '%s\n' "$ct" | run sudo tee -a /etc/crypttab
         did "media drive $name added to /etc/crypttab (detached header)"
