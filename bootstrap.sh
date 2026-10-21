@@ -3508,6 +3508,9 @@ ssh_tailnet_peers() {
     [[ -f $PEER_KEY ]] && want+=$'\n'"    IdentityFile $PEER_KEY"
     for k in "${sk[@]}"; do want+=$'\n'"    IdentityFile $k"; done
     { (( ${#sk[@]} )) || [[ -f $PEER_KEY ]]; } && want+=$'\n'"    IdentitiesOnly yes"
+    # ssh offers agent-held keys before key files, and AddKeysToAgent puts a used YubiKey peer key there: every later
+    # connection then waited for a touch ahead of $PEER_KEY, and the agent stalled meanwhile (micro, 2026-10-21).
+    (( ${#sk[@]} )) && want+=$'\n'"    IdentityAgent none"
     (( ${#sk[@]} )) && want+=$'\n'"    ControlMaster auto"$'\n'"    ControlPath ~/.ssh/cm-%C"$'\n'"    ControlPersist 10m"
   done
   want+=$'\n'"$end"
