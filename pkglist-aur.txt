@@ -9,7 +9,7 @@
 # ORDER MATTERS: a package depending on another AUR package comes after it (gtkmm before nitrogen).
 # First pins 2026-10-17: the newest version then installed anywhere in the fleet (carbon unreachable).
 gtkmm                                68ca163d65cdbc5a49c69fd85ad97f807557aeff
-antigravity-cli                      bbc4ca8d3092cd55a20a17af57ab98e61abdc04e
+antigravity-cli                      867a9d160319a159e123aa95ee87ca9e2f5c1682
 bemoji                               90ed093966261043a7b0045b8fc0c8f339013e61
 claude-desktop                       3854d19c00561ccddc71e8520ab05594cc94a8bc
 dracula-gtk-theme                    3f4c6f263e23a97a63e5be911474541053946456
