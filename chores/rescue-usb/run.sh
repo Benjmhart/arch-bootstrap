@@ -135,6 +135,7 @@ cp -r "$repo"/tools "$mnt/arch-bootstrap/"   # e.g. encrypt-root-in-place, run f
   [[ -z $(git -C "$repo" status --porcelain) ]] || echo "  PLUS UNCOMMITTED CHANGES -- these files are not exactly that commit"
 } > "$mnt/arch-bootstrap/COMMIT"
 on_stick=$(cd "$mnt" && ls -1 archlinux-*-x86_64.iso rescue-archlinux-*.iso 2>/dev/null | tr '\n' ' ')
+"$here/ventoy-menu" "$mnt"   # F6: direct-boot entries, plain and nomodeset (surfboard 04)
 
 # ---- Ventoy itself: report, don't fix (root)
 want=$(cat /opt/ventoy/ventoy/version 2>/dev/null || true)

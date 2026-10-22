@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# ventoy-menu MOUNTPOINT -- write ventoy/ventoy_grub.cfg on a mounted Ventoy data partition: for each Arch ISO on it,
+# a "direct" entry (plain and nomodeset) that loop-mounts the ISO in Ventoy's GRUB and boots ITS kernel and initramfs
+# with img_dev/img_loop, the ISO's own loopback.cfg method. F6 at the Ventoy menu shows them.
+# Why: Ventoy's normal mode injects its own initramfs hook, and on surfboard (ThinkPad P50, 2026-10-22) the rescue ISO
+# died in Ventoy's busybox shell ("init not found"); its GRUB2 mode panicked (no root fs); and Ventoy's menu cannot edit
+# a command line, so nomodeset (the P50's Quadro froze the screen) had no way in. vm-boot-test boots kernel+initramfs
+# directly, so this is the boot path the VM test covers. station-maintenance surfboard 04.
+set -euo pipefail
+mnt=${1:?usage: ventoy-menu MOUNTPOINT}
+dev=$(findmnt -no SOURCE "$mnt"); uuid=$(lsblk -no UUID "$dev")
+[[ -n $uuid ]] || { echo "no filesystem UUID for $dev"; exit 1; }
+mkdir -p "$mnt/ventoy"
+{
+  for iso in "$mnt"/rescue-archlinux-*.iso "$mnt"/archlinux-*-x86_64.iso; do
+    [[ -f $iso ]] || continue
+    f=${iso##*/}
+    for extra in "" nomodeset; do
+      cat <<CFG
+menuentry "${f%.iso} direct${extra:+ $extra}" --class arch {
+  set part="\${vtoy_iso_part}"
+  if [ -z "\$part" ]; then search --no-floppy --fs-uuid --set=dev $uuid; set part="(\$dev)"; fi
+  loopback loop "\$part/$f"
+  linux (loop)/arch/boot/x86_64/vmlinuz-linux archisobasedir=arch img_dev=UUID=$uuid img_loop="/$f"${extra:+ $extra}
+  initrd (loop)/arch/boot/x86_64/initramfs-linux.img
+}
+CFG
+    done
+  done
+  echo 'menuentry "Back to the Ventoy menu" --class vtoyret VTOY_RET { echo }'
+} > "$mnt/ventoy/ventoy_grub.cfg.tmp"
+mv "$mnt/ventoy/ventoy_grub.cfg.tmp" "$mnt/ventoy/ventoy_grub.cfg"
+echo "Ventoy F6 menu: $(grep -c '^menuentry.*direct' "$mnt/ventoy/ventoy_grub.cfg") direct entries"
