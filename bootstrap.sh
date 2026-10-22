@@ -110,6 +110,10 @@ PEER_KEY="${PEER_KEY:-$HOME/.ssh/id_ed25519_peer}"
 # of a key on the GitHub account (stage 75, tools/deploy-keys). Set on micro and
 # media-center, so neither can reach anything else on the account. Empty = account key.
 DEPLOY_REPOS="${DEPLOY_REPOS:-}"
+# Project repos to clone into ~/projects/<name> (stage 35): git SSH URLs, space-separated. A
+# gitlab.com URL also pins GitLab's host key and needs this machine's account key on GitLab
+# (carbon: git@gitlab.com:bhdotrope/trstn.git, 2026-10-21). Empty = clone nothing.
+PROJECT_REPOS="${PROJECT_REPOS:-}"
 # Packages the packages stage's `pacman -Syu` must not upgrade, comma-separated (pacman
 # --ignore). For holding a kernel inside a test window: beast-arch task 1's RAM watch. Set
 # from a machine's ~/.config/fleet/hold (`ignore-pkgs:`) by tools/fleet-apply. Empty = none.
@@ -2360,6 +2364,7 @@ stage_secrets() {
   fi
 
   clone_wallpapers
+  clone_projects
 }
 
 # The wallpapers moved out of the dotfiles into their own repo on 2026-08-15, and
@@ -2392,6 +2397,36 @@ clone_wallpapers() {
   run mkdir -p "$(dirname "$WALLPAPERS_DIR")"
   run git clone "$WALLPAPERS_REMOTE" "$WALLPAPERS_DIR"
   did "cloned wallpapers repo"
+}
+
+# PROJECT_REPOS: work repos this machine develops in. A missing one is a todo, not a failure:
+# a key not yet on the host's account should not stop the rest of the run.
+GITLAB_HOSTKEY_FP=SHA256:eUXGGm1YGsMAS7vkcx6JOJdOGHPem5gQp4taiCfCLB8   # docs.gitlab.com/user/gitlab_com, ed25519
+clone_projects() {
+  local url name dir hk key
+  for url in $PROJECT_REPOS; do
+    name=${url##*/}; name=${name%.git}; dir=$HOME/projects/$name
+    if [[ -d $dir/.git ]]; then ok "$dir already cloned"; continue; fi
+    (( DRY_RUN )) && { info "(dry run) would clone $url to $dir"; continue; }
+    # Pinned against the published fingerprint, not trusted on first use.
+    if [[ $url == git@gitlab.com:* ]] && ! ssh-keygen -F gitlab.com >/dev/null 2>&1; then
+      hk="$(ssh-keyscan -T 8 -t ed25519 gitlab.com 2>/dev/null | grep -v '^#' | head -1 || true)"
+      if [[ -n $hk && $(ssh-keygen -lf - <<<"$hk" | awk '{print $2}') == "$GITLAB_HOSTKEY_FP" ]]; then
+        printf '%s\n' "$hk" >> "$HOME/.ssh/known_hosts"; did "gitlab.com: host key pinned ($GITLAB_HOSTKEY_FP)"
+      else
+        warn "gitlab.com: host key missing or not $GITLAB_HOSTKEY_FP -- not cloning $name"; continue
+      fi
+    fi
+    if [[ -e $dir ]]; then warn "$dir exists but is not a git checkout -- leaving it alone"; continue; fi
+    mkdir -p "$HOME/projects"
+    if GIT_SSH_COMMAND="ssh -o BatchMode=yes" git clone -q "$url" "$dir"; then
+      did "cloned $name"
+    else
+      key="$(pick_ssh_key 2>/dev/null || true)"
+      warn "could not clone $url"
+      [[ $url == git@gitlab.com:* ]] && todo "add ${key/#$HOME/\~}.pub at https://gitlab.com/-/user_settings/ssh_keys, then re-run"
+    fi
+  done
 }
 
 # --------------------------------------------------------------------------- 40
@@ -4833,6 +4868,7 @@ stage_verify() {
   check "XDG_CONFIG_HOME resolves"      "[ -d '$XDG_CONFIG_HOME' ]"
   [[ -n $DOTFILES_REMOTE ]] && check "dotfiles repo present" "[ -d '$DOTFILES_DIR' ]"
   [[ -n $SECRETS_REMOTE  ]] && check "secrets repo present"  "[ -d '$SECRETS_DIR' ]"
+  for _u in $PROJECT_REPOS; do _n=${_u##*/}; _n=${_n%.git}; check "project $_n cloned" "[ -d '$HOME/projects/$_n/.git' ]"; done
   [[ -d $XMONAD_DIR ]]      && check "xmonad binary built"   "command -v xmonad"
   check "nvm present"                   "[ -s \"\${NVM_DIR:-\$HOME/.nvm}/nvm.sh\" ]"
   check "herdr installed"               "command -v herdr"
