@@ -3521,6 +3521,21 @@ install_chores() {
 # connection reset, on most attempts that hour). Measured 2026-10-01: the FQDN
 # connected 10 of 10, five each way between beast-arch and carbon.
 # HostKeyAlias keeps known_hosts keyed by the short name.
+# pacman upgrades the tailscale package but never restarts tailscaled, so the daemon keeps
+# running the old build until a reboot (beast-arch 2026-10-22: client 1.104.2, daemon 1.104.1,
+# while the analytics box's link flapped). A restart drops every tailnet connection, and fpush
+# reaches this machine over one, so it is scheduled two minutes out rather than run inline.
+restart_stale_tailscaled() {
+  have tailscale && systemctl is-active --quiet tailscaled || return 0
+  local client daemon
+  client="$(tailscale version 2>/dev/null | head -n1)"
+  daemon="$(tailscale status --json 2>/dev/null | jq -r '.Version // empty' 2>/dev/null | cut -d- -f1)"
+  [[ -n $client && -n $daemon && $client != "$daemon" ]] || return 0
+  if (( DRY_RUN )); then info "(dry run) would restart tailscaled in 2 min: daemon $daemon, package $client"; return 0; fi
+  run sudo systemd-run --quiet --on-active=2min --unit=tailscaled-upgrade-restart systemctl try-restart tailscaled \
+    && ok "tailscaled $daemon -> $client: restart scheduled in 2 min (the tailnet drops for a few seconds)"
+}
+
 ssh_tailnet_peers() {
   [[ -n $SSH_PEERS ]] || return 0
   local suffix
@@ -4558,6 +4573,7 @@ stage_services() {
   harden_sshd
   stop_sshd_no_inbound
   ssh_tailnet_peers
+  restart_stale_tailscaled
   install_chores
   install_rclone_conf
   espanso_skip_wizard
