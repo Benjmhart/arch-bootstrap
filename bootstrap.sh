@@ -120,8 +120,8 @@ PROJECT_REPOS="${PROJECT_REPOS:-}"
 PACMAN_IGNORE="${PACMAN_IGNORE:-}"
 
 # Chores to enable on this machine: names of directories under chores/, each with a
-# chore-NAME.timer. See chores/chore-run for the protocol. low-disk and backup (beast-arch 92)
-# are on everywhere and fleet-due on micro, whatever this says (beast-arch 76); the rest are opt-in.
+# chore-NAME.timer. See chores/chore-run for the protocol. low-disk, virus-scan (beast-arch 129)
+# and backup (beast-arch 92) are on everywhere and fleet-due on micro, whatever this says (beast-arch 76); the rest are opt-in.
 CHORES="${CHORES:-}"
 
 # /tmp: RAM or disk. systemd's static tmp.mount makes /tmp a tmpfs at size=50% of
@@ -3250,6 +3250,7 @@ obsidian_disable_desktop_sync() {
 SYSTEM_UNITS=(
   "bluez|bluetooth.service|bluetooth radio -- matters most on a laptop"
   "docker|docker.service|container runtime"
+  "clamav|clamav-freshclam-once.timer|ClamAV signature updates for chores/virus-scan; a timer, no resident daemon"
   "earlyoom|earlyoom.service|kills a memory hog before the box livelocks"
   "tailscale|tailscaled.service|mesh VPN; joining a tailnet is a separate manual step"
   "openssh|sshd.service|remote shell; harden_sshd() writes the config it needs"
@@ -3499,7 +3500,7 @@ install_chores() {
     run systemctl --user disable --now chore-backup.timer
     did "chore backup off here: micro backs this machine up over its tunnel"
   fi
-  for c in low-disk $extra $CHORES; do
+  for c in low-disk virus-scan $extra $CHORES; do
     [[ -f $d/$c/chore-$c.timer ]] || { warn "CHORES names '$c', but there is no chores/$c/chore-$c.timer"; continue; }
     if systemctl --user is-enabled --quiet "chore-$c.timer" 2>/dev/null; then
       ok "chore $c scheduled"

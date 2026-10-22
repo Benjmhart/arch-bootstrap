@@ -10,6 +10,7 @@ btop
 bubblewrap
 cbatticon
 chromium
+clamav
 clang
 cliphist
 clipmenu

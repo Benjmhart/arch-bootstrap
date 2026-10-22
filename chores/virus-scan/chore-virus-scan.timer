@@ -1,0 +1,11 @@
+[Unit]
+Description=Weekly: ClamAV scan of $HOME (arch-bootstrap chores/virus-scan)
+
+[Timer]
+OnCalendar=Sun 03:00
+Persistent=true
+RandomizedDelaySec=1h
+Unit=chore@virus-scan.service
+
+[Install]
+WantedBy=timers.target

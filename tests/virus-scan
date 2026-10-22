@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# tests/virus-scan -- chores/virus-scan maps clamscan's exit codes (0 clean, 1 hit, 2 error) onto the chore protocol
+# (0, 75, failure) and needs signatures first. Uses a fake clamscan, nice and ionice, and a temp DB and XDG_STATE_HOME.
+# Run: tests/virus-scan
+set -uo pipefail
+d=$(cd "$(dirname "$0")/.." && pwd)/chores
+t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
+mkdir "$t/bin" "$t/db"
+printf '#!/bin/sh\necho "$@" > %s/args\n[ "$FAKE_RC" = 1 ] && echo "%s/x/eicar.com: Eicar-Signature FOUND"\nexit $FAKE_RC\n' "$t" "$HOME" > "$t/bin/clamscan"
+printf '#!/bin/sh\nwhile [ "${1#-}" != "$1" ] || [ "$1" = 19 ] || [ "$1" = 3 ]; do shift; done\nexec "$@"\n' > "$t/bin/nice"
+cp "$t/bin/nice" "$t/bin/ionice"; chmod +x "$t/bin/"*
+export PATH=$t/bin:$PATH CLAMAV_DB=$t/db
+pass=0 fail=0
+check() { if eval "$2"; then pass=$((pass+1)); echo "pass  $1"; else fail=$((fail+1)); echo "FAIL  $1"; fi; }
+
+out=$(FAKE_RC=0 "$d/virus-scan/run.sh"); rc=$?
+check "no signatures: rc 75"               '(( rc == 75 )) && [[ $out == "no ClamAV signatures"* ]]'
+touch "$t/db/main.cvd"
+out=$(FAKE_RC=0 "$d/virus-scan/run.sh"); rc=$?
+check "clean: rc 0"                        '(( rc == 0 )) && [[ $out == "clean: $HOME" ]]'
+check "scans HOME, skips the cache"        'grep -q -- "--exclude-dir=^$HOME/.cache" "$t/args" && grep -q " $HOME$" "$t/args"'
+out=$(FAKE_RC=1 "$d/virus-scan/run.sh"); rc=$?
+check "hit: rc 75, names the file"         '(( rc == 75 )) && grep -q "eicar.com: Eicar-Signature FOUND" <<<"$out"'
+check "hit: summary is the last line"      '[[ $(tail -n1 <<<"$out") == "1 infected file(s)"* ]]'
+out=$(FAKE_RC=2 "$d/virus-scan/run.sh"); rc=$?
+check "clamscan error: rc 2"               '(( rc == 2 ))'
+check "timer is a valid weekly calendar"   'systemd-analyze calendar "$(sed -n "s/^OnCalendar=//p" "$d/virus-scan/chore-virus-scan.timer")" >/dev/null'
+
+echo "$pass passed, $fail failed"; (( fail == 0 ))
