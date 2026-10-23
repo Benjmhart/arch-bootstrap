@@ -57,7 +57,7 @@ KEY=${FLEET_KEY:-$HOME/.ssh/id_ed25519_fleet}
 SELF=${FLEET_SELF_HOST:-micro}
 VAULT_HOST=${FLEET_VAULT_HOST:-beast-arch}
 IN=${FLEET_INPUT:-/dev/tty}
-read -r -a hosts <<<"${FLEET_HOSTS:-beast-arch carbon media-center}"
+read -r -a hosts <<<"${FLEET_HOSTS:-beast-arch carbon media-center surfboard}"   # surfboard: its tailnet name must be "surfboard"
 die() { echo "FAIL  $*" >&2; exit 1; }
 
 suffix() { tailscale status --json 2>/dev/null | jq -r '.MagicDNSSuffix // empty'; }

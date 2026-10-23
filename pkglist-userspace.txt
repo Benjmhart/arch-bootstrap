@@ -186,9 +186,16 @@ dracut
 # Steam, beast-arch only (Ben, 2026-10-17; station-maintenance beast-arch 110). From [multilib], which stage 10
 # turns on (ensure_multilib). lib32-vulkan-radeon / lib32-mesa named so --noconfirm picks the RX 580's drivers
 # for steam's lib32-vulkan-driver / lib32-libgl, not the first provider pacman lists.
-steam                 # only: beast-arch
+steam                 # only: beast-arch,surfboard
 lib32-vulkan-radeon   # only: beast-arch
-lib32-mesa            # only: beast-arch
+lib32-mesa            # only: beast-arch,surfboard
+# surfboard (ThinkPad P50, the games machine): Intel HD 530 drives the screen, the Quadro M600M (Maxwell) renders
+# games through PRIME offload (`prime-run %command%` in Steam). NVIDIA's current driver dropped Maxwell, so the 580xx
+# legacy branch from the AUR (pkglist-aur.txt), built by DKMS against linux-headers. station-maintenance surfboard 04.
+lib32-vulkan-intel    # only: surfboard
+vulkan-intel          # only: surfboard
+linux-headers         # only: surfboard
+nvidia-prime          # only: surfboard
 # adb/fastboot + udev rules, beast-arch only: phones are flashed from here (station-maintenance beast-arch 112).
 android-tools         # only: beast-arch
 android-udev          # only: beast-arch

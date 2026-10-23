@@ -17,6 +17,11 @@ google-chrome                        47872703a9847a42dc16044223c971ab9f6cdc45
 handy-bin                            2f19d9a38b8585de2715a657e891c89a66013e3d
 i3lock-color                         886bdde4481265bef7461ff3f40a992250354ed8
 lightworks                           c8738dd8d57e25cda3adb1f9caf1f5dec5715497
+# surfboard's Quadro M600M (Maxwell): the 580xx legacy driver, utils before the DKMS module and lib32 (both depend
+# on it). Pinned at 580.178.04 (2026-10-05/08-08); 580.196.07 landed 2026-10-23, inside the 3-day cooldown.
+nvidia-580xx-utils                   29eca3400a1143e09a714d467783f4d119c4bb02   # only: surfboard
+nvidia-580xx-dkms                    29eca3400a1143e09a714d467783f4d119c4bb02 nvidia-580xx-utils   # only: surfboard
+lib32-nvidia-580xx-utils             bbe7b771c897f78e518ab4453b0bc9210ef2f201   # only: surfboard
 localsend-bin                        f35ec0d6bd56c3c9fc4611f91972c31c38210654
 otf-hasklig                          4284295c6f73dcf3ffd60e00662159eb9a1f0a11
 pacmixer                             138b40fef079b75acc8a812811e2a7fde99cab3b
