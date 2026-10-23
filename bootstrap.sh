@@ -1928,9 +1928,11 @@ install_claude() {
     return 0
   fi
 
+  # The installer puts claude in ~/.local/bin, which a first run from the console does not have on PATH
+  # yet: install_herdr_integrations then skipped claude and verify failed (surfboard, 2026-10-23).
   case ":$PATH:" in
     *":$HOME/.local/bin:"*) : ;;
-    *) todo "~/.local/bin is not on PATH -- claude will not be found until it is" ;;
+    *) export PATH="$HOME/.local/bin:$PATH" ;;
   esac
 }
 
