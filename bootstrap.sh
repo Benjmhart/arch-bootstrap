@@ -1446,7 +1446,10 @@ aur_build_pinned() {
     warn "$name: cannot check out $base@${pin:0:8}"; rm -rf "$tmp"; return 1
   fi
   info "$name: building $ver from $base@${pin:0:8}"
-  if ( cd "$tmp/$base" && makepkg -s --noconfirm ); then
+  # PACMAN_AUTH=sudo: makepkg's default is `sudo -k`, which throws the cached credential away, so every
+  # package with missing dependencies asked for the password again. Unanswered, each prompt timed out after
+  # 5 minutes and three tripped faillock (surfboard, 2026-10-22, journal: `sudo -k /usr/bin/pacman --asdeps`).
+  if ( cd "$tmp/$base" && PACMAN_AUTH=sudo makepkg -s --noconfirm ); then
     while IFS= read -r f; do
       [[ -f $f && $(pacman -Qqp "$f" 2>/dev/null) == "$name" ]] && pkgs+=("$f")
     done < <(cd "$tmp/$base" && makepkg --packagelist)
