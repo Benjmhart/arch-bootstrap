@@ -2,7 +2,7 @@
 """aur-pin: AUR packages pinned to a commit of their AUR git repo (station-maintenance beast-arch 76).
 
 pkglist-aur.txt lines:  <pkgname> <aur-commit> [<pkgbase>]     (pkgbase only when it differs, e.g. espanso)
-Order matters: a package whose dependency is itself an AUR package comes after it (gtkmm before nitrogen).
+Order matters: a package whose dependency is itself an AUR package comes after it (e.g. a lib before the app that needs it).
 
   aur-pin status              pinned version vs the AUR's current one, per package
   aur-pin bump NAME...        show what changed in the AUR repo since the pin (PKGBUILD, .install, patches),

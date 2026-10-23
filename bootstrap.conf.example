@@ -24,7 +24,7 @@ SECRETS_REMOTE=""
 
 # ---------------------------------------------------------------- optional
 
-# Git remote holding desktop wallpapers. .xinitrc points nitrogen at
+# Git remote holding desktop wallpapers. .xinitrc points feh at
 # WALLPAPERS_DIR (default $HOME/projects/wallpapers); without this the desktop
 # comes up with no wallpaper and nothing says why. Leave empty to skip.
 WALLPAPERS_REMOTE=""

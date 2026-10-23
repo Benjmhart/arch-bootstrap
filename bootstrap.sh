@@ -2380,7 +2380,7 @@ stage_secrets() {
 }
 
 # The wallpapers moved out of the dotfiles into their own repo on 2026-08-15, and
-# .xinitrc now points `nitrogen --set-zoom-fill --random` at that path. Nothing
+# .xinitrc now points `feh --bg-fill --randomize` (via wallpaper-rotate) at that path. Nothing
 # cloned it, so a machine provisioned before the split -- or a fresh one -- comes
 # up with no wallpaper at all and no error that explains why.
 #

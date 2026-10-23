@@ -6,9 +6,8 @@
 # fpush moves pins itself, only with a new archive date and in its commit (tools/aur-pin auto: 3-day cooldown; compromise-shaped changes avoided, a new committer
 # waits 14 days; no hand approvals); `# hold: why` at a line's end keeps a pin (a breaking release).
 # `# only: host[,host]` at a line's end installs it on those machines alone (bootstrap.sh stage 20).
-# ORDER MATTERS: a package depending on another AUR package comes after it (gtkmm before nitrogen).
+# ORDER MATTERS: a package depending on another AUR package comes after it (e.g. a lib before the app that needs it).
 # First pins 2026-10-17: the newest version then installed anywhere in the fleet (carbon unreachable).
-gtkmm                                68ca163d65cdbc5a49c69fd85ad97f807557aeff
 antigravity-cli                      867a9d160319a159e123aa95ee87ca9e2f5c1682
 bemoji                               90ed093966261043a7b0045b8fc0c8f339013e61
 claude-desktop                       7a8b033ede0838ef7491be36d7a38c8856060d7a
@@ -19,7 +18,6 @@ handy-bin                            2f19d9a38b8585de2715a657e891c89a66013e3d
 i3lock-color                         886bdde4481265bef7461ff3f40a992250354ed8
 lightworks                           c8738dd8d57e25cda3adb1f9caf1f5dec5715497
 localsend-bin                        f35ec0d6bd56c3c9fc4611f91972c31c38210654
-nitrogen                             616af0a3b4ceaeba9c0ef99999a585e8250a165c
 otf-hasklig                          4284295c6f73dcf3ffd60e00662159eb9a1f0a11
 pacmixer                             138b40fef079b75acc8a812811e2a7fde99cab3b
 python-elgato-streamdeck             8d104c56189aa8973453605b23a331d31e92a882   # only: beast-arch
