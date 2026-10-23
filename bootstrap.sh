@@ -159,6 +159,10 @@ SWAP_PARTUUID="${SWAP_PARTUUID:-}"
 # /srv/media/<name> on first access. Use ntfs3 (the kernel driver) for NTFS, not ntfs.
 # Empty = none.
 MEDIA_DRIVES="${MEDIA_DRIVES:-}"
+# Dual boot with a BIOS/MBR Windows (surfboard): the UUID of the NTFS partition holding bootmgr ("System Reserved").
+# setup_boot adds a GRUB "Windows" entry and GRUB_DEFAULT=saved, so `sudo grub-reboot Windows` boots it once
+# and the next boot is Arch again. Empty = no Windows entry.
+WINDOWS_BOOT_UUID="${WINDOWS_BOOT_UUID:-}"
 
 # earlyoom acts only when available RAM AND free swap are BOTH under threshold, so
 # adding disk swap without raising -s means it waits until most of that swap has
@@ -4443,7 +4447,7 @@ exit 1' "sudo: password-only under ssh or sudo -S"; then
 # Both pacman hooks keep working on kernel updates: dracut's writes /boot/initramfs-linux.img, mkinitcpio's
 # the fallback; the entries name those files, so grub.cfg never needs regenerating for a kernel.
 setup_boot() {
-  if [[ $(findmnt -no SOURCE /) != /dev/mapper/root ]]; then info "/ is not LUKS /dev/mapper/root -- boot setup skipped"; return 0; fi
+  if [[ $(findmnt -nvo SOURCE /) != /dev/mapper/root ]]; then info "/ is not LUKS /dev/mapper/root -- boot setup skipped"; return 0; fi
   local rebuild=0 f cfg=/boot/grub/grub.cfg img=/boot/initramfs-linux.img
   # /boot is root-only (vfat fmask 0077), so every look inside it is through sudo.
   if ! have dracut || ! have grub-mkconfig || ! sudo test -f /boot/vmlinuz-linux || ! sudo test -f "$cfg"; then
@@ -4484,6 +4488,27 @@ fallback_options="-S autodetect"' "mkinitcpio: fallback image only" && rebuild=1
   # The menu: generate, check, and install only when it differs.
   if put_etc_file /etc/grub.d/10_arch "$GRUB_10_ARCH" "GRUB: the Arch entries"; then :; fi
   [[ -x /etc/grub.d/10_arch ]] || run sudo chmod 755 /etc/grub.d/10_arch
+  if [[ -n $WINDOWS_BOOT_UUID ]]; then
+    # BIOS only: GRUB's ntldr loads bootmgr from the partition itself. ponytail: a UEFI Windows needs a
+    # chainloader /EFI/Microsoft/Boot/bootmgfw.efi entry instead; add it when a machine has one.
+    put_etc_file /etc/grub.d/35_windows "#!/bin/sh
+# Written by arch-bootstrap (WINDOWS_BOOT_UUID; station-maintenance surfboard 04); edit setup_boot there, not this file.
+cat <<'EOF'
+menuentry 'Windows' --class windows --class os {
+	insmod part_msdos
+	insmod ntfs
+	insmod ntldr
+	search --no-floppy --fs-uuid --set=root $WINDOWS_BOOT_UUID
+	ntldr /bootmgr
+}
+EOF" "GRUB: the Windows entry" || true
+    [[ -x /etc/grub.d/35_windows ]] || run sudo chmod 755 /etc/grub.d/35_windows
+    if grep -qx 'GRUB_DEFAULT=saved' /etc/default/grub; then
+      ok "GRUB_DEFAULT=saved (grub-reboot Windows boots it once)"
+    else
+      run sudo sed -i 's/^GRUB_DEFAULT=.*/GRUB_DEFAULT=saved/' /etc/default/grub && did "GRUB_DEFAULT=saved"
+    fi
+  fi
   for f in 10_linux 15_uki 20_linux_xen 31_efi_bootnext; do
     [[ -x /etc/grub.d/$f ]] && { run sudo chmod 644 "/etc/grub.d/$f"; did "GRUB: $f switched off"; }
   done
@@ -4535,8 +4560,12 @@ luks_uuid=$(blkid -s UUID -o value "$luks_dev")
 keys=$(cryptsetup luksDump --dump-json-metadata "$luks_dev" | grep -o "\"type\": *\"systemd-fido2\"" | wc -l)
 ucode=
 for u in intel-ucode.img amd-ucode.img; do if [ -f "/boot/$u" ]; then ucode="$ucode$p/$u "; fi; done
+# btrfs root (install.sh since 2026-10-09): the subvolume by name, as root-rollback replaces @ by name. Without it
+# the kernel mounts the top level and boot fails (surfboard, the first btrfs machine to reach this, 2026-10-23).
+rootflags=
+if [ "$root_fs" = btrfs ]; then sv=$(findmnt -no FSROOT /); [ "$sv" = / ] || rootflags=" rootflags=subvol=${sv#/}"; fi
 # zswap off: every machine swaps to zram.
-common="root=UUID=$root_uuid rw rootfstype=$root_fs zswap.enabled=0"
+common="root=UUID=$root_uuid rw rootfstype=$root_fs$rootflags zswap.enabled=0"
 rd="rd.luks.name=$luks_uuid=root systemd.setenv=SYSTEMD_CRYPTSETUP_USE_TOKEN_MODULE=0"
 tail=${GRUB_CMDLINE_LINUX_DEFAULT-loglevel=3 quiet}
 
@@ -4907,7 +4936,7 @@ stage_verify() {
   [[ -d $XMONAD_DIR ]]      && check "xmonad binary built"   "command -v xmonad"
   check "nvm present"                   "[ -s \"\${NVM_DIR:-\$HOME/.nvm}/nvm.sh\" ]"
   check "herdr installed"               "command -v herdr"
-  if [[ $(findmnt -no SOURCE /) == /dev/mapper/root ]]; then
+  if [[ $(findmnt -nvo SOURCE /) == /dev/mapper/root ]]; then
     check "boot: dracut config"            "[ -f /etc/dracut.conf.d/arch-bootstrap.conf ]"
     check "boot: GRUB 10_arch on, 10_linux off" "[ -x /etc/grub.d/10_arch ] && [ ! -x /etc/grub.d/10_linux ]"
   fi

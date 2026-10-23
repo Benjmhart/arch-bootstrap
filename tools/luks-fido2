@@ -19,7 +19,7 @@ fail() { echo "FAIL: $*"; exit 1; }
 do_() { if ((dry)); then echo "would run: $*"; else "$@"; fi; }
 ask() { read -rp "$1 " REPLY </dev/tty; }
 
-[[ $(findmnt -no SOURCE /) == /dev/mapper/root ]] || fail "/ is not /dev/mapper/root"
+[[ $(findmnt -nvo SOURCE /) == /dev/mapper/root ]] || fail "/ is not /dev/mapper/root"
 [[ -x /etc/grub.d/10_arch ]] || fail "/etc/grub.d/10_arch missing: run bootstrap (fpush) first"
 root_dev=$(cryptsetup status root | awk '$1=="device:"{print $2}')
 # The JSON dump: the plain one hands each FIDO2 token to systemd's plugin, which prints past stdout, so only
