@@ -10,7 +10,7 @@
 # First pins 2026-10-17: the newest version then installed anywhere in the fleet (carbon unreachable).
 antigravity-cli                      867a9d160319a159e123aa95ee87ca9e2f5c1682
 bemoji                               90ed093966261043a7b0045b8fc0c8f339013e61
-claude-desktop                       7a8b033ede0838ef7491be36d7a38c8856060d7a
+claude-desktop                       f75e2a41cecb20ed519661b908e2f73b04c5faea
 dracula-gtk-theme                    3f4c6f263e23a97a63e5be911474541053946456
 espanso-x11                          f66257bbb59116dea6d002ab486be930c06c6d19 espanso
 google-chrome                        47872703a9847a42dc16044223c971ab9f6cdc45
