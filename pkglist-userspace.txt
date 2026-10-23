@@ -140,7 +140,18 @@ trash-cli
 tree
 tree-sitter-cli
 ttf-fira-code
+# Programming fonts (Ben, 2026-10-23: "any other cool programming fonts? ... get some good stuff"), repo ones only.
+# Hasklig is otf-hasklig (AUR list), Monoid below. ttf-nerd-fonts-symbols-mono: fontconfig falls back to it for
+# Nerd Font icons, so every font here shows them without its own "-nerd" build.
 ttc-iosevka
+ttf-jetbrains-mono
+ttf-cascadia-code
+otf-monaspace
+ttf-ibm-plex
+ttf-hack
+ttf-fantasque-sans-mono
+adobe-source-code-pro-fonts
+ttf-nerd-fonts-symbols-mono
 ttf-monoid
 udiskie
 ueberzugpp
