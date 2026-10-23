@@ -170,6 +170,10 @@ WINDOWS_BOOT_UUID="${WINDOWS_BOOT_UUID:-}"
 # the packaged file alone.
 EARLYOOM_ARGS="${EARLYOOM_ARGS:-}"
 
+# ClamAV on-access scanning of $HOME (clamd + clamonacc; Cyber Essentials A8.2, beast-arch 131). "no" turns it off
+# for the host; lean and media-center hosts never get it (clamd holds ~1.5 GB of signatures resident).
+CLAMAV_ONACCESS="${CLAMAV_ONACCESS:-yes}"
+
 # Used as the Obsidian sync device name, so the version history says which
 # machine a change came from. `hostname` is not installed everywhere (it is in
 # inetutils, which is not in the package list); `uname -n` always is.
@@ -4390,6 +4394,65 @@ EARLYOOM_ARGS=\"$EARLYOOM_ARGS\"" "earlyoom thresholds"; then
   return 0
 }
 
+# ClamAV on access (station-maintenance beast-arch 131; Cyber Essentials A8.2 wants files scanned when opened or
+# downloaded, which the weekly chores/virus-scan alone is not). clamd holds the signatures; clamonacc watches $HOME
+# through fanotify and hands each opened file to clamd (--fdpass: clamd runs as clamav and cannot open ben's files).
+# A hit is moved to /root/quarantine (the packaged unit's --move), logged by VirusEvent, and raised as a critical
+# desktop notification by clamav-alert.service. Detect and quarantine, no blocking: OnAccessPrevention stays off, as a
+# stalled open() freezes whatever reads the file. Exclusions as chores/virus-scan: caches, Steam, container layers
+# (~90k directories left to watch on beast-arch, 2026-10-23; root's inotify limit is 524288).
+setup_clamav_onaccess() {
+  pacman -Qq clamav >/dev/null 2>&1 || return 0
+  if [[ $CLAMAV_ONACCESS != yes ]] || profile_on lean || profile_on media-center; then
+    systemctl is-enabled --quiet clamav-clamonacc.service 2>/dev/null \
+      && run sudo systemctl disable --now clamav-clamonacc.service clamav-alert.service clamav-daemon.service
+    info "ClamAV on-access: off here (CLAMAV_ONACCESS=$CLAMAV_ONACCESS, PROFILES=$PROFILES); the weekly scan stays"
+    return 0
+  fi
+  local e excl="" changed=0
+  for e in .cache .local/share/Steam/steamapps .local/share/docker .local/share/containerd .local/share/containers; do
+    excl+="OnAccessExcludePath $HOME/$e"$'\n'
+  done
+  put_etc_file /etc/clamav/clamd.conf "# Written by arch-bootstrap (setup_clamav_onaccess, beast-arch 131); edit there, not here.
+LogFile /var/log/clamav/clamd.log
+LogTime yes
+PidFile /run/clamav/clamd.pid
+TemporaryDirectory /tmp
+LocalSocket /run/clamav/clamd.ctl
+User clamav
+VirusEvent /usr/local/lib/arch-bootstrap/clamav-virus-event
+OnAccessIncludePath $HOME
+${excl}OnAccessExcludeUname clamav
+OnAccessExcludeRootUID yes
+OnAccessExtraScanning yes" "clamd with on-access paths" && changed=1
+  if put_etc_file /usr/local/lib/arch-bootstrap/clamav-virus-event '#!/bin/sh
+# Written by arch-bootstrap. clamd (as clamav) runs this on every detection; clamav-alert.service shows it.
+exec logger -t clamav-virus-event -p auth.alert "$CLAM_VIRUSEVENT_VIRUSNAME in $CLAM_VIRUSEVENT_FILENAME"' "ClamAV detection log hook"; then
+    run sudo chmod 755 /usr/local/lib/arch-bootstrap/clamav-virus-event
+  fi
+  put_etc_file /etc/systemd/system/clamav-clamonacc.service.d/arch-bootstrap.conf '# Written by arch-bootstrap (beast-arch 131)
+[Service]
+ExecStartPre=/usr/bin/install -d -m 700 /root/quarantine
+ExecStart=
+ExecStart=/usr/sbin/clamonacc -F --fdpass --log=/var/log/clamav/clamonacc.log --move=/root/quarantine' \
+    "clamonacc passes file descriptors" && changed=1
+  put_etc_file /etc/systemd/system/clamav-alert.service "# Written by arch-bootstrap (beast-arch 131): each ClamAV detection as a critical notification for $USER.
+[Unit]
+Description=ClamAV detections to the desktop
+After=clamav-daemon.service
+[Service]
+ExecStart=/bin/sh -c 'journalctl -f -n0 -o cat -t clamav-virus-event | while read -r l; do systemd-run -q --machine=$USER@.host --user notify-send -u critical ClamAV \"\$\$l (moved to /root/quarantine)\"; done'
+Restart=always
+[Install]
+WantedBy=multi-user.target" "ClamAV desktop alerts" && changed=1
+  (( changed )) && run sudo systemctl daemon-reload
+  # clamd will not start without signatures (its unit has a Condition on them); fetch them once on a new machine.
+  compgen -G "/var/lib/clamav/main.c[lv]d" >/dev/null || run sudo systemctl start clamav-freshclam-once.service
+  run sudo systemctl enable --now clamav-daemon.service clamav-clamonacc.service clamav-alert.service
+  (( changed )) && run sudo systemctl restart clamav-daemon.service clamav-clamonacc.service clamav-alert.service
+  ok "ClamAV on-access scanning $HOME (detections: journalctl -t clamav-virus-event; files in /root/quarantine)"
+}
+
 
 # YubiKeys (station-maintenance beast-arch 88). The password stays the fallback everywhere.
 #  - udev: the seat user may reach a YubiKey's OTP interface (ykman otp, KeePassXC
@@ -4647,6 +4710,7 @@ stage_services() {
   setup_encrypted_swap
   setup_media_drives
   configure_earlyoom
+  setup_clamav_onaccess
 
   # ---- login keyring auto-unlock (added 2026-08-23) ---------------------------
   #

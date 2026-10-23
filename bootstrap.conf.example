@@ -86,6 +86,8 @@ KEYXFER_URL=""
 # The 4th field marks a drive encrypted with a detached LUKS2 header (see setup_media_drives).
 #MEDIA_DRIVES="passport:5CB5-0FC8:exfat:bdead329-4b62-407f-9cf0-6cc2166279f2 seagate:703AA18D3AA15140:ntfs-3g:eb4ae929-01"
 # Raise -s when adding disk swap: earlyoom needs low RAM AND low free swap to act.
+# ClamAV on-access scanning of $HOME; "no" for a host that should only get the weekly scan (games, media boxes).
+#CLAMAV_ONACCESS="no"
 #EARLYOOM_ARGS="-r 3600 -n -m 10,5 -s 75,50 --avoid '(^|/)(init|systemd|Xorg|sshd)$'"
 
 # ---------------------------------------------------------------- paths
