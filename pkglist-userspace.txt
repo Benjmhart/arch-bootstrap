@@ -173,6 +173,7 @@ xorg-xset
 xorg-xsetroot
 xorg-xwayland
 xss-lock
+xprintidle
 yazi
 ouch
 yubikey-manager

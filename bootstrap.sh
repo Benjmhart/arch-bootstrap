@@ -652,6 +652,13 @@ sudo_timeout_dropin() {
     fi
     rm -f "$tmp"
   fi
+  # The hour is per sudo call, and an AUR build on old hardware can outlast it: refresh the
+  # credential every 4 minutes until the run exits (on_exit stops it), so one password covers the
+  # whole run (Ben, 2026-10-22, surfboard). `sudo -n` never prompts, so it cannot feed faillock.
+  if ! (( DRY_RUN )) && [[ -z ${SUDO_KEEPALIVE_PID:-} ]] && sudo -n true 2>/dev/null; then
+    while sleep 240; do sudo -n -v 2>/dev/null || exit 0; done &
+    SUDO_KEEPALIVE_PID=$!
+  fi
 }
 
 # --------------------------------------------------------------------------- 05
@@ -842,6 +849,7 @@ list_private_keys() {
 # An agent this script started, so it can be cleaned up rather than orphaned for
 # the rest of the login session holding an unlocked key.
 BOOTSTRAP_AGENT_PID=""
+SUDO_KEEPALIVE_PID=""
 bootstrap_agent_cleanup() {
   [[ -n $BOOTSTRAP_AGENT_PID ]] || return 0
   kill "$BOOTSTRAP_AGENT_PID" 2>/dev/null || true
@@ -858,6 +866,7 @@ DEFERRED=()
 on_exit() {
   local rc=$?
   bootstrap_agent_cleanup
+  [[ -n $SUDO_KEEPALIVE_PID ]] && kill "$SUDO_KEEPALIVE_PID" 2>/dev/null
   if [[ -n $CURRENT_STAGE ]] && (( rc != 0 )); then
     warn "stage '$CURRENT_STAGE' did not complete cleanly (exit $rc) -- not marking it done"
     printf '\n%sStopped at stage %s.%s Fix the problem above and re-run:\n\n' \
@@ -2751,8 +2760,9 @@ stage_session() {
     ok "login shell is already $LOGIN_SHELL"
   elif have "$LOGIN_SHELL"; then
     local shpath; shpath="$(command -v "$LOGIN_SHELL")"
-    if confirm "change login shell to $shpath? (needs your password)"; then
-      run_interactive chsh -s "$shpath" || warn "chsh failed"
+    if confirm "change login shell to $shpath?"; then
+      # Through sudo, so the cached credential covers it: plain chsh asks for the password again.
+      run sudo chsh -s "$shpath" "$USER" || warn "chsh failed"
       did "login shell set -- takes effect at next login"
     else
       todo "later:  chsh -s $shpath"
