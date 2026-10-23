@@ -2661,9 +2661,11 @@ stage_tailnet() {
   fi
 
   # 3b. Publish this machine's public key to the secrets repo, for the others to read.
-  # The peer key if there is one, else the old default. A changed key is swapped into
-  # every peer's tracked file in place (from= kept), so their timers move with it.
-  local pubsrc="$PEER_KEY.pub"; [[ -f $pubsrc ]] || pubsrc="$HOME/.ssh/id_ed25519.pub"
+  # The peer key only. A changed key is swapped into every peer's tracked file in place (from= kept), so their
+  # timers move with it. No peer key means an inbound-only machine (media-center, surfboard): publish nothing, so
+  # step 6 offers it nowhere. Until 2026-10-23 this fell back to the GitHub key, and surfboard's run offered itself
+  # into beast-arch's authorized_keys (caught before the secrets push).
+  local pubsrc="$PEER_KEY.pub"
   if [[ -f $pubsrc ]] && [[ -d $SECRETS_DIR ]]; then
     mine="$(awk -v h="$self" '{print $1, $2, "ben@" h}' "$pubsrc")"
     if publish_host_key "$SECRETS_DIR/ssh" "$self" "$mine"; then
