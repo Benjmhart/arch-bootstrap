@@ -19,6 +19,7 @@ touch "$t/db/main.cvd"
 out=$(FAKE_RC=0 "$d/virus-scan/run.sh"); rc=$?
 check "clean: rc 0"                        '(( rc == 0 )) && [[ $out == "clean: $HOME" ]]'
 check "scans HOME, skips the cache"        'grep -q -- "--exclude-dir=^$HOME/.cache" "$t/args" && grep -q " $HOME$" "$t/args"'
+check "skips toolchains, restic, target/"  'grep -q -- "--exclude-dir=^$HOME/.rustup " "$t/args" && grep -q -- "--exclude-dir=^$HOME/.local/share/restic-copy " "$t/args" && grep -q -- "--exclude-dir=/target\$ " "$t/args"'
 out=$(FAKE_RC=1 "$d/virus-scan/run.sh"); rc=$?
 check "hit: rc 75, names the file"         '(( rc == 75 )) && grep -q "eicar.com: Eicar-Signature FOUND" <<<"$out"'
 check "hit: summary is the last line"      '[[ $(tail -n1 <<<"$out") == "1 infected file(s)"* ]]'
