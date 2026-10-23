@@ -112,7 +112,7 @@ PEER_KEY="${PEER_KEY:-$HOME/.ssh/id_ed25519_peer}"
 DEPLOY_REPOS="${DEPLOY_REPOS:-}"
 # Project repos to clone into ~/projects/<name> (stage 35): git SSH URLs, space-separated. A
 # gitlab.com URL also pins GitLab's host key and needs this machine's account key on GitLab
-# (carbon: git@gitlab.com:bhdotrope/trstn.git, 2026-10-21). Empty = clone nothing.
+# (carbon: git@gitlab.com:bhdotrope/trstn-meta.git, which holds trstn as a submodule). Empty = clone nothing.
 PROJECT_REPOS="${PROJECT_REPOS:-}"
 # Packages the packages stage's `pacman -Syu` must not upgrade, comma-separated (pacman
 # --ignore). For holding a kernel inside a test window: beast-arch task 1's RAM watch. Set
@@ -2428,7 +2428,8 @@ clone_projects() {
     fi
     if [[ -e $dir ]]; then warn "$dir exists but is not a git checkout -- leaving it alone"; continue; fi
     mkdir -p "$HOME/projects"
-    if GIT_SSH_COMMAND="ssh -o BatchMode=yes" git clone -q "$url" "$dir"; then
+    # --recurse-submodules: a plan repo holds its code repos as submodules (carbon's trstn-meta, 2026-10-22).
+    if GIT_SSH_COMMAND="ssh -o BatchMode=yes" git clone -q --recurse-submodules "$url" "$dir"; then
       did "cloned $name"
     else
       key="$(pick_ssh_key 2>/dev/null || true)"
