@@ -1538,6 +1538,12 @@ stage_aur() {
     if [[ $name == i3lock-color ]] && pacman -Q i3lock >/dev/null 2>&1; then
       run sudo pacman -Rdd --noconfirm i3lock
     fi
+    # Same for surfboard's legacy NVIDIA driver: stage 10's nvidia-prime depends on nvidia-utils, so pacman pulls
+    # the current 615 build, which conflicts with nvidia-580xx-utils (fpush 2026-10-23 18:14). The 580xx package
+    # provides nvidia-utils, vulkan-driver, opengl-driver and nvidia-libgl, so every dependent stays satisfied.
+    if [[ $name == nvidia-580xx-utils && $(pacman -Qq nvidia-utils 2>/dev/null) == nvidia-utils ]]; then   # -Q also matches providers
+      run sudo pacman -Rdd --noconfirm nvidia-utils
+    fi
     if (( DRY_RUN )); then
       printf '%s  would build:%s %s %s (installed: %s) from %s@%s\n' "$C_DIM" "$C_RESET" "$name" "$ver" \
         "$(pacman -Q "$name" 2>/dev/null | cut -d' ' -f2 || echo none)" "$base" "${pin:0:8}"
@@ -5017,6 +5023,10 @@ stage_verify() {
     check "media drive $mn: LUKS backup in secrets" "[ -s '$SECRETS_DIR/luks/$(uname -n).tar.gz.age' ]"
   done
   check "bfq rule for rotational disks"  "[ -f /etc/udev/rules.d/60-ioscheduler.rules ]"
+  if host_pkgs "$SCRIPT_DIR/pkglist-aur.txt" | grep -qx nvidia-580xx-dkms; then   # surfboard (stage 20)
+    check "nvidia: 580xx legacy driver, not the repo nvidia-utils" \
+      "pacman -Q nvidia-580xx-dkms nvidia-580xx-utils >/dev/null 2>&1 && [[ \$(pacman -Qq nvidia-utils) != nvidia-utils ]]"
+  fi
   check "YubiKey OTP udev rule"          "[ -f /etc/udev/rules.d/70-yubikey-uaccess.rules ]"
   if [[ -s $SECRETS_DIR/yubikey/u2f_mappings ]]; then check "sudo: YubiKey touch (pam_u2f)" "grep -q pam_u2f /etc/pam.d/sudo"; fi
   if zram_only_swap; then
