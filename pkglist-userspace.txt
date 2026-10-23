@@ -140,6 +140,7 @@ trash-cli
 tree
 tree-sitter-cli
 ttf-fira-code
+ttc-iosevka
 ttf-monoid
 udiskie
 ueberzugpp
