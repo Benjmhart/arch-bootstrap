@@ -1713,7 +1713,7 @@ stage_toolchains() {
   # the way nvm is. Non-interactive, it installs the recommended GHC and cabal, and
   # it does NOT edit shell rc files: .zshrc already sources ~/.ghcup/env. NO_STACK
   # keeps it off stack, which is pacman's. xmonad's build relies on stack fetching
-  # its own GHC (lts-15.9, no system-ghc), and ghcup's stack hook would change that.
+  # its own GHC (the resolver in ~/.xmonad/stack.yaml, no system-ghc), and ghcup's stack hook would change that.
   if [[ -x $HOME/.ghcup/bin/ghc && -x $HOME/.ghcup/bin/cabal ]]; then
     ok "ghcup: ghc $("$HOME/.ghcup/bin/ghc" --numeric-version) and cabal $("$HOME/.ghcup/bin/cabal" --numeric-version) present"
   else
