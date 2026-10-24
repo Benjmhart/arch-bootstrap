@@ -3049,7 +3049,10 @@ stage_xmonad() {
     return 0
   fi
 
-  ( cd "$XMONAD_DIR" && stack build )
+  # Lean (micro, 3.5 GiB): one package at a time. stack builds as many in parallel as there are cores, and the
+  # lts-15.9 -> lts-24.64 move (dotfiles 69b4ebc, 2026-10-23) makes every machine rebuild GHC's whole dependency set cold.
+  local jobs=(); profile_on lean && jobs=(-j1)
+  ( cd "$XMONAD_DIR" && stack build "${jobs[@]}" )
   did "xmonad config project compiled"
 
   if have xmonad; then
