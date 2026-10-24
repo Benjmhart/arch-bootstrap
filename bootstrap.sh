@@ -4226,6 +4226,11 @@ setup_firewall() {
   # transfers (TCP) both arrive on 53317. Not on a no-inbound host (micro): it sends only.
   no_inbound || { tcp+=" 53317"; udp+=" 53317"; }
   tcp="$(echo $tcp | tr ' ' ',')"; udp="$(echo $udp | tr ' ' ',')"
+  # libvirt's NAT network: its guests ask dnsmasq on virbr0 for DHCP and DNS, which the drop policy refused (the
+  # castiron Windows CI VM on beast-arch fell back to 169.254.x, 2026-10-23; arch-bootstrap inbox from castiron).
+  pacman -Qq libvirt >/dev/null 2>&1 && extra+="
+    iifname \"virbr0\" udp dport { 53, 67 } accept
+    iifname \"virbr0\" tcp dport 53 accept"
   [[ -n $tcp ]] && extra+="
     tcp dport { $tcp } accept"
   [[ -n $udp ]] && extra+="
@@ -4266,6 +4271,17 @@ table inet hostfw {
     run sudo systemctl enable nftables
     run sudo nft -f /etc/nftables.conf
     did "host firewall loaded and enabled (LAN tcp: ${tcp:-none}, udp: ${udp:-none})"
+  fi
+  # Docker beside libvirt: docker sets iptables FORWARD to DROP, so the guests' forwarded traffic dies there. Docker
+  # leaves DOCKER-USER for this and rebuilds it at every start, hence a drop-in that runs after it.
+  if pacman -Qq libvirt docker >/dev/null 2>&1; then
+    put_etc_file /etc/systemd/system/docker.service.d/libvirt-forward.conf \
+"# Written by arch-bootstrap (setup_firewall). Edit bootstrap.sh, not this file.
+# libvirt guests (virbr0) through docker's FORWARD DROP.
+[Service]
+ExecStartPost=/usr/bin/iptables -I DOCKER-USER -i virbr0 -j ACCEPT
+ExecStartPost=/usr/bin/iptables -I DOCKER-USER -o virbr0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT" \
+      "docker: libvirt guests past FORWARD DROP (next docker start)" && run sudo systemctl daemon-reload
   fi
 }
 
