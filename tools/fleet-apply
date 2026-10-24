@@ -102,11 +102,30 @@ move() {
     # at every start; dotfiles 52fef68 then committed that content): git refuses to fast-forward over it although
     # nothing would be lost, which failed a whole fpush on 2026-10-17. Put such files back first; a file changed in
     # any OTHER way still stops the move below.
-    local f
+    # Also safe (surfboard, 2026-10-24): a file changed here exactly as ONE incoming commit changes it (a fix made live,
+    # then committed elsewhere: its xmonad.hs = cbd4f9a, while later commits changed the file again), and an untracked
+    # file the snapshot adds with the same content (.local/bin/games copied over before its commit).
+    local f pid top; top=$("${g[@]}" rev-parse --show-toplevel)
     while IFS= read -r f; do
-      [[ -n $f ]] && cmp -s <("${g[@]}" show "$sha:$f" 2>/dev/null) "$("${g[@]}" rev-parse --show-toplevel)/$f" \
-        && "${g[@]}" checkout -q -- ":/$f" && echo "note  $label: $f was already as in ${sha:0:7} here; restored so the move can go on"
+      [[ -n $f ]] || continue
+      if cmp -s <("${g[@]}" show "$sha:$f" 2>/dev/null) "$top/$f"; then
+        "${g[@]}" checkout -q -- ":/$f" && echo "note  $label: $f was already as in ${sha:0:7} here; restored so the move can go on"
+        continue
+      fi
+      pid=$("${g[@]}" diff "$cur" -- ":/$f" | git patch-id --stable | cut -d' ' -f1 || true)
+      [[ -n $pid ]] || continue
+      while IFS= read -r c; do
+        if [[ $("${g[@]}" show "$c" -- ":/$f" | git patch-id --stable | cut -d' ' -f1 || true) == "$pid" ]]; then
+          "${g[@]}" checkout -q -- ":/$f" && echo "note  $label: $f was changed here exactly as ${c:0:7} changes it; restored so the move can go on"
+          break
+        fi
+      done < <("${g[@]}" rev-list "$cur..$sha" -- ":/$f")
     done < <("${g[@]}" diff --name-only)
+    while IFS= read -r f; do
+      [[ -n $f && -f $top/$f ]] && ! "${g[@]}" ls-files --error-unmatch -- ":/$f" >/dev/null 2>&1 \
+        && cmp -s <("${g[@]}" show "$sha:$f") "$top/$f" && rm -f -- "$top/$f" \
+        && echo "note  $label: untracked $f was already as in ${sha:0:7} here; removed so the move can add it"
+    done < <("${g[@]}" diff --name-only --diff-filter=A "$cur" "$sha")
     if [[ $label == secrets ]] && touches "$("${g[@]}" diff --name-only "$cur" "$sha")" && pgrep -x keepassxc >/dev/null; then
       die "secrets: the snapshot changes $VAULT and KeePassXC is running on $HOST -- close it, then re-run"
     fi

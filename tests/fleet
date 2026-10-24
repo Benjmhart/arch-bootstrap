@@ -272,6 +272,24 @@ check "identical local change: restored, the move goes on"   '(( rc == 0 )) && [
 dot7=$(commit "$t/dot-seed" .zshrc rc7 "dot seven"); echo something-else > "$H/.zshrc"
 out=$(echo pw-ok | fa self apply "$ab2" "$dot7" "$sec2" services 2>&1); rc=$?
 check "a DIFFERENT local change still stops it, file kept"    '(( rc != 0 )) && [[ $(dotat self) == "$dot6" && $(cat "$H/.zshrc") == something-else ]]'
+echo rc6 > "$H/.zshrc"
+
+# ================= surfboard 2026-10-24: a live fix later committed (then changed again), and an untracked file the snapshot adds
+printf 'a\nb\nc\n' > "$t/dot-seed/.xr"; git -C "$t/dot-seed" add -A; git -C "$t/dot-seed" commit -qm base; git -C "$t/dot-seed" push -q
+dotb=$(git -C "$t/dot-seed" rev-parse HEAD)
+echo pw-ok | fa self apply "$ab2" "$dotb" "$sec2" services >/dev/null 2>&1
+printf 'a\nB\nc\n' > "$t/dot-seed/.xr"; git -C "$t/dot-seed" commit -qam "the fix"; git -C "$t/dot-seed" push -q
+printf 'A\nB\nc\n' > "$t/dot-seed/.xr"; git -C "$t/dot-seed" commit -qam "later change"; git -C "$t/dot-seed" push -q
+dotg=$(commit "$t/dot-seed" .local/bin/games 'game script' "games")
+printf 'a\nB\nc\n' > "$H/.xr"                                      # the fix, made live here
+mkdir -p "$H/.local/bin"; echo 'game script' > "$H/.local/bin/games"  # copied here before its commit
+out=$(echo pw-ok | fa self apply "$ab2" "$dotg" "$sec2" services 2>&1); rc=$?
+check "live fix = an incoming commit: restored, the move goes on" '(( rc == 0 )) && [[ $(dotat self) == "$dotg" && $(cat "$H/.xr") == $(printf "A\nB\nc") ]] && grep -q "exactly as .* changes it" <<<"$out"'
+check "identical untracked file the snapshot adds: removed, added" 'grep -q "untracked .local/bin/games was already as in" <<<"$out" && [[ $(cat "$H/.local/bin/games") == "game script" ]]'
+dotu=$(commit "$t/dot-seed" .local/bin/other 'theirs' "other"); echo 'mine' > "$H/.local/bin/other"
+out=$(echo pw-ok | fa self apply "$ab2" "$dotu" "$sec2" services 2>&1); rc=$?
+check "a DIFFERENT untracked file still stops it, file kept"   '(( rc != 0 )) && [[ $(dotat self) == "$dotg" && $(cat "$H/.local/bin/other") == mine ]]'
+rm -f "$H/.local/bin/other"
 
 
 # ================= sudo locked by pam_faillock: said so, before the password is asked (micro, 2026-10-17)
