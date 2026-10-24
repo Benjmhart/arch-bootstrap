@@ -4565,15 +4565,31 @@ fallback_options="-S autodetect"' "mkinitcpio: fallback image only" && rebuild=1
     # chainloader /EFI/Microsoft/Boot/bootmgfw.efi entry instead; add it when a machine has one.
     put_etc_file /etc/grub.d/35_windows "#!/bin/sh
 # Written by arch-bootstrap (WINDOWS_BOOT_UUID; station-maintenance surfboard 04); edit setup_boot there, not this file.
+# Both entries leave GRUB's graphics mode first: the 2026-10-23 boot through ntldr from gfxterm hung on a torn
+# screen (surfboard 06). 'Windows (chainload)' is the other legacy hand-off: the partition's own boot sector, with
+# its disk swapped to BIOS drive 0 as bootmgr sees it when the firmware boots it. Keep whichever 06 proves.
 cat <<'EOF'
 menuentry 'Windows' --class windows --class os {
 	insmod part_msdos
 	insmod ntfs
 	insmod ntldr
 	search --no-floppy --fs-uuid --set=root $WINDOWS_BOOT_UUID
+	set gfxpayload=text
+	terminal_output console
 	ntldr /bootmgr
 }
-EOF" "GRUB: the Windows entry" || true
+menuentry 'Windows (chainload)' --class windows --class os {
+	insmod part_msdos
+	insmod ntfs
+	insmod chain
+	insmod drivemap
+	search --no-floppy --fs-uuid --set=root $WINDOWS_BOOT_UUID
+	set gfxpayload=text
+	terminal_output console
+	drivemap -s (hd0) \${root}
+	chainloader +1
+}
+EOF" "GRUB: the Windows entries" || true
     [[ -x /etc/grub.d/35_windows ]] || run sudo chmod 755 /etc/grub.d/35_windows
     if grep -qx 'GRUB_DEFAULT=saved' /etc/default/grub; then
       ok "GRUB_DEFAULT=saved (grub-reboot Windows boots it once)"
