@@ -334,6 +334,7 @@ apply_all() {
   local ab=$1 dot=$2 sec=$3; shift 3; local h st rc micro_ok=1
   for h in "$@"; do
     if (( ! micro_ok )); then result[$h]="not attempted ($SELF failed)"; continue; fi
+    [[ ${result[$h]:-} == "skip (offline"* ]] && { printf '=== %-13s skip (offline on the tailnet)\n' "$h"; continue; }
     if [[ -n ${secrets_bad[$h]:-} ]]; then result[$h]="FAILED secrets out of sync, not updated: ${secrets_bad[$h]#FAIL  secrets: }"; continue; fi
     st=$(on "$h" status 2>&1 | tail -1)
     if [[ ${stages[*]:-} != keys && $st == "$ab $dot $sec "*" rc=0 "* ]]; then result[$h]="skip (already at this snapshot)"; continue; fi
@@ -466,10 +467,16 @@ push)
   unlock
   declare -A result=() secrets_bad=()
 
+  # 0. A machine the tailnet shows offline (surfboard in Windows or off, 2026-10-23) is skipped and reported, not failed:
+  # it gets this snapshot at the next fpush. If tailscale cannot say, every machine is tried as before.
+  offline=$(tailscale status --json 2>/dev/null | jq -r '.Peer[] | select(.Online == false) | .DNSName | split(".")[0]' 2>/dev/null || true)
+  for h in "${hosts[@]}"; do grep -qxF "$h" <<<"$offline" && result[$h]="skip (offline on the tailnet: next fpush)"; done
+
   # 1. Each machine hands its own secrets commits to origin, the vault's source of truth first.
   order=(); for h in "$SELF" "${hosts[@]}"; do [[ $h == "$VAULT_HOST" ]] && order=("$h" "${order[@]}") || order+=("$h"); done
   echo "=== secrets: each machine pushes its own commits"
   for h in "${order[@]}"; do
+    [[ ${result[$h]:-} == "skip (offline"* ]] && { echo "skip  $h: offline on the tailnet"; continue; }
     out=$(on "$h" secrets-push 2>&1); rc=$?; echo "$out"
     (( rc == 0 )) || secrets_bad[$h]=$(tail -1 <<<"$out")
   done
