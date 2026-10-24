@@ -291,6 +291,15 @@ out=$(echo pw-ok | fa self apply "$ab2" "$dotq" "$sec2" services 2>&1); rc=$?
 check "edit that would repeat a JSON key: snapshot kept, edit in stash" '(( rc == 0 )) && [[ $(dotat self) == "$dotq" ]] && [[ $(grep -c "\"k\"" "$H/.s.json") == 1 ]] && grep -q "\"a\": 5" "$H/.s.json" && grep -q "do not fit on top of" <<<"$out" && [[ $(git --git-dir="$H/.dot" show "stash@{0}:.s.json" | grep -c "\"k\"") == 2 ]]'
 git --git-dir="$H/.dot" stash drop -q
 
+# ================= media-center 2026-10-24: a stale local master (an old copy of a commit pushed rebased) is never checked out
+gd() { git --git-dir="$H/.dot" --work-tree="$H" "$@"; }
+gd checkout -q master 2>/dev/null; gd commit -q --allow-empty -m "stale local copy"; gd checkout -q --detach "$dotq"
+dotr=$(commit "$t/dot-seed" .r rr "dot r")
+before=$(gd reflog | grep -c "to master")
+out=$(echo pw-ok | fa self apply "$ab2" "$dotr" "$sec2" services 2>&1); rc=$?
+check "stale local master: not checked out, detached at the snapshot" '(( rc == 0 )) && [[ $(dotat self) == "$dotr" && $(gd reflog | grep -c "to master") == "$before" ]]'
+gd branch -q -f master "$dotr"
+
 # ================= surfboard 2026-10-24: a live fix later committed (then changed again), and an untracked file the snapshot adds
 printf 'a\nb\nc\n' > "$t/dot-seed/.xr"; git -C "$t/dot-seed" add -A; git -C "$t/dot-seed" commit -qm base; git -C "$t/dot-seed" push -q
 dotb=$(git -C "$t/dot-seed" rev-parse HEAD)

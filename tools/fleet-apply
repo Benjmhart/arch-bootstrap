@@ -158,7 +158,9 @@ move() {
         stashed=1 held="; the edits to ${clash[*]} are in git stash"
       fi
     fi
-    if "${g[@]}" checkout -q "$branch" 2>/dev/null && "${g[@]}" merge-base --is-ancestor HEAD "$sha"; then
+    # Ask BEFORE checking the branch out: on media-center (2026-10-24) a stale local master (an old copy of a commit
+    # pushed rebased) was checked out first, then the detach failed, and the tree was left on that older state.
+    if "${g[@]}" merge-base --is-ancestor "refs/heads/$branch" "$sha" 2>/dev/null && "${g[@]}" checkout -q "$branch" 2>/dev/null; then
       "${g[@]}" merge -q --ff-only "$sha" || die "$label: cannot fast-forward to ${sha:0:7} (local changes in the way?$held)"
     else
       "${g[@]}" checkout -q --detach "$sha" || die "$label: cannot check out ${sha:0:7} (local changes in the way?$held)"
