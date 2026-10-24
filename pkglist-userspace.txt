@@ -208,6 +208,19 @@ lib32-vulkan-intel    # only: surfboard
 vulkan-intel          # only: surfboard
 linux-headers         # only: surfboard
 nvidia-prime          # only: surfboard
+# Emulation on surfboard (station-maintenance surfboard 05): RetroArch, launched from Steam Big Picture (the `games`
+# session). One core per system, the Libretro-recommended one; PS1 (beetle-psx-hw) needs Ben's BIOS files.
+retroarch                  # only: surfboard
+retroarch-assets-ozone     # only: surfboard
+libretro-core-info         # only: surfboard
+libretro-mesen             # only: surfboard
+libretro-snes9x            # only: surfboard
+libretro-mgba              # only: surfboard
+libretro-genesis-plus-gx   # only: surfboard
+libretro-mupen64plus-next  # only: surfboard
+libretro-beetle-psx-hw     # only: surfboard
+libretro-ppsspp            # only: surfboard
+libretro-melonds           # only: surfboard
 # adb/fastboot + udev rules, beast-arch only: phones are flashed from here (station-maintenance beast-arch 112).
 android-tools         # only: beast-arch
 android-udev          # only: beast-arch
