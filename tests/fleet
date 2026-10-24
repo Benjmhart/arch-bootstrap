@@ -271,8 +271,25 @@ out=$(echo pw-ok | fa self apply "$ab2" "$dot6" "$sec2" services 2>&1); rc=$?
 check "identical local change: restored, the move goes on"   '(( rc == 0 )) && [[ $(dotat self) == "$dot6" ]] && grep -q "was already as in" <<<"$out"'
 dot7=$(commit "$t/dot-seed" .zshrc rc7 "dot seven"); echo something-else > "$H/.zshrc"
 out=$(echo pw-ok | fa self apply "$ab2" "$dot7" "$sec2" services 2>&1); rc=$?
-check "a DIFFERENT local change still stops it, file kept"    '(( rc != 0 )) && [[ $(dotat self) == "$dot6" && $(cat "$H/.zshrc") == something-else ]]'
-echo rc6 > "$H/.zshrc"
+# Since 2026-10-24 a clashing edit no longer stops the move: the snapshot's version goes in, the edit waits in the stash.
+check "a CONFLICTING local edit: snapshot in place, edit in stash" '(( rc == 0 )) && [[ $(dotat self) == "$dot7" && $(cat "$H/.zshrc") == rc7 ]] && grep -q "do not fit on top of" <<<"$out" && [[ $(git --git-dir="$H/.dot" show "stash@{0}:.zshrc") == something-else ]]'
+git --git-dir="$H/.dot" stash drop -q
+
+# ================= carbon/media-center 2026-10-24: a live edit to a file the snapshot also changes, elsewhere in it
+printf '{\n  "a": 1,\n  "m": 2,\n  "z": 3\n}\n' > "$t/dot-seed/.s.json"; git -C "$t/dot-seed" add -A; git -C "$t/dot-seed" commit -qm "json base"; git -C "$t/dot-seed" push -q
+dotj=$(git -C "$t/dot-seed" rev-parse HEAD); echo pw-ok | fa self apply "$ab2" "$dotj" "$sec2" services >/dev/null 2>&1
+printf '{\n  "a": 1,\n  "k": {"x": 1},\n  "m": 2,\n  "z": 3\n}\n' > "$t/dot-seed/.s.json"; git -C "$t/dot-seed" commit -qam "json up"; git -C "$t/dot-seed" push -q
+dotk=$(git -C "$t/dot-seed" rev-parse HEAD)
+printf '{\n  "a": 1,\n  "m": 2,\n  "z": 4\n}\n' > "$H/.s.json"                 # edited here, far from upstream's change
+out=$(echo pw-ok | fa self apply "$ab2" "$dotk" "$sec2" services 2>&1); rc=$?
+check "edit elsewhere in the same file: both kept, the move goes on" '(( rc == 0 )) && [[ $(dotat self) == "$dotk" ]] && grep -q "\"k\"" "$H/.s.json" && grep -q "\"z\": 4" "$H/.s.json" && grep -q "kept on top of" <<<"$out"'
+git --git-dir="$H/.dot" --work-tree="$H" checkout -q -- .s.json
+printf '{\n  "a": 5,\n  "k": {"x": 1},\n  "m": 2,\n  "z": 3\n}\n' > "$t/dot-seed/.s.json"; git -C "$t/dot-seed" commit -qam "json q"; git -C "$t/dot-seed" push -q
+dotq=$(git -C "$t/dot-seed" rev-parse HEAD)
+printf '{\n  "a": 1,\n  "k": {"x": 1},\n  "m": 2,\n  "k": {"y": 2},\n  "z": 3\n}\n' > "$H/.s.json"   # merges as text, but repeats "k"
+out=$(echo pw-ok | fa self apply "$ab2" "$dotq" "$sec2" services 2>&1); rc=$?
+check "edit that would repeat a JSON key: snapshot kept, edit in stash" '(( rc == 0 )) && [[ $(dotat self) == "$dotq" ]] && [[ $(grep -c "\"k\"" "$H/.s.json") == 1 ]] && grep -q "\"a\": 5" "$H/.s.json" && grep -q "do not fit on top of" <<<"$out" && [[ $(git --git-dir="$H/.dot" show "stash@{0}:.s.json" | grep -c "\"k\"") == 2 ]]'
+git --git-dir="$H/.dot" stash drop -q
 
 # ================= surfboard 2026-10-24: a live fix later committed (then changed again), and an untracked file the snapshot adds
 printf 'a\nb\nc\n' > "$t/dot-seed/.xr"; git -C "$t/dot-seed" add -A; git -C "$t/dot-seed" commit -qm base; git -C "$t/dot-seed" push -q

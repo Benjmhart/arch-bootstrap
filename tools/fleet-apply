@@ -87,6 +87,21 @@ secrets_push() {
   fi
 }
 
+# json_ok <file...>: every .json among them parses and repeats no key in any object (two edits that each add the same
+# key in different places merge cleanly as text, and a reader then silently keeps only the last one).
+json_ok() {
+  local f
+  for f; do
+    [[ $f == *.json && -f $f ]] || continue
+    python3 -c 'import json, sys
+def once(pairs):
+    keys = [k for k, _ in pairs]
+    if len(keys) != len(set(keys)): raise ValueError("repeated key")
+    return dict(pairs)
+json.load(open(sys.argv[1]), object_pairs_hook=once)' "$f" 2>/dev/null || return 1
+  done
+}
+
 # move <label> <branch> <sha> <forward-only 0|1> <git cmd...>: put a checkout at exactly <sha>,
 # which must be on origin/<branch>. Forward: fast-forward the branch (detached if the branch has
 # other commits). Older (a rollback): detached, unless forward-only.
@@ -129,10 +144,32 @@ move() {
     if [[ $label == secrets ]] && touches "$("${g[@]}" diff --name-only "$cur" "$sha")" && pgrep -x keepassxc >/dev/null; then
       die "secrets: the snapshot changes $VAULT and KeePassXC is running on $HOST -- close it, then re-run"
     fi
+    # Dotfiles only: a file edited here that the snapshot ALSO changes (Claude Code rewrites ~/.claude/settings.json on
+    # every machine; carbon and media-center stopped the 2026-10-24 17:47 fpush). Set those edits aside, move, then put
+    # them back on top. If they do not fit (a conflict, or a .json that no longer parses or repeats a key), the
+    # snapshot's version stays and the edits wait in `git stash`, named in the note. Nothing is lost either way.
+    local -a clash=() specs=() paths=(); local stashed=0 held=""
+    if [[ $label == dotfiles ]]; then
+      mapfile -t clash < <(comm -12 <("${g[@]}" diff --name-only | sort) <("${g[@]}" diff --name-only "$cur" "$sha" | sort))
+      for f in "${clash[@]}"; do [[ -n $f ]] && specs+=(":/$f") && paths+=("$top/$f"); done
+      if (( ${#specs[@]} )); then
+        "${g[@]}" stash push -q -m "fleet-apply $(date -Is): local edits before ${sha:0:7}" -- "${specs[@]}" \
+          || die "$label: could not set aside local edits to ${clash[*]}"
+        stashed=1 held="; the edits to ${clash[*]} are in git stash"
+      fi
+    fi
     if "${g[@]}" checkout -q "$branch" 2>/dev/null && "${g[@]}" merge-base --is-ancestor HEAD "$sha"; then
-      "${g[@]}" merge -q --ff-only "$sha" || die "$label: cannot fast-forward to ${sha:0:7} (local changes in the way?)"
+      "${g[@]}" merge -q --ff-only "$sha" || die "$label: cannot fast-forward to ${sha:0:7} (local changes in the way?$held)"
     else
-      "${g[@]}" checkout -q --detach "$sha" || die "$label: cannot check out ${sha:0:7} (local changes in the way?)"
+      "${g[@]}" checkout -q --detach "$sha" || die "$label: cannot check out ${sha:0:7} (local changes in the way?$held)"
+    fi
+    if (( stashed )); then
+      if "${g[@]}" stash apply -q >/dev/null 2>&1 && json_ok "${paths[@]}"; then
+        "${g[@]}" stash drop -q && echo "note  $label: local edits to ${clash[*]} kept on top of ${sha:0:7}"
+      else
+        "${g[@]}" checkout -q HEAD -- "${specs[@]}"
+        echo "note  $label: local edits to ${clash[*]} do not fit on top of ${sha:0:7}: the snapshot's version is in place, the edits are in \`git --git-dir=$DOTDIR stash list\` (newest)"
+      fi
     fi
     echo "ok    $label at ${sha:0:7}"
   elif "${g[@]}" merge-base --is-ancestor "$sha" "$cur"; then
