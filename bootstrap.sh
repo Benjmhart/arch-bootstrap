@@ -1913,7 +1913,7 @@ install_tui_plugins() {
 # (station-maintenance beast-arch 108/127). Built from a pinned commit, so a new version reaches the fleet only by
 # changing this line and reviewing it in fpush. System git (CARGO_NET_GIT_FETCH_WITH_CLI) so ~/.ssh/config's
 # GitHub key is used. Into ~/.cargo/bin, which is on xmonad's PATH. Skipped on lean hosts: a Rust build there.
-KEYBIND_FIND_REV="${KEYBIND_FIND_REV:-4da655e49fa165b36421e71684d8e822b1cb0aa3}"
+KEYBIND_FIND_REV="${KEYBIND_FIND_REV:-1166785cffeaac7914581371012ab8a03a530f23}"
 install_keybind_find() {
   have cargo || { warn "keybind-find: no cargo -- not installed"; return 0; }
   [[ -x $HOME/bin/lean-host ]] && "$HOME/bin/lean-host" && { info "keybind-find: lean host, skipped"; return 0; }
