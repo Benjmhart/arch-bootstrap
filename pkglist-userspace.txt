@@ -210,6 +210,8 @@ linux-headers         # only: surfboard
 nvidia-prime          # only: surfboard
 # Emulation on surfboard (station-maintenance surfboard 05): RetroArch, launched from Steam Big Picture (the `games`
 # session). One core per system, the Libretro-recommended one; PS1 (beetle-psx-hw) needs Ben's BIOS files.
+# gamescope: the `games` session's compositor (SteamOS's): games full screen and focused, cursor hidden (surfboard 05).
+gamescope                  # only: surfboard
 retroarch                  # only: surfboard
 retroarch-assets-ozone     # only: surfboard
 libretro-core-info         # only: surfboard
