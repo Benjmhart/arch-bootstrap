@@ -211,8 +211,10 @@ linux-headers         # only: surfboard
 nvidia-prime          # only: surfboard
 # Emulation on surfboard (station-maintenance surfboard 05): RetroArch, launched from Steam Big Picture (the `games`
 # session). One core per system, the Libretro-recommended one; PS1 (beetle-psx-hw) needs Ben's BIOS files.
-# gamescope: the `games` session's compositor (SteamOS's): games full screen and focused, cursor hidden (surfboard 05).
-gamescope                  # only: surfboard
+# The `games` session (dotfiles ~/.local/bin/games, surfboard 05): openbox makes every window full screen and focused,
+# unclutter hides the idle cursor. gamescope was tried and dropped: games crash in it on the Maxwell's 580xx driver.
+openbox                    # only: surfboard
+unclutter                  # only: surfboard
 retroarch                  # only: surfboard
 retroarch-assets-ozone     # only: surfboard
 libretro-core-info         # only: surfboard
