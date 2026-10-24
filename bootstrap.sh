@@ -4662,6 +4662,23 @@ EOF" "GRUB: the Windows entries" || true
     else
       run sudo sed -i 's/^GRUB_DEFAULT=.*/GRUB_DEFAULT=saved/' /etc/default/grub && did "GRUB_DEFAULT=saved"
     fi
+    # `sudo reboot-windows` with no password, so an agent can boot the machine into Windows over ssh (Ben, 2026-10-24:
+    # "remotely trigger a reboot into windows"). Only this root-owned script, which takes no arguments, gets NOPASSWD.
+    put_etc_file /usr/local/bin/reboot-windows "#!/bin/sh
+# Written by arch-bootstrap (setup_boot, WINDOWS_BOOT_UUID). The next boot only goes to GRUB's 'Windows' entry; then Arch.
+[ \$# -eq 0 ] || { echo 'reboot-windows takes no arguments' >&2; exit 2; }
+/usr/bin/grub-reboot Windows && exec /usr/bin/systemctl reboot" "reboot-windows" || true
+    [[ -x /usr/local/bin/reboot-windows ]] || run sudo chmod 755 /usr/local/bin/reboot-windows
+    local rw=/etc/sudoers.d/20-reboot-windows rwtmp; rwtmp=$(mktemp)
+    printf '%s\n' "$USER ALL=(root) NOPASSWD: /usr/local/bin/reboot-windows \"\"" >"$rwtmp"
+    if sudo -n cmp -s "$rwtmp" "$rw" 2>/dev/null; then
+      ok "sudo reboot-windows: no password"
+    elif run sudo visudo -cqf "$rwtmp" && run sudo install -m 440 -o root -g root "$rwtmp" "$rw"; then
+      did "sudo reboot-windows: no password ($rw)"
+    else
+      warn "could not write $rw"
+    fi
+    rm -f "$rwtmp"
   fi
   for f in 10_linux 15_uki 20_linux_xen 31_efi_bootnext; do
     [[ -x /etc/grub.d/$f ]] && { run sudo chmod 644 "/etc/grub.d/$f"; did "GRUB: $f switched off"; }
