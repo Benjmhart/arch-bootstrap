@@ -246,7 +246,15 @@ fi
 IFS= read -r pw || die "no sudo password on stdin"
 
 # 1. The snapshot: exactly these three commits.
+self_sum=$(sha256sum < "$REPO/tools/fleet-apply")
 move arch-bootstrap "${FLEET_AB_BRANCH:-main}" "$ab" 0 git -C "$REPO"
+# This script is part of what just moved: run the new copy for the rest, once, so a fix to fleet-apply works in the
+# fpush that delivers it, not one run later (surfboard, then carbon and media-center, failed twice that way on
+# 2026-10-24). The new copy repeats the cheap steps above; the password reaches it on a pipe.
+if [[ -z ${FLEET_APPLY_REEXEC:-} && $(sha256sum < "$REPO/tools/fleet-apply") != "$self_sum" ]]; then
+  echo "note  fleet-apply changed with this snapshot: continuing with the new copy"
+  FLEET_APPLY_REEXEC=1 exec "$REPO/tools/fleet-apply" "${req[@]}" < <(printf '%s\n' "$pw")
+fi
 if [[ -d $DOTDIR ]]; then
   move dotfiles "${FLEET_DOT_BRANCH:-master}" "$dot" 0 git --git-dir="$DOTDIR" --work-tree="$HOME"
 fi
