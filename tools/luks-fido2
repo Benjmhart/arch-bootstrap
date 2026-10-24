@@ -1,14 +1,19 @@
 #!/usr/bin/env bash
-# luks-fido2 [--dry-run] -- enroll YubiKeys to unlock / at boot (station-maintenance beast-arch 95). Run by Ben,
+# luks-fido2 [--dry-run] [--touch-only] -- enroll YubiKeys to unlock / at boot (station-maintenance beast-arch 95). Run by Ben,
 # on the machine, as root (sudo), with bootstrap's setup_boot already applied (dracut + /etc/grub.d/10_arch).
 #   1. /home: if crypttab opens it with a passphrase ("none"), add a keyfile on / (asks the /home passphrase
 #      once), test it, and point crypttab at it -- otherwise a key-unlocked boot stops at a /home prompt.
 #   2. Enroll keys on /, one at a time: the LUKS passphrase, then the key's FIDO2 PIN and a touch. The
 #      passphrase stays; at boot it is the fallback after 20 s, and the "(passphrase)" GRUB entry.
 #   3. Regenerate the GRUB menu (10_arch adds the key entries once a key is enrolled).
+# --touch-only: keys unlock with a touch and NO PIN, and the first enrollment removes every earlier key slot (the
+#   PIN ones; the passphrase stays). For a machine whose unlock prompt cannot be seen: surfboard at the TV, where it
+#   shows only on the laptop panel (station-maintenance surfboard 05, Ben 2026-10-24). A key alone then opens /.
 # A log goes to $OPS (or /root) as luks-fido2-<host>-<date>.log; it never holds a passphrase or PIN.
 set -uo pipefail
-dry=0; [[ ${1:-} == --dry-run ]] && dry=1
+dry=0 pin=yes
+for a in "$@"; do case $a in --dry-run) dry=1 ;; --touch-only) pin=no ;; *) echo "unknown option $a"; exit 2 ;; esac; done
+wipe=(); [[ $pin == no ]] && wipe=(--wipe-slot=fido2)
 [[ $EUID -eq 0 ]] || { echo "run with sudo"; exit 1; }
 host=$(cat /etc/hostname)
 ops=$(getent passwd "${SUDO_USER:-root}" | cut -d: -f6)/.local/state/ops; [[ -d $ops ]] || ops=/root
@@ -51,9 +56,10 @@ fi
 while :; do
   ask "Plug in ONE YubiKey to enroll and press Enter (or type q and Enter when done)"
   [[ ${REPLY,,} == q ]] && break
-  echo "Asks the LUKS passphrase for /, then the key's FIDO2 PIN, then a touch:"
-  do_ systemd-cryptenroll --fido2-device=auto --fido2-with-client-pin=yes --fido2-with-user-presence=yes "$root_dev" \
-    && echo "enrolled; keys now: $(tokens)" || echo "enrollment failed (nothing changed); try again or q"
+  echo "Asks the LUKS passphrase for /,$( [[ $pin == yes ]] && echo " then the key's FIDO2 PIN,") then a touch:"
+  # "${wipe[@]}": --touch-only's first enrollment drops the older FIDO2 slots (never the one just made), the rest add.
+  do_ systemd-cryptenroll --fido2-device=auto --fido2-with-client-pin=$pin --fido2-with-user-presence=yes "${wipe[@]}" "$root_dev" \
+    && { echo "enrolled; keys now: $(tokens)"; wipe=(); } || echo "enrollment failed (nothing changed); try again or q"
 done
 
 # 3. The menu
@@ -61,5 +67,5 @@ new=$(mktemp)
 { grub-mkconfig 2>/dev/null >"$new" && grub-script-check "$new"; } || fail "grub-mkconfig/grub-script-check failed; grub.cfg untouched"
 echo "menu:"; grep -E "^menuentry " "$new" | cut -d"'" -f2 | sed 's/^/  /'
 do_ install -m 600 "$new" /boot/grub/grub.cfg; rm -f "$new"
-echo "keys enrolled for /: $(tokens). Test: reboot without a key (20 s, then the passphrase), then with one (PIN, touch)."
+echo "keys enrolled for /: $(tokens). Test: reboot without a key (20 s, then the passphrase), then with one ($( [[ $pin == yes ]] && echo "PIN, ")touch)."
 echo "== done $(date -Is)"
