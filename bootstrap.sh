@@ -876,7 +876,7 @@ on_exit() {
   bootstrap_agent_cleanup
   [[ -n $SUDO_KEEPALIVE_PID ]] && kill "$SUDO_KEEPALIVE_PID" 2>/dev/null
   if [[ -n $CURRENT_STAGE ]] && (( rc != 0 )); then
-    warn "stage '$CURRENT_STAGE' did not complete cleanly (exit $rc) -- not marking it done"
+    warn "stage '$CURRENT_STAGE' did not complete cleanly (exit $rc${ERR_AT:+, at $ERR_AT}) -- not marking it done"
     printf '\n%sStopped at stage %s.%s Fix the problem above and re-run:\n\n' \
       "$C_BOLD$C_YEL" "$CURRENT_STAGE" "$C_RESET" >&2
     printf '    %s --resume\n\n' "$0" >&2
@@ -1904,7 +1904,8 @@ install_tui_plugins() {
       grep -qF "use = \"$p\"" "$XDG_CONFIG_HOME/yazi/package.toml" 2>/dev/null \
         || { run ya pkg add "$p" && did "yazi plugin $p"; }
     done
-    run ya pkg upgrade >/dev/null && ok "yazi plugins at their latest"
+    # A failed upgrade (network) is a warning, not a stopped stage 60.
+    if run ya pkg upgrade >/dev/null; then ok "yazi plugins at their latest"; else warn "yazi plugins: upgrade failed -- next run"; fi
   fi
 }
 
@@ -4016,7 +4017,8 @@ set_console_font() {
   fi
   did "console font $CONSOLE_FONT in $f"
   # Used from the next boot. The rebuild is what reaches the passphrase prompt.
-  grep -Eq '^HOOKS=.*\<consolefont\>' /etc/mkinitcpio.conf && run sudo mkinitcpio -P
+  # if, not &&: on a dracut machine (no consolefont hook) a bare && list made this function return 1 and end stage 60.
+  if grep -Eq '^HOOKS=.*\<consolefont\>' /etc/mkinitcpio.conf 2>/dev/null; then run sudo mkinitcpio -P; fi
 }
 
 # Dracula on the kernel console (every tty: all agetty since kmscon went, 2026-10-17).
@@ -4269,6 +4271,7 @@ ExecStartPost=/usr/bin/iptables -I DOCKER-USER -i virbr0 -j ACCEPT
 ExecStartPost=/usr/bin/iptables -I DOCKER-USER -o virbr0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT" \
       "docker: libvirt guests past FORWARD DROP (next docker start)" && run sudo systemctl daemon-reload
   fi
+  return 0   # put_etc_file returns 1 for "already in place": without this, every run after the first ended stage 60 (beast-arch, 2026-10-24)
 }
 
 # LLMNR answers name queries from anyone on the LAN on tcp/udp 5355; nothing here
@@ -5317,6 +5320,11 @@ main() {
   # on_exit reports which stage it was. Not a subshell either: stage 05 exports
   # SSH_AUTH_SOCK for the stages after it, and a subshell would drop that.
   trap on_exit EXIT
+  # Name what stopped a stage. Under set -e a function whose last command is a failed `a && b` list returns 1, and its
+  # caller then ends the stage with only "exit 1" (stage 60 three times, 2026-10-23/24: keybind-find, setup_firewall).
+  # -E: functions inherit the trap. ERR fires by the same rules as set -e, so it records the command that stopped it.
+  set -E
+  trap 'ERR_AT="line $LINENO in ${FUNCNAME[0]:-main}: $(sed -n "${LINENO}s/^ *//p" "${BASH_SOURCE[0]}" 2>/dev/null)"' ERR
   for s in "${STAGES[@]}"; do
     if selected "$s"; then
       CURRENT_STAGE="$s"; STAGE_DEFERRED=0
