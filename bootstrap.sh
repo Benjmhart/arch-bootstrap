@@ -4081,6 +4081,28 @@ remove_kmscon() {
   ok "no kmscon: every tty is agetty"
 }
 
+# Boot straight into the `games` session (dotfiles ~/.local/bin/games; station-maintenance surfboard 05; Ben,
+# 2026-10-24: "starting 'games' by default ... i want that"). tty1 logs $USER in with no password, and the dotfiles'
+# .zprofile runs `games` on tty1 only when this drop-in exists -- one switch. Quitting the session ("Quit to terminal")
+# leaves that shell on tty1, where `startx` is the desktop; the other ttys still ask for a password. The disk unlock
+# (YubiKey or passphrase) still guards the machine at boot; after it, anyone at the TV is in.
+GAMES_AT_LOGIN="${GAMES_AT_LOGIN:-no}"
+setup_games_at_login() {
+  local f=/etc/systemd/system/getty@tty1.service.d/games-autologin.conf
+  if [[ $GAMES_AT_LOGIN != yes ]]; then
+    [[ -e $f ]] && { run sudo rm -f "$f"; run sudo systemctl daemon-reload; did "tty1: autologin into games off (next boot)"; }
+    return 0
+  fi
+  put_etc_file "$f" \
+"# Written by arch-bootstrap (setup_games_at_login, GAMES_AT_LOGIN=yes). Edit bootstrap.sh / bootstrap.conf, not this.
+# tty1 logs $USER in; ~/.zprofile then starts \`games\` (it checks for this file).
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty -o '-p -f -- \\\\u' --noclear --autologin $USER %I \$TERM" \
+    "tty1: autologin into games (next boot)" && run sudo systemctl daemon-reload
+  return 0
+}
+
 # The lid (station-maintenance beast-arch 111; Ben 2026-10-17). On AC a closed lid only LOCKS: the laptop stays up and on
 # the network and anything running carries on. On battery it suspends, as before. "shutting the lid should always screen
 # lock" -- logind's `lock` action sends the session's Lock signal, which xss-lock (.xinitrc) and swayidle's `lock`
@@ -4768,6 +4790,7 @@ stage_services() {
   set_console_font
   set_console_palette
   remove_kmscon
+  setup_games_at_login
   setup_lid
   setup_pointer
   setup_touchpad_quirks
