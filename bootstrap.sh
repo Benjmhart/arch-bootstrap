@@ -1916,7 +1916,8 @@ KEYBIND_FIND_REV="${KEYBIND_FIND_REV:-4da655e49fa165b36421e71684d8e822b1cb0aa3}"
 install_keybind_find() {
   have cargo || { warn "keybind-find: no cargo -- not installed"; return 0; }
   [[ -x $HOME/bin/lean-host ]] && "$HOME/bin/lean-host" && { info "keybind-find: lean host, skipped"; return 0; }
-  local have_kf; have_kf=$(cargo install --list 2>/dev/null | grep '^keybind-find ')
+  # || true: not installed yet = grep exits 1, and under set -euo pipefail that silently ended stage 60 (media-center, 2026-10-23).
+  local have_kf; have_kf=$(cargo install --list 2>/dev/null | grep '^keybind-find ' || true)
   if [[ $have_kf == *"#${KEYBIND_FIND_REV:0:8})"* ]]; then
     ok "keybind-find at ${KEYBIND_FIND_REV:0:7}"
   elif [[ $have_kf == *"(/"* ]]; then
