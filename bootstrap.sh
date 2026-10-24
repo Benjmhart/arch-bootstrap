@@ -4104,6 +4104,42 @@ HandleLidSwitchDocked=lock" "lid: lock on AC, suspend on battery (from the next 
   return 0
 }
 
+# An X server on the NVIDIA alone, for hybrid laptops whose external ports hang off it (surfboard: HDMI/DP on the
+# Maxwell, the panel on the Intel). Not the default config: `games` (dotfiles) starts its X server with
+# `-config xorg-nvidia-only.conf` when a TV is plugged in, so games render and scan out on one GPU. Reverse PRIME with
+# gamescope on the Intel stuttered, and Isaac never showed (station-maintenance surfboard 05, 2026-10-24). Xorg takes a
+# -config from a user only as a path relative to /etc/X11, hence a system file.
+setup_nvidia_only_xorg() {
+  host_pkgs "$SCRIPT_DIR/pkglist-aur.txt" | grep -qx nvidia-580xx-dkms || return 0
+  local d bus=""
+  for d in /sys/bus/pci/devices/*; do
+    [[ $(<"$d/vendor") == 0x10de && $(<"$d/class") == 0x03* ]] || continue
+    d=${d##*/}; bus=$(printf 'PCI:%d:%d:%d' "0x${d:5:2}" "0x${d:8:2}" "0x${d:11:1}"); break
+  done
+  [[ -n $bus ]] || { warn "nvidia-only X config: no NVIDIA GPU found"; return 0; }
+  put_etc_file /etc/X11/xorg-nvidia-only.conf \
+"# Written by arch-bootstrap (setup_nvidia_only_xorg). Edit bootstrap.sh, not this file. Used only with -config.
+Section \"ServerFlags\"
+    Option \"AutoAddGPU\" \"false\"
+EndSection
+
+Section \"ServerLayout\"
+    Identifier \"nvidia-only\"
+    Screen \"nvidia\"
+EndSection
+
+Section \"Device\"
+    Identifier \"nvidia\"
+    Driver \"nvidia\"
+    BusID \"$bus\"
+EndSection
+
+Section \"Screen\"
+    Identifier \"nvidia\"
+    Device \"nvidia\"
+EndSection" "X: NVIDIA-only config for the games session ($bus)" || true
+}
+
 # Pointer speed under X, every machine: the maximum (Ben 2026-10-17: +30%, then +30% more, then "max it out on all
 # systems"). libinput's AccelSpeed runs -1..1, 0 the default. Mice and trackpoints (MatchIsPointer) AND touchpads
 # (MatchIsTouchpad): the first version matched pointers only, and micro's touchpad stayed at the default (its Xorg log:
@@ -4754,6 +4790,7 @@ stage_services() {
   remove_kmscon
   setup_lid
   setup_pointer
+  setup_nvidia_only_xorg
   setup_touchpad_quirks
   setup_firewall
   disable_llmnr
