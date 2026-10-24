@@ -1908,6 +1908,28 @@ install_tui_plugins() {
   fi
 }
 
+# keybind-find (Benjmhart/keybind-find, private): xmonad's mod-/ writes the keymap and starts it
+# (station-maintenance beast-arch 108/127). Built from a pinned commit, so a new version reaches the fleet only by
+# changing this line and reviewing it in fpush. System git (CARGO_NET_GIT_FETCH_WITH_CLI) so ~/.ssh/config's
+# GitHub key is used. Into ~/.cargo/bin, which is on xmonad's PATH. Skipped on lean hosts: a Rust build there.
+KEYBIND_FIND_REV="${KEYBIND_FIND_REV:-4da655e49fa165b36421e71684d8e822b1cb0aa3}"
+install_keybind_find() {
+  have cargo || { warn "keybind-find: no cargo -- not installed"; return 0; }
+  [[ -x $HOME/bin/lean-host ]] && "$HOME/bin/lean-host" && { info "keybind-find: lean host, skipped"; return 0; }
+  local have_kf; have_kf=$(cargo install --list 2>/dev/null | grep '^keybind-find ')
+  if [[ $have_kf == *"#${KEYBIND_FIND_REV:0:8})"* ]]; then
+    ok "keybind-find at ${KEYBIND_FIND_REV:0:7}"
+  elif [[ $have_kf == *"(/"* ]]; then
+    # Installed from a local checkout (`cargo install --path .`, beast-arch where it is developed): never replaced.
+    ok "keybind-find from a local checkout, left as is: $have_kf"
+  else
+    run env CARGO_NET_GIT_FETCH_WITH_CLI=true cargo install --locked --force \
+        --git ssh://git@github.com/Benjmhart/keybind-find.git --rev "$KEYBIND_FIND_REV" \
+      && did "keybind-find at ${KEYBIND_FIND_REV:0:7}" \
+      || warn "keybind-find: build failed -- mod-/ writes the keymap but starts nothing"
+  fi
+}
+
 # Claude Code. Ben's call 2026-08-24 to install it, unlike nono and zed which are
 # reported only.
 #
@@ -4832,6 +4854,7 @@ stage_services() {
 
   # Here, not in toolchains: fpush runs this stage by default, so plugins follow their releases (beast-arch 118/119).
   install_tui_plugins
+  install_keybind_find
 }
 
 # Generate and (once the vault is usable) enable the obsidian-sync user unit.
