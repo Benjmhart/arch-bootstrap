@@ -71,7 +71,7 @@ register)
   # Read-only, not write (station-maintenance beast-arch 104, 2026-10-18): media-center is a dirty machine, and write
   # access to arch-bootstrap is code fpush runs as root everywhere, to secrets the vault's repo. Its secrets commits
   # (rare: peer keys) are made from micro instead.
-  ro_keys=${DEPLOY_READONLY:-"media-center/secrets media-center/arch-bootstrap media-center/arch-dotfiles-2"}
+  ro_keys=${DEPLOY_READONLY:-"media-center/secrets media-center/arch-bootstrap"}
   for pub in "$reg"/*/*.pub; do
     h=$(basename "$(dirname "$pub")"); name=$(basename "$pub" .pub)
     r=$(awk '{print $NF}' "$pub")            # comment is "<host> deploy <owner/repo>"
