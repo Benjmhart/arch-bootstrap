@@ -33,6 +33,20 @@ if [[ ! -s $RESTIC_PASSWORD_FILE ]]; then
   exit 75
 fi
 
+# surfboard (Ben 2026-10-25): nothing on it needs a backup but the ROM saves, so it gets no restic key: micro copies
+# RetroArch's saves and states into its own $HOME and they ride in micro's snapshot. Off, or in Windows: skipped, and
+# the copy from the last night it was up stays. ponytail: extracted over the last copy, so a save deleted on surfboard
+# stays here, and a dropped connection can leave one file half-written (the earlier snapshots still hold it).
+if [[ ${1:-} != tunnel ]]; then
+  pull=$HOME/fleet-saves/surfboard
+  mkdir -p "$pull"
+  if ssh -o BatchMode=yes -o ConnectTimeout=10 surfboard 'tar -C ~/.config/retroarch -c saves states' | tar -x -C "$pull"; then
+    echo "saves surfboard: $(find "$pull" -type f | wc -l) files"
+  else
+    echo "skip  surfboard saves: not copied (off, or in Windows?)"
+  fi
+fi
+
 # --retry-lock: forget and prune need the repo to themselves. A run killed mid-backup (a laptop shut down, a
 # stopped unit) leaves its lock behind and waiting never clears it, so `unlock` (stale locks only: older than
 # 30 min with no refresh, or this host's with a dead PID; append-only allows it) runs after each backup.
