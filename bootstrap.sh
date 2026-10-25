@@ -1913,10 +1913,11 @@ install_tui_plugins() {
 # (station-maintenance beast-arch 108/127). Follows the tip of main, not a pin (Ben, 2026-10-25: dogfood the latest
 # build on every Arch host), so a merge to keybind-find's main reaches each host at its next run with no commit here
 # and no fpush review. KEYBIND_FIND_REV=<sha> pins it again. System git (CARGO_NET_GIT_FETCH_WITH_CLI) so
-# ~/.ssh/config's GitHub key is used. Into ~/.cargo/bin, which is on xmonad's PATH. Lean hosts too: 32 crates, 17 s on
-# carbon.
+# ~/.ssh/config's GitHub key is used. Into ~/.cargo/bin, which is on xmonad's PATH. Every host with a window manager,
+# lean ones too (32 crates, 17 s on carbon); none without one -- a server or remote dev box (Ben, 2026-10-25).
 KEYBIND_FIND_URL=ssh://git@github.com/Benjmhart/keybind-find.git
 install_keybind_find() {
+  have Xorg || have sway || { info "keybind-find: no window manager here, skipped"; return 0; }
   have cargo || { warn "keybind-find: no cargo -- not installed"; return 0; }
   local rev=${KEYBIND_FIND_REV:-}
   [[ -n $rev ]] || rev=$(git ls-remote "$KEYBIND_FIND_URL" refs/heads/main 2>/dev/null | cut -f1) || true
