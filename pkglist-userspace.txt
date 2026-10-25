@@ -190,6 +190,8 @@ xprintidle
 yazi
 ouch
 yubikey-manager
+zathura               # PDF viewer (Ben, micro 2026-10-25); useless without a backend:
+zathura-pdf-mupdf     # with none, a PDF opens as a blank "[no name]" page
 zip
 zoxide
 zsh
