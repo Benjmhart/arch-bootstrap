@@ -1910,24 +1910,28 @@ install_tui_plugins() {
 }
 
 # keybind-find (Benjmhart/keybind-find, private): xmonad's mod-/ writes the keymap and starts it
-# (station-maintenance beast-arch 108/127). Built from a pinned commit, so a new version reaches the fleet only by
-# changing this line and reviewing it in fpush. System git (CARGO_NET_GIT_FETCH_WITH_CLI) so ~/.ssh/config's
-# GitHub key is used. Into ~/.cargo/bin, which is on xmonad's PATH. Skipped on lean hosts: a Rust build there.
-KEYBIND_FIND_REV="${KEYBIND_FIND_REV:-1166785cffeaac7914581371012ab8a03a530f23}"
+# (station-maintenance beast-arch 108/127). Follows the tip of main, not a pin (Ben, 2026-10-25: dogfood the latest
+# build on every Arch host), so a merge to keybind-find's main reaches each host at its next run with no commit here
+# and no fpush review. KEYBIND_FIND_REV=<sha> pins it again. System git (CARGO_NET_GIT_FETCH_WITH_CLI) so
+# ~/.ssh/config's GitHub key is used. Into ~/.cargo/bin, which is on xmonad's PATH. Lean hosts too: 32 crates, 17 s on
+# carbon.
+KEYBIND_FIND_URL=ssh://git@github.com/Benjmhart/keybind-find.git
 install_keybind_find() {
   have cargo || { warn "keybind-find: no cargo -- not installed"; return 0; }
-  [[ -x $HOME/bin/lean-host ]] && "$HOME/bin/lean-host" && { info "keybind-find: lean host, skipped"; return 0; }
+  local rev=${KEYBIND_FIND_REV:-}
+  [[ -n $rev ]] || rev=$(git ls-remote "$KEYBIND_FIND_URL" refs/heads/main 2>/dev/null | cut -f1) || true
+  [[ -n $rev ]] || { warn "keybind-find: cannot read $KEYBIND_FIND_URL (no key for the private repo?) -- not installed"; return 0; }
   # || true: not installed yet = grep exits 1, and under set -euo pipefail that silently ended stage 60 (media-center, 2026-10-23).
   local have_kf; have_kf=$(cargo install --list 2>/dev/null | grep '^keybind-find ' || true)
-  if [[ $have_kf == *"#${KEYBIND_FIND_REV:0:8})"* ]]; then
-    ok "keybind-find at ${KEYBIND_FIND_REV:0:7}"
+  if [[ $have_kf == *"#${rev:0:8})"* ]]; then
+    ok "keybind-find at ${rev:0:7}"
   elif [[ $have_kf == *"(/"* ]]; then
     # Installed from a local checkout (`cargo install --path .`, beast-arch where it is developed): never replaced.
     ok "keybind-find from a local checkout, left as is: $have_kf"
   else
     run env CARGO_NET_GIT_FETCH_WITH_CLI=true cargo install --locked --force \
-        --git ssh://git@github.com/Benjmhart/keybind-find.git --rev "$KEYBIND_FIND_REV" \
-      && did "keybind-find at ${KEYBIND_FIND_REV:0:7}" \
+        --git "$KEYBIND_FIND_URL" --rev "$rev" \
+      && did "keybind-find at ${rev:0:7}" \
       || warn "keybind-find: build failed -- mod-/ writes the keymap but starts nothing"
   fi
 }
