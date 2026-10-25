@@ -1937,6 +1937,18 @@ install_keybind_find() {
   fi
 }
 
+# zathura opens PDFs (Ben, 2026-10-25; it was Chromium). xdg-mime writes only that line of ~/.config/mimeapps.list,
+# so each host's other choices (the browser, undecided on micro) stay its own.
+set_default_pdf_viewer() {
+  have zathura || return 0
+  local app=org.pwmt.zathura.desktop
+  if [[ $(xdg-mime query default application/pdf 2>/dev/null) == "$app" ]]; then
+    ok "PDFs open in zathura"
+  else
+    run xdg-mime default "$app" application/pdf && did "PDFs open in zathura"
+  fi
+}
+
 # Claude Code. Ben's call 2026-08-24 to install it, unlike nono and zed which are
 # reported only.
 #
@@ -4925,6 +4937,7 @@ stage_services() {
   # Here, not in toolchains: fpush runs this stage by default, so plugins follow their releases (beast-arch 118/119).
   install_tui_plugins
   install_keybind_find
+  set_default_pdf_viewer
 }
 
 # Generate and (once the vault is usable) enable the obsidian-sync user unit.
