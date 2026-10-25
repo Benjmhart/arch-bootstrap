@@ -4519,12 +4519,12 @@ ExecStart=/usr/sbin/clamonacc -F --fdpass --log=/var/log/clamav/clamonacc.log --
     "clamonacc passes file descriptors" && changed=1
   put_etc_file /etc/systemd/system/clamav-alert.service "# Written by arch-bootstrap (beast-arch 131): each ClamAV detection as a critical notification for $USER, once: clamonacc
 # hands one opened file to clamd several times (EICAR: 4 scans, several notifications), so a line repeating the last
-# one within 60 s is skipped.
+# one within 60 s is skipped, and so is each '(deleted)' line (the moved file's leftover copies). %%s: systemd's % specifiers.
 [Unit]
 Description=ClamAV detections to the desktop
 After=clamav-daemon.service
 [Service]
-ExecStart=/bin/sh -c 'journalctl -f -n0 -o cat -t clamav-virus-event | while read -r l; do n=\$\$(date +%s); [ \"\$\$l\" = \"\$\$p\" ] && [ \$\$((n - t)) -lt 60 ] && continue; p=\$\$l; t=\$\$n; systemd-run -q --machine=$USER@.host --user notify-send -u critical ClamAV \"\$\$l (moved to /root/quarantine)\"; done'
+ExecStart=/bin/sh -c 'journalctl -f -n0 -o cat -t clamav-virus-event | while read -r l; do case \$\$l in *\"(deleted)\") continue;; esac; n=\$\$(date +%%s); [ \"\$\$l\" = \"\$\$p\" ] && [ \$\$((n - t)) -lt 60 ] && continue; p=\$\$l; t=\$\$n; systemd-run -q --machine=$USER@.host --user notify-send -u critical ClamAV \"\$\$l (moved to /root/quarantine)\"; done'
 Restart=always
 [Install]
 WantedBy=multi-user.target" "ClamAV desktop alerts" && changed=1
