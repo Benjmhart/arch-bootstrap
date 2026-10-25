@@ -112,7 +112,15 @@ move() {
   "${g[@]}" cat-file -e "$sha^{commit}" 2>/dev/null || die "$label: unknown commit $sha"
   "${g[@]}" merge-base --is-ancestor "$sha" "origin/$branch" || die "$label: ${sha:0:7} is not on origin/$branch"
   cur=$("${g[@]}" rev-parse HEAD)
-  if "${g[@]}" merge-base --is-ancestor "$cur" "$sha"; then
+  # Local commits that are only copies of commits the snapshot already has (the same change pushed rebased, so another
+  # SHA: media-center's dotfiles b91723e = 1fc5e55, which stopped the 2026-10-24 20:17 fpush): `git cherry` marks each
+  # one "-". Nothing is lost by leaving them, so move as if forward. Any commit of its own ("+") still stops it below.
+  local dup=0
+  if ! "${g[@]}" merge-base --is-ancestor "$cur" "$sha" && ! "${g[@]}" merge-base --is-ancestor "$sha" "$cur" \
+     && [[ -n $("${g[@]}" cherry "$sha" "$cur") && -z $("${g[@]}" cherry "$sha" "$cur" | grep '^+' || true) ]]; then
+    dup=1; echo "note  $label: ${cur:0:7}'s local commits are all already in ${sha:0:7} (rebased copies); moving past them"
+  fi
+  if (( dup )) || "${g[@]}" merge-base --is-ancestor "$cur" "$sha"; then
     # A tracked file changed here in exactly the way the snapshot changes it (KeePassXC rewrites its browser manifests
     # at every start; dotfiles 52fef68 then committed that content): git refuses to fast-forward over it although
     # nothing would be lost, which failed a whole fpush on 2026-10-17. Put such files back first; a file changed in

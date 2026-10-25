@@ -308,6 +308,17 @@ out=$(echo pw-ok | fa self apply "$abn" "$dotr" "$sec2" services 2>&1); rc=$?
 check "fleet-apply changed by the snapshot: the new copy finishes it" '(( rc == 0 )) && [[ $(abat self) == "$abn" ]] && grep -q "continuing with the new copy" <<<"$out" && grep -q "new copy running" <<<"$out"'
 check "...and only once (no loop)"                                     '[[ $(grep -c "continuing with the new copy" <<<"$out") == 1 ]]'
 
+# ================= media-center 2026-10-24 20:17: HEAD on a local commit that is only a rebased copy of a snapshot commit
+gd checkout -q --detach "$dotr"; printf 'dup\n' > "$H/.dupf"; gd add .dupf; gd commit -q -m "copy, made here"; gd checkout -q -B master
+dupd=$(commit "$t/dot-seed" .dupf dup "copy, pushed rebased")                # the same change, another SHA, on origin
+out=$(echo pw-ok | fa self apply "$abn" "$dupd" "$sec2" services 2>&1); rc=$?
+check "local commit = a rebased copy in the snapshot: moved past it" '(( rc == 0 )) && [[ $(dotat self) == "$dupd" ]] && grep -q "rebased copies" <<<"$out"'
+gd checkout -q --detach "$dupd"; printf 'mine\n' > "$H/.own"; gd add .own; gd commit -q -m "really local"; gd checkout -q -B master
+dupe=$(commit "$t/dot-seed" .other2 x "unrelated")
+out=$(echo pw-ok | fa self apply "$abn" "$dupe" "$sec2" services 2>&1); rc=$?
+check "a commit of its own still stops it"                     '(( rc != 0 )) && grep -q "has local commits that are not in the snapshot" <<<"$out"'
+gd checkout -q --detach "$dupd"; gd branch -q -f master "$dupd"; gd checkout -q master
+
 # ================= surfboard 2026-10-24: a live fix later committed (then changed again), and an untracked file the snapshot adds
 printf 'a\nb\nc\n' > "$t/dot-seed/.xr"; git -C "$t/dot-seed" add -A; git -C "$t/dot-seed" commit -qm base; git -C "$t/dot-seed" push -q
 dotb=$(git -C "$t/dot-seed" rev-parse HEAD)
