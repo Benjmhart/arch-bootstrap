@@ -2,8 +2,8 @@
 # Weekly: put the current, signature-verified Arch ISO on the Ventoy rescue stick, plus
 # rescue-archlinux-VER.iso -- the same ISO with this repo's tools/ on PATH
 # (make-rescue-iso) -- and install.sh / bootstrap.sh beside them. NO ROOT: the stick is mounted
-# through udisks. Installing or upgrading Ventoy itself does need root, so that is
-# reported (exit 75) rather than done.
+# through udisks. Installing Ventoy needs root and is reported (exit 75); upgrading it goes through one root
+# helper the bootstrap writes for this stick (setup_rescue_ventoy_upgrade).
 #
 # Config (bootstrap.conf): RESCUE_USB_SERIAL -- the stick's USB serial, from
 #   lsblk -dno PATH,SERIAL,TRAN | grep usb
@@ -86,7 +86,9 @@ fi
 rescue="rescue-archlinux-$ver.iso"
 # (and the approved-snapshot log and the building machine: a stick made on micro must never be
 # mistaken for an earlier build elsewhere -- station-maintenance beast-arch 86)
-stamp=$({ echo "$sha"; git -C "$repo" rev-parse HEAD; cat "$repo"/tools/* "$repo"/install.sh "$here/make-rescue-iso"; cat "${FLEET_SNAPSHOTS:-/dev/null}"; uname -n; } | sha256sum | cut -d' ' -f1)
+# The wifi profiles count by their last commit in secrets (beast-arch 84), never by their content.
+stamp=$({ echo "$sha"; git -C "$repo" rev-parse HEAD; cat "$repo"/tools/* "$repo"/install.sh "$here/make-rescue-iso"; cat "${FLEET_SNAPSHOTS:-/dev/null}"; uname -n
+          git -C "${SECRETS_DIR:-$HOME/secrets}" log -1 --format=%H -- wifi 2>/dev/null || true; } | sha256sum | cut -d' ' -f1)
 built=0
 if [[ ! -f $cache/$rescue || $(cut -d' ' -f3 "$cache/$rescue.sha256" 2>/dev/null) != "$stamp" ]]; then
   "$here/make-rescue-iso" "$cache/$iso" "$cache/$rescue" || built=$?
@@ -137,14 +139,26 @@ cp -r "$repo"/tools "$mnt/arch-bootstrap/"   # e.g. encrypt-root-in-place, run f
 on_stick=$(cd "$mnt" && ls -1 archlinux-*-x86_64.iso rescue-archlinux-*.iso 2>/dev/null | tr '\n' ' ')
 "$here/ventoy-menu" "$mnt"   # F6: direct-boot entries, plain and nomodeset (surfboard 04)
 
-# ---- Ventoy itself: report, don't fix (root)
+# ---- Ventoy itself: upgraded through the root helper, else reported
 want=$(cat /opt/ventoy/ventoy/version 2>/dev/null || true)
 mount_dev "$efi" ro
 have=$(grep -ohE 'VENTOY_VERSION="[0-9.]+' "$mnt/grub/grub.cfg" | cut -d'"' -f2 || true)
 if [[ -z $want ]]; then
   echo "ISOs: $on_stick| Ventoy $have on stick; ventoy-bin not installed here, so currency unknown"; exit 75
 elif [[ $have != "$want" ]]; then
-  echo "ISOs: $on_stick| Ventoy $have on stick, $want available: sudo ventoy -u $disk"; exit 75
+  # Upgrade it (beast-arch 84) through the root helper the bootstrap writes (setup_rescue_ventoy_upgrade): the weekly
+  # stick only, never a RESCUE_USB_DISK picked by hand. It unmounts the stick; rc says nothing (VentoyWorker.sh exits 0
+  # on a refusal), so the version is read again.
+  if [[ -z ${RESCUE_USB_DISK:-} && -x /usr/local/bin/rescue-ventoy-upgrade ]]; then
+    sync; for d in "${mounted_by_us[@]}"; do udisksctl unmount -b "$d" >/dev/null || true; done; mounted_by_us=()
+    sudo -n /usr/local/bin/rescue-ventoy-upgrade || true
+    udevadm settle; mount_dev "$efi" ro
+    have=$(grep -ohE 'VENTOY_VERSION="[0-9.]+' "$mnt/grub/grub.cfg" | cut -d'"' -f2 || true)
+  fi
+  if [[ $have != "$want" ]]; then
+    echo "ISOs: $on_stick| Ventoy $have on stick, $want available, upgrade failed or not set up: sudo ventoy -u $disk"; exit 75
+  fi
+  echo "Ventoy upgraded on the stick to $have"
 fi
 if (( built )); then
   echo "ISOs: $on_stick| Ventoy $have (current) | rescue ISO NOT built (see the log)"; exit 75

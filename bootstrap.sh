@@ -4808,6 +4808,35 @@ pam_prepend() {
   rm -f "$tmp"
 }
 
+# The rescue-usb chore upgrades Ventoy on its stick itself (Ben, 2026-10-01; station-maintenance beast-arch 84) through
+# this root-owned helper, which `sudo -n` may run with no password. The serial is baked in here, from bootstrap.conf at an
+# fpush-reviewed run, so nothing running as $USER can aim a root disk-writer at another device. VentoyWorker.sh -u asks
+# one y/n question, and any answer but y is exit 0: the chore re-reads the version afterwards instead of trusting rc.
+setup_rescue_ventoy_upgrade() {
+  [[ -n ${RESCUE_USB_SERIAL:-} ]] || return 0
+  [[ $RESCUE_USB_SERIAL =~ ^[A-Za-z0-9_.-]+$ ]] || { warn "RESCUE_USB_SERIAL has unexpected characters -- no Ventoy upgrades"; return 0; }
+  local bin=/usr/local/bin/rescue-ventoy-upgrade
+  put_etc_file "$bin" "#!/bin/sh
+# Written by arch-bootstrap (setup_rescue_ventoy_upgrade, RESCUE_USB_SERIAL). Moves Ventoy on the rescue stick, and only
+# that stick, up to the installed ventoy-bin.
+[ \$# -eq 0 ] || { echo 'rescue-ventoy-upgrade takes no arguments' >&2; exit 2; }
+disk=\$(lsblk -dno PATH,SERIAL,TRAN | awk '\$2==\"$RESCUE_USB_SERIAL\" && \$3==\"usb\" {print \$1}')
+[ -n \"\$disk\" ] || { echo 'rescue stick not plugged in' >&2; exit 75; }
+for p in \$(lsblk -lnpo PATH,MOUNTPOINT \"\$disk\" | awk 'NF==2 {print \$1}'); do umount \"\$p\" || exit 1; done
+echo y | /usr/bin/ventoy -u \"\$disk\"" "rescue-ventoy-upgrade" || true
+  [[ -x $bin ]] || run sudo chmod 755 "$bin"
+  local sf=/etc/sudoers.d/20-rescue-ventoy-upgrade tmp; tmp=$(mktemp)
+  printf '%s\n' "$USER ALL=(root) NOPASSWD: $bin \"\"" >"$tmp"
+  if sudo -n cmp -s "$tmp" "$sf" 2>/dev/null; then
+    ok "sudo rescue-ventoy-upgrade: no password"
+  elif run sudo visudo -cqf "$tmp" && run sudo install -m 440 -o root -g root "$tmp" "$sf"; then
+    did "sudo rescue-ventoy-upgrade: no password ($sf)"
+  else
+    warn "could not write $sf"
+  fi
+  rm -f "$tmp"
+}
+
 stage_services() {
   stage_banner "60 services -- system and user units"
 
@@ -4824,6 +4853,7 @@ stage_services() {
   manage_tmp_storage
   user_tmp_cleanup
   install_system_dropins
+  setup_rescue_ventoy_upgrade
   setup_yubikey
   setup_boot
   install_browser_search_policy
