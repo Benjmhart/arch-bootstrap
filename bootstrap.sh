@@ -1947,7 +1947,8 @@ set_default_pdf_viewer() {
   if [[ $(xdg-mime query default application/pdf 2>/dev/null) == "$app" ]]; then
     ok "PDFs open in zathura"
   else
-    run xdg-mime default "$app" application/pdf && did "PDFs open in zathura"
+    run xdg-mime default "$app" application/pdf && did "PDFs open in zathura" \
+      || warn "xdg-mime could not make zathura the PDF default"
   fi
 }
 
