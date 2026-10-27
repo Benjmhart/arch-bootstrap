@@ -1909,30 +1909,32 @@ install_tui_plugins() {
   fi
 }
 
-# keybind-find (Benjmhart/keybind-find, private): xmonad's mod-/ writes the keymap and starts it
-# (station-maintenance beast-arch 108/127). Follows the tip of main, not a pin (Ben, 2026-10-25: dogfood the latest
-# build on every Arch host), so a merge to keybind-find's main reaches each host at its next run with no commit here
-# and no fpush review. KEYBIND_FIND_REV=<sha> pins it again. System git (CARGO_NET_GIT_FETCH_WITH_CLI) so
-# ~/.ssh/config's GitHub key is used. Into ~/.cargo/bin, which is on xmonad's PATH. Every host with a window manager,
-# lean ones too (32 crates, 17 s on carbon); none without one -- a server or remote dev box (Ben, 2026-10-25).
-KEYBIND_FIND_URL=ssh://git@github.com/Benjmhart/keybind-find.git
+# keybind-find (Benjmhart/keybind-find, public since 2026-10-27): xmonad's mod-/ writes the keymap and starts it
+# (station-maintenance beast-arch 108/127). Follows the NEWEST RELEASE, pre-releases included (Ben, 2026-10-27: "track
+# new releases going forward"; it followed the tip of main before), so a new release reaches each host at its next run
+# with no commit here and no fpush review. KEYBIND_FIND_TAG=<tag> pins it. The newest release is the first one GitHub's
+# API lists (its "latest" skips pre-releases, and every release so far is one). Into ~/.cargo/bin, which is on
+# xmonad's PATH. Every host with a window manager, lean ones too (32 crates, 17 s on carbon); none without one -- a
+# server or remote dev box (Ben, 2026-10-25).
+KEYBIND_FIND_URL=https://github.com/Benjmhart/keybind-find.git
 install_keybind_find() {
   have Xorg || have sway || { info "keybind-find: no window manager here, skipped"; return 0; }
   have cargo || { warn "keybind-find: no cargo -- not installed"; return 0; }
-  local rev=${KEYBIND_FIND_REV:-}
-  [[ -n $rev ]] || rev=$(git ls-remote "$KEYBIND_FIND_URL" refs/heads/main 2>/dev/null | cut -f1) || true
-  [[ -n $rev ]] || { warn "keybind-find: cannot read $KEYBIND_FIND_URL (no key for the private repo?) -- not installed"; return 0; }
+  local tag=${KEYBIND_FIND_TAG:-}
+  [[ -n $tag ]] || tag=$(curl -fsS 'https://api.github.com/repos/Benjmhart/keybind-find/releases?per_page=1' 2>/dev/null \
+    | sed -n 's/^ *"tag_name": *"\([^"]*\)".*/\1/p' | head -n1) || true
+  [[ -n $tag ]] || { warn "keybind-find: cannot read the newest release (network?) -- left as is"; return 0; }
   # || true: not installed yet = grep exits 1, and under set -euo pipefail that silently ended stage 60 (media-center, 2026-10-23).
   local have_kf; have_kf=$(cargo install --list 2>/dev/null | grep '^keybind-find ' || true)
-  if [[ $have_kf == *"#${rev:0:8})"* ]]; then
-    ok "keybind-find at ${rev:0:7}"
+  if [[ $have_kf == *"?tag=$tag#"* ]]; then
+    ok "keybind-find at $tag"
   elif [[ $have_kf == *"(/"* ]]; then
     # Installed from a local checkout (`cargo install --path .`, beast-arch where it is developed): never replaced.
     ok "keybind-find from a local checkout, left as is: $have_kf"
   else
-    run env CARGO_NET_GIT_FETCH_WITH_CLI=true cargo install --locked --force \
-        --git "$KEYBIND_FIND_URL" --rev "$rev" \
-      && did "keybind-find at ${rev:0:7}" \
+    # The package by name: the repo holds a second binary crate (keybind-find-toy) and cargo will not pick one.
+    run cargo install --locked --force --git "$KEYBIND_FIND_URL" --tag "$tag" keybind-find \
+      && did "keybind-find at $tag" \
       || warn "keybind-find: build failed -- mod-/ writes the keymap but starts nothing"
   fi
 }
