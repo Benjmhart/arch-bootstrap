@@ -1133,6 +1133,23 @@ ensure_multilib() {
   did "multilib repo on"
 }
 
+# Free space on / before pacman or makepkg write to it. beast-arch, 2026-10-31: the archive move (162 upgrades) fitted
+# into 2.4G, then every AUR install died on "Partition / too full" and stage 20 stopped. Below ROOT_MIN_FREE_GB it first
+# drops what can be refetched (old package versions, uninstalled ones; paccache keeps the installed version), then
+# stops the stage BEFORE anything is installed if that was not enough. The pre-flight saw 2.4G and let it pass.
+ROOT_MIN_FREE_GB=${ROOT_MIN_FREE_GB:-5}
+ensure_root_space() {
+  local free; free=$(df --output=avail -BG / | tail -1 | tr -dc 0-9)
+  if (( free >= ROOT_MIN_FREE_GB )); then ok "/ has ${free}G free"; return 0; fi
+  warn "/ has ${free}G free (want ${ROOT_MIN_FREE_GB}G): clearing old packages from pacman's cache"
+  if have paccache; then run sudo paccache -rqk1 || true; run sudo paccache -rquk0 || true; fi
+  free=$(df --output=avail -BG / | tail -1 | tr -dc 0-9)
+  if (( free >= ROOT_MIN_FREE_GB )); then did "/ now has ${free}G free"; return 0; fi
+  (( DRY_RUN )) && return 0   # nothing was cleared, so a dry run cannot tell
+  warn "/ still has only ${free}G free -- nothing installed. Look with: sudo du -xh --max-depth=2 / | sort -h | tail"
+  return 1
+}
+
 stage_packages() {
   stage_banner "10 packages -- user-space only"
 
@@ -1140,6 +1157,7 @@ stage_packages() {
   # before the drop-in existed (beast-arch, carbon) kept the 5-minute timeout. An espanso build
   # outlived it and its install hit a password prompt nobody saw (2026-10-11).
   sudo_timeout_dropin
+  ensure_root_space
 
   info "installing from pkglist-userspace.txt -- no kernel, microcode, GPU or firmware"
 
@@ -1493,6 +1511,7 @@ espanso_wayland_install() {  # <espanso-wayland .pkg.tar.zst> <version>
 
 stage_aur() {
   stage_banner "20 aur"
+  ensure_root_space
 
   # makepkg needs base-devel (fakeroot, debugedit). It is in pkglist-userspace.txt
   # since 2026-09-30; before that the script assumed pacstrap had installed it, and
