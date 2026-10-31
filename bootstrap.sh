@@ -1967,6 +1967,24 @@ install_keybind_find() {
   fi
 }
 
+# The vault's sync is a service: enabled but stopped means notes stop moving. earlyoom killed it on beast-arch
+# (2026-10-30 21:56), it exited 0, Restart=on-failure left it down for 14 h, and the next fpush failed verify. Restart=
+# always fixes the cause (unit in the dotfiles); this heals a stopped one, and reloads first when the unit file changed,
+# since fleet-apply does not reload user units after a dotfiles move.
+keep_obsidian_sync_running() {
+  [[ -n $OBSIDIAN_VAULT ]] && state_done obsidian || return 0
+  systemctl --user is-enabled --quiet obsidian-sync.service 2>/dev/null || return 0
+  if [[ $(systemctl --user show -p NeedDaemonReload --value obsidian-sync.service 2>/dev/null) == yes ]]; then
+    run systemctl --user daemon-reload
+  fi
+  if systemctl --user is-active --quiet obsidian-sync.service; then
+    ok "obsidian-sync running"
+  else
+    run systemctl --user start obsidian-sync.service && did "obsidian-sync started (it was stopped)" \
+      || warn "obsidian-sync would not start: journalctl --user -u obsidian-sync"
+  fi
+}
+
 # zathura opens PDFs (Ben, 2026-10-25; it was Chromium). xdg-mime writes only that line of ~/.config/mimeapps.list,
 # so each host's other choices (the browser, undecided on micro) stay its own.
 set_default_pdf_viewer() {
@@ -5040,6 +5058,7 @@ stage_services() {
   install_tui_plugins
   install_keybind_find
   set_default_pdf_viewer
+  keep_obsidian_sync_running
 }
 
 # Generate and (once the vault is usable) enable the obsidian-sync user unit.
@@ -5115,7 +5134,9 @@ Environment=PATH=$node_root/bin:/usr/local/bin:/usr/bin
 # systemd user manager does NOT inherit your shell's environment, so without this the
 # daemon reads the wrong directory, finds no credentials, and fails.
 Environment=XDG_CONFIG_HOME=$XDG_CONFIG_HOME
-Restart=on-failure
+# always, not on-failure: SIGTERM from earlyoom (beast-arch 2026-10-30 21:56, memory pressure) makes the client exit 0,
+# which on-failure counts as a clean stop -- the vault went unsynced for 14 h. \`systemctl stop\` still stops it.
+Restart=always
 RestartSec=30
 
 [Install]
