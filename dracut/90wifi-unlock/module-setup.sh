@@ -38,10 +38,11 @@ install() {
     inst_simple "$moddir/wifi-unlock.service" "$systemdsystemunitdir/wifi-unlock.service"
     inst_simple "$moddir/wifi-unlock-sshd.service" "$systemdsystemunitdir/wifi-unlock-sshd.service"
 
-    # Arch builds sshd with privsep user nobody; /var/empty is its chroot.
+    # Arch builds sshd with privsep user nobody and chroot /usr/share/empty.sshd: without it sshd exits 255 at once
+    # ("Missing privilege separation directory", surfboard's first boot 2026-10-31; /var/empty is upstream's).
     grep -q '^nobody:' "$initdir/etc/passwd" 2>/dev/null || grep '^nobody:' /etc/passwd >> "$initdir/etc/passwd"
     grep -q '^nobody:' "$initdir/etc/group" 2>/dev/null || grep '^nobody:' /etc/group >> "$initdir/etc/group"
-    mkdir -p -m 0755 "$initdir/var/empty" "$initdir/var/log"
+    mkdir -p -m 0755 "$initdir/usr/share/empty.sshd" "$initdir/var/empty" "$initdir/var/log"
 
     $SYSTEMCTL -q --root "$initdir" enable wifi-unlock.service wifi-unlock-sshd.service
 }
