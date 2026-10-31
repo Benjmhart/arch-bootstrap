@@ -1910,10 +1910,10 @@ install_tui_plugins() {
 }
 
 # keybind-find (Benjmhart/keybind-find, public since 2026-10-27): xmonad's mod-/ writes the keymap and starts it
-# (station-maintenance beast-arch 108/127). Follows the NEWEST RELEASE, pre-releases included (Ben, 2026-10-27: "track
-# new releases going forward"; it followed the tip of main before), so a new release reaches each host at its next run
-# with no commit here and no fpush review. KEYBIND_FIND_TAG=<tag> pins it. The newest release is the first one GitHub's
-# API lists (its "latest" skips pre-releases, and every release so far is one). Into ~/.cargo/bin, which is on
+# (station-maintenance beast-arch 108/127). Follows the NEWEST VERSION TAG (Ben, 2026-10-27: "track new releases going
+# forward"; 2026-10-31: 1.0 everywhere), so a new version reaches each host at its next run with no commit here and no
+# fpush review. KEYBIND_FIND_TAG=<tag> pins it. The tag, not GitHub's release list: cargo builds the tag, and v1.0.0 was
+# tagged before its release page existed. versionsort.suffix=- puts v1.0.0-rc.1 below v1.0.0. Into ~/.cargo/bin, which is on
 # xmonad's PATH. Every host with a window manager, lean ones too (32 crates, 17 s on carbon); none without one -- a
 # server or remote dev box (Ben, 2026-10-25).
 KEYBIND_FIND_URL=https://github.com/Benjmhart/keybind-find.git
@@ -1921,9 +1921,9 @@ install_keybind_find() {
   have Xorg || have sway || { info "keybind-find: no window manager here, skipped"; return 0; }
   have cargo || { warn "keybind-find: no cargo -- not installed"; return 0; }
   local tag=${KEYBIND_FIND_TAG:-}
-  [[ -n $tag ]] || tag=$(curl -fsS 'https://api.github.com/repos/Benjmhart/keybind-find/releases?per_page=1' 2>/dev/null \
-    | sed -n 's/^ *"tag_name": *"\([^"]*\)".*/\1/p' | head -n1) || true
-  [[ -n $tag ]] || { warn "keybind-find: cannot read the newest release (network?) -- left as is"; return 0; }
+  [[ -n $tag ]] || tag=$(git -c versionsort.suffix=- ls-remote --tags --refs --sort=-v:refname "$KEYBIND_FIND_URL" 'v*' \
+    2>/dev/null | sed -n '1s|.*refs/tags/||p') || true
+  [[ -n $tag ]] || { warn "keybind-find: cannot read its newest version tag (network?) -- left as is"; return 0; }
   # || true: not installed yet = grep exits 1, and under set -euo pipefail that silently ended stage 60 (media-center, 2026-10-23).
   local have_kf; have_kf=$(cargo install --list 2>/dev/null | grep '^keybind-find ' || true)
   if [[ $have_kf == *"?tag=$tag#"* ]]; then
