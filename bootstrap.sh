@@ -1476,10 +1476,17 @@ aur_build_pinned() {
   # package with missing dependencies asked for the password again. Unanswered, each prompt timed out after
   # 5 minutes and three tripped faillock (surfboard, 2026-10-22, journal: `sudo -k /usr/bin/pacman --asdeps`).
   if ( cd "$tmp/$base" && PACMAN_AUTH=sudo makepkg -s --noconfirm ); then
+    # <name>, plus every package of the same build that is already installed: a split pkgbase whose halves pin each
+    # other's exact version (nvidia-580xx-utils/-dkms) can only move in one transaction. Alone, each broke the
+    # other's dependency and surfboard kept 580.178 beside a 580.196 lib32 (fpush 2026-10-31).
+    local pn have_name=0
     while IFS= read -r f; do
-      [[ -f $f && $(pacman -Qqp "$f" 2>/dev/null) == "$name" ]] && pkgs+=("$f")
+      [[ -f $f ]] || continue
+      pn=$(pacman -Qqp "$f" 2>/dev/null)
+      if [[ $pn == "$name" ]]; then pkgs+=("$f"); have_name=1
+      elif [[ $(pacman -Qq "$pn" 2>/dev/null) == "$pn" ]]; then pkgs+=("$f"); fi   # exact: -Q also matches providers
     done < <(cd "$tmp/$base" && makepkg --packagelist)
-    if (( ${#pkgs[@]} )); then run sudo pacman -U --noconfirm "${pkgs[@]}" || rc=1; else warn "$name: makepkg built no $name package"; rc=1; fi
+    if (( have_name )); then run sudo pacman -U --noconfirm "${pkgs[@]}" || rc=1; else warn "$name: makepkg built no $name package"; rc=1; fi
     if [[ $name == espanso-x11 ]] && (( ! rc )); then
       f=$(cd "$tmp/$base" && makepkg --packagelist | grep '/espanso-wayland-[0-9]')
       espanso_wayland_install "$f" "$ver" || rc=1
@@ -1551,6 +1558,8 @@ stage_aur() {
   for line in "${plan[@]}"; do
     read -r name pin base ver <<<"$line"
     [[ " ${want[*]} " == *" $name "* ]] || continue
+    # Already moved with another package of its build (aur_build_pinned installs the siblings together).
+    if [[ $(pacman -Q "$name" 2>/dev/null | cut -d' ' -f2) == "$ver" ]]; then ok "$name $ver (installed with its build)"; n=$((n + 1)); continue; fi
     # i3lock-color replaces i3lock (station-maintenance beast-arch 88). Both own /usr/bin/i3lock, and
     # pacman -U --noconfirm answers the "remove i3lock?" conflict No, so remove it first. Its
     # /etc/pam.d/i3lock goes with it (.pacsave); stage 60's setup_yubikey re-adds pam_u2f to the new one.
