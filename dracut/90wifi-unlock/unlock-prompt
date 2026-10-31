@@ -1,0 +1,9 @@
+#!/bin/sh
+# The only thing micro's key can run here (authorized_keys forced command): wait for the disk's passphrase prompt
+# (systemd-cryptsetup asks after the 20 s FIDO2 wait) and answer it on this terminal.
+for i in $(seq 120); do
+    ls /run/systemd/ask-password/ask.* >/dev/null 2>&1 && exec systemd-tty-ask-password-agent --query
+    [ "$i" = 1 ] && echo "waiting for the passphrase prompt (up to 60 s)..."
+    sleep 0.5
+done
+echo "no passphrase prompt: the disk is already unlocked, or the boot went past the initramfs"; exit 1

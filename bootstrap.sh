@@ -4607,6 +4607,45 @@ exit 1' "sudo: password-only under ssh or sudo -S"; then
 # reinstalls 10_linux executable; the next run here switches it off again.
 # Both pacman hooks keep working on kernel updates: dracut's writes /boot/initramfs-linux.img, mkinitcpio's
 # the fallback; the entries name those files, so grub.cfg never needs regenerating for a kernel.
+# Remote unlock over Wi-Fi (station-maintenance surfboard 04; Ben, 2026-10-31: "i really never want to open that
+# laptop"). surfboard has no Ethernet and a TPM 1.2, so its initramfs joins Wi-Fi itself and runs sshd: micro answers the
+# passphrase prompt with `tools/unlock surfboard`. The dracut module is dracut/90wifi-unlock in this repo; its inputs go
+# to /etc/wifi-unlock (root 0600). Per host in bootstrap.conf: WIFI_UNLOCK_SSID (a profile in $SECRETS_DIR/wifi, as for
+# the rescue stick) and WIFI_UNLOCK_ADDRESS (fixed, addr/prefix: micro must know where to find it). The YubiKey and the
+# keyboard still work as before; this only adds an answerer. Sets WIFI_UNLOCK_CHANGED=1 when the image must be rebuilt.
+WIFI_UNLOCK_CHANGED=0
+setup_wifi_unlock() {
+  [[ -n ${WIFI_UNLOCK_SSID:-} ]] || return 0
+  local c=/etc/wifi-unlock psk=$SECRETS_DIR/wifi/$WIFI_UNLOCK_SSID.psk pub=$SECRETS_DIR/ssh/pubkeys/micro.pub
+  local mod=/usr/lib/dracut/modules.d/90wifi-unlock pass tmp f
+  [[ -n ${WIFI_UNLOCK_ADDRESS:-} && -r $psk && -r $pub ]] && have wpa_passphrase \
+    || { warn "wifi-unlock: needs WIFI_UNLOCK_ADDRESS, $psk, $pub and wpa_passphrase -- not set up"; return 0; }
+  # put_root <path> <mode> <content>: install only when it differs (sudo cmp: /etc/wifi-unlock is root-only). An
+  # argument, not stdin: piped into, it would run in a subshell and WIFI_UNLOCK_CHANGED would be lost.
+  put_root() { tmp=$(umask 077; mktemp); printf '%s\n' "$3" >"$tmp"
+    if sudo cmp -s "$tmp" "$1" 2>/dev/null; then rm -f "$tmp"; return 0; fi
+    run sudo install -D -m "$2" "$tmp" "$1" && WIFI_UNLOCK_CHANGED=1 && did "wifi-unlock: $1"; rm -f "$tmp"; }
+  for f in "$SCRIPT_DIR"/dracut/90wifi-unlock/*; do
+    local mode=644; [[ -x $f ]] && mode=755
+    put_root "$mod/${f##*/}" "$mode" "$(cat "$f")"
+  done
+  # The psk, not the passphrase: wpa_passphrase reads it on stdin (never argv) and keeps it only as a comment, dropped here.
+  pass=$(sed -n 's/^Passphrase=//p' "$psk")
+  [[ -n $pass ]] || { warn "wifi-unlock: no Passphrase= in $psk -- not set up"; return 0; }
+  put_root $c/wpa_supplicant.conf 600 "$(printf '%s\n' "$pass" | wpa_passphrase "$WIFI_UNLOCK_SSID" | grep -v '^[[:space:]]*#psk=')"
+  unset pass
+  put_root $c/net.conf 600 "IFADDR=$WIFI_UNLOCK_ADDRESS"
+  put_root $c/authorized_keys 600 "restrict,pty,command=\"/usr/bin/unlock-prompt\" $(cut -d' ' -f1-2 "$pub")"
+  if ! sudo test -f $c/ssh_host_ed25519_key; then
+    run sudo ssh-keygen -q -t ed25519 -N '' -C "$(uname -n)-initramfs" -f $c/ssh_host_ed25519_key \
+      && WIFI_UNLOCK_CHANGED=1 && did "wifi-unlock: initramfs host key"
+  fi
+  put_etc_file /etc/dracut.conf.d/wifi-unlock.conf \
+'# Written by arch-bootstrap (setup_wifi_unlock, station-maintenance surfboard 04).
+add_dracutmodules+=" wifi-unlock "' "dracut: wifi-unlock" && WIFI_UNLOCK_CHANGED=1
+  ok "wifi-unlock: initramfs joins $WIFI_UNLOCK_SSID at ${WIFI_UNLOCK_ADDRESS%/*}"
+}
+
 setup_boot() {
   if [[ $(findmnt -nvo SOURCE /) != /dev/mapper/root ]]; then info "/ is not LUKS /dev/mapper/root -- boot setup skipped"; return 0; fi
   local rebuild=0 f cfg=/boot/grub/grub.cfg img=/boot/initramfs-linux.img
@@ -4630,12 +4669,14 @@ PRESETS=('"'"'fallback'"'"')
 fallback_image="/boot/initramfs-linux-fallback.img"
 fallback_options="-S autodetect"' "mkinitcpio: fallback image only" && rebuild=1
   if (( DRY_RUN )); then info "(dry run) would build the images and regenerate $cfg if needed"; return 0; fi
+  setup_wifi_unlock; if (( WIFI_UNLOCK_CHANGED )); then rebuild=1; fi
 
   # The images.
   # The listing goes into a variable first: piped into `grep -q`, lsinitrd dies of SIGPIPE at the first match
   # and pipefail makes that a failure (micro, 2026-10-16 20:43: a good image refused).
   dracut_ok() { local l; l=$(sudo lsinitrd "$img" 2>/dev/null) || return 1
-    grep -q libcryptsetup-token-systemd-fido2 <<<"$l" && grep -q 'systemd-cryptsetup$' <<<"$l"; }
+    grep -q libcryptsetup-token-systemd-fido2 <<<"$l" && grep -q 'systemd-cryptsetup$' <<<"$l" \
+      && { [[ -z ${WIFI_UNLOCK_SSID:-} ]] || grep -q 'usr/bin/wifi-unlock-net$' <<<"$l"; }; }
   if (( rebuild )) || ! dracut_ok || ! sudo test -f /boot/initramfs-linux-fallback.img; then
     local kver; kver=$(pacman -Qlq linux | grep -m1 '/vmlinuz$'); kver=${kver%/vmlinuz}; kver=${kver##*/}
     run sudo dracut --force "$img" "$kver" && run sudo mkinitcpio -p linux \

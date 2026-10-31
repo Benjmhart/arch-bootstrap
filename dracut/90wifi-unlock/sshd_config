@@ -1,0 +1,9 @@
+# wifi-unlock: root by key only, and the key's forced command (unlock-prompt) is all it can run.
+PermitRootLogin forced-commands-only
+AuthenticationMethods publickey
+AuthorizedKeysFile .ssh/authorized_keys
+HostKey /etc/ssh/ssh_host_ed25519_key
+UsePAM no
+X11Forwarding no
+AllowTcpForwarding no
+PermitTunnel no

@@ -1,0 +1,14 @@
+[Unit]
+Description=sshd for the remote unlock (wifi-unlock)
+DefaultDependencies=no
+Before=initrd-switch-root.target
+Conflicts=initrd-switch-root.target
+
+[Service]
+ExecStart=/usr/bin/sshd -D -e
+RuntimeDirectory=sshd
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=sysinit.target

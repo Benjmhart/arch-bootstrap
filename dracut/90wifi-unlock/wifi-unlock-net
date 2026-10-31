@@ -1,0 +1,17 @@
+#!/bin/sh
+# Join the network in /etc/wifi-unlock (wifi-unlock.service). up: the first wireless interface, wpa_supplicant, the
+# fixed address. down: undone before switch-root, so NetworkManager gets a clean interface.
+. /etc/wifi-unlock/net.conf
+dev=
+for i in $(seq 60); do
+    for w in /sys/class/net/*/wireless; do [ -e "$w" ] && dev=${w%/wireless} && dev=${dev##*/} && break 2; done
+    sleep 0.5
+done
+[ -n "$dev" ] || { echo "wifi-unlock: no wireless interface"; exit 1; }
+case $1 in
+    up)   ip link set "$dev" up
+          wpa_supplicant -B -i "$dev" -c /etc/wifi-unlock/wpa_supplicant.conf -P /run/wifi-unlock.pid || exit 1
+          ip addr add "$IFADDR" dev "$dev" ;;
+    down) [ -f /run/wifi-unlock.pid ] && kill "$(cat /run/wifi-unlock.pid)"
+          ip addr flush dev "$dev"; ip link set "$dev" down ;;
+esac

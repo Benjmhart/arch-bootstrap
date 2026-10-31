@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# unlock <host> [address] -- type <host>'s disk passphrase from here while it boots (station-maintenance surfboard 04).
+# Its initramfs joins Wi-Fi and runs sshd (dracut/90wifi-unlock, setup_wifi_unlock); micro's peer key may run only the
+# passphrase prompt there. Waits up to 3 minutes for the machine to come up, so it can be started before the reboot.
+# The address is the host's WIFI_UNLOCK_ADDRESS in bootstrap.conf (the tailnet does not exist yet in an initramfs).
+# The initramfs has its own host key, kept as "<host>-initramfs" in known_hosts: trusted on first use, checked after.
+set -euo pipefail
+host=${1:?usage: unlock <host> [address]}
+case $host in
+  surfboard) addr=${2:-192.168.1.88} ;;
+  *) addr=${2:?no address known for $host: unlock $host <address>} ;;
+esac
+echo "waiting for $host's initramfs at $addr ..."
+for _ in $(seq 60); do
+  if timeout 3 bash -c "</dev/tcp/$addr/22" 2>/dev/null; then
+    exec ssh -F /dev/null -t -i "$HOME/.ssh/id_ed25519_peer" -o IdentitiesOnly=yes -o IdentityAgent=none \
+      -o ConnectTimeout=5 -o HostKeyAlias="$host-initramfs" -o StrictHostKeyChecking=accept-new \
+      -o UserKnownHostsFile="$HOME/.ssh/known_hosts" "root@$addr"
+  fi
+  sleep 2
+done
+echo "$host's initramfs never answered at $addr:22 (still off, booted past it, or not on Wi-Fi)"; exit 1
