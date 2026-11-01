@@ -1,0 +1,17 @@
+[Unit]
+Description=Leave no initramfs network state behind (remote-unlock)
+DefaultDependencies=no
+# Stop order is the reverse of start order: Before=systemd-networkd makes this stop AFTER networkd at switch-root.
+Before=systemd-networkd.service initrd-switch-root.target
+Conflicts=initrd-switch-root.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/true
+# /run survives switch-root. The real root runs NetworkManager, not networkd, so nothing rewrites this, and timesyncd
+# read the image's ONLINE_STATE=offline and never synced (surfboard, 2026-11-01; its Wi-Fi had failed in the image).
+ExecStop=/usr/bin/rm -rf /run/systemd/netif
+
+[Install]
+WantedBy=sysinit.target

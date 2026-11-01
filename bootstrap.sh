@@ -4784,6 +4784,15 @@ setup_remote_unlock() {
   put_etc_file /etc/dracut.conf.d/remote-unlock.conf \
 '# Written by arch-bootstrap (setup_remote_unlock, station-maintenance surfboard 04).
 add_dracutmodules+=" remote-unlock "' "dracut: remote-unlock" && REMOTE_UNLOCK_CHANGED=1
+  # A boot through an image without remote-unlock-netclean left networkd's state in /run, and timesyncd on the real
+  # root (NetworkManager, networkd off) reads it: ONLINE_STATE=offline, never syncs, verify fails (surfboard,
+  # 2026-11-01). Clear it on the running system; the image cleans up after itself from now on.
+  if ! systemctl -q is-active systemd-networkd && [[ -e /run/systemd/netif/state ]]; then
+    run sudo rm -rf /run/systemd/netif && run sudo systemctl restart systemd-timesyncd \
+      && did "remote-unlock: cleared the boot image's stale network state; timesyncd restarted"
+    timeout 30 bash -c 'until [[ $(timedatectl show -p NTPSynchronized --value) == yes ]]; do sleep 1; done' \
+      || warn "timesyncd has not synced 30 s after the restart"
+  fi
   REMOTE_UNLOCK_ON=1
   ok "remote-unlock: node $(uname -n)-boot, $(grep -c . <<<"$keys") YubiKey key(s)${wifi:+, Wi-Fi}"
 }

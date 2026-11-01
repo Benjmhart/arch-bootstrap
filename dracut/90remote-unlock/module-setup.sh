@@ -33,7 +33,7 @@ install() {
     done
     hostonly='' instmods cfg80211 mac80211 ccm gcm ctr cmac
     inst_multiple -o /usr/lib/firmware/regulatory.db /usr/lib/firmware/regulatory.db.p7s
-    inst_multiple ip sleep seq ls cat kill sshd tailscaled systemd-tty-ask-password-agent
+    inst_multiple ip sleep seq ls cat kill rm true sshd tailscaled systemd-tty-ask-password-agent
     inst_multiple -o /usr/lib/ssh/sshd-session /usr/lib/ssh/sshd-auth wpa_supplicant
     # Go reads the CA bundle here for TLS to the control server (a symlink into /etc/ca-certificates on Arch).
     inst_multiple /etc/ssl/certs/ca-certificates.crt "$(readlink -f /etc/ssl/certs/ca-certificates.crt)"
@@ -49,7 +49,7 @@ install() {
     inst_simple "$moddir/sshd_config" /etc/ssh/sshd_config
     inst_script "$moddir/remote-unlock-wifi" /usr/bin/remote-unlock-wifi
     inst_script "$moddir/unlock-prompt" /usr/bin/unlock-prompt
-    local u; for u in remote-unlock-wifi remote-unlock-tailscale remote-unlock-sshd; do
+    local u; for u in remote-unlock-wifi remote-unlock-tailscale remote-unlock-sshd remote-unlock-netclean; do
         inst_simple "$moddir/$u.service" "$systemdsystemunitdir/$u.service"
     done
 
@@ -59,7 +59,7 @@ install() {
     grep -q '^nobody:' "$initdir/etc/group" 2>/dev/null || grep '^nobody:' /etc/group >> "$initdir/etc/group"
     mkdir -p -m 0755 "$initdir/usr/share/empty.sshd" "$initdir/var/empty" "$initdir/var/log"
 
-    $SYSTEMCTL -q --root "$initdir" enable remote-unlock-tailscale.service remote-unlock-sshd.service
+    $SYSTEMCTL -q --root "$initdir" enable remote-unlock-tailscale.service remote-unlock-sshd.service remote-unlock-netclean.service
     if [[ -r $c/wpa_supplicant.conf ]]; then
         $SYSTEMCTL -q --root "$initdir" enable remote-unlock-wifi.service
     fi
