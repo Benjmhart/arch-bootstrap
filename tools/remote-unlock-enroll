@@ -12,6 +12,7 @@ set -euo pipefail
 for h in "$@"; do [[ $h != micro ]] || { echo "micro is never remotely unlockable (it takes no inbound)"; exit 2; }; done
 read -rsp "tag:unlock auth key (hidden): " key; echo
 key=${key//[[:space:]]/}; key=${key#$'\e[200~'}; key=${key%$'\e[201~'}   # stray spaces, a bracketed paste
+case $key in *--*) echo "that key is already signed (from a hand-run \`tailscale lock sign\`): paste the key as generated"; exit 1;; esac
 if [[ $key != tskey-auth-* ]]; then
   # Never the key itself: its first 5 characters and its length say which mistake it was.
   echo "that is not an auth key: got ${#key} characters starting '${key:0:5}', want tskey-auth-... The full key is shown"
@@ -19,7 +20,9 @@ if [[ $key != tskey-auth-* ]]; then
 fi
 t=$(mktemp -d); trap 'rm -f "$t/key"; rmdir "$t"' EXIT
 (umask 077; printf '%s\n' "$key" > "$t/key"); unset key
-signed=$(tailscale lock sign "file:$t/key") || { echo "tailscale lock sign failed: is the key pre-approved?"; exit 1; }
+# Signing writes to tailscaled, which on micro takes root (no operator): sudo, i.e. a YubiKey touch. Its own error, if any,
+# is shown; the first version ran it as ben and blamed the key (2026-11-01).
+signed=$(sudo tailscale lock sign "file:$t/key") || { echo "tailscale lock sign failed (above). Pre-approved? Tagged tag:unlock?"; exit 1; }
 (umask 077; printf '%s\n' "$signed" > "$t/key"); unset signed
 
 # Runs on the host as root. Its own tailscaled (userspace, its own state, socket and a random port) beside the real
