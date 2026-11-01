@@ -24,6 +24,9 @@ r=$t/root
 for f in usr/bin/wpa_supplicant usr/bin/sshd usr/bin/tailscaled usr/bin/systemd-tty-ask-password-agent \
          usr/bin/remote-unlock-wifi usr/bin/unlock-prompt etc/remote-unlock/tailscaled.state etc/resolv.conf \
          etc/ssl/certs/ca-certificates.crt usr/lib/systemd/systemd-networkd root/.ssh/authorized_keys; do ok "$f" "[[ -e $r/$f ]]"; done
+# Executable, not just present: remote-unlock-wifi shipped at 644 and failed "Permission denied" 476 times on
+# surfboard's first unlock boot (2026-11-01) while this test passed on -e.
+for f in usr/bin/remote-unlock-wifi usr/bin/unlock-prompt; do ok "$f executable" "[[ -x $r/$f ]]"; done
 for n in /sys/class/net/*/device/driver/module; do   # this machine's own network drivers
   [[ -e $n ]] || continue; m=$(basename "$(readlink -f "$n")")
   ok "driver $m" "find $r/usr/lib/modules -name '$m.ko*' | grep -q ."

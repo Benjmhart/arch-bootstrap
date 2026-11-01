@@ -4738,7 +4738,9 @@ setup_remote_unlock() {
   # put_root <path> <mode> <content>: install only when it differs (sudo cmp: /etc/remote-unlock is root-only). An
   # argument, not stdin: piped into, it would run in a subshell and REMOTE_UNLOCK_CHANGED would be lost.
   put_root() { tmp=$(umask 077; mktemp); printf '%s\n' "$3" >"$tmp"
-    if sudo cmp -s "$tmp" "$1" 2>/dev/null; then rm -f "$tmp"; return 0; fi
+    # The mode too: remote-unlock-wifi sat at 644 in git, the image could not run it, and a content-only compare
+    # would never have reinstalled it once fixed (surfboard's first unlock boot, 2026-11-01).
+    if sudo cmp -s "$tmp" "$1" 2>/dev/null && [[ $(sudo stat -c %a "$1") == "$2" ]]; then rm -f "$tmp"; return 0; fi
     run sudo install -D -m "$2" "$tmp" "$1" && REMOTE_UNLOCK_CHANGED=1 && did "remote-unlock: $1"; rm -f "$tmp"; }
   # The Wi-Fi-only first version (2026-10-31, surfboard; a fixed LAN address, micro's passwordless key): gone.
   if sudo test -e /etc/dracut.conf.d/wifi-unlock.conf -o -e /usr/lib/dracut/modules.d/90wifi-unlock -o -e /etc/wifi-unlock; then
