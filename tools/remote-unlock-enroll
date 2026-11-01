@@ -31,7 +31,9 @@ remote='set -euo pipefail
 c=/etc/remote-unlock k=$1
 if [ -f $c/tailscaled.state ]; then echo "already enrolled ($c/tailscaled.state)"; rm -f "$k"; exit 0; fi
 install -d -m 700 $c
-r=$(mktemp -d); trap "kill \$pid 2>/dev/null; rm -f \"$k\"; rm -rf \"$r\"" EXIT
+# || true: under set -e a failing kill (tailscaled already stopped below) ended this trap before the rm, left the signed
+# key on every host and exited 1 after a good enrolment (2026-11-01).
+r=$(mktemp -d); trap "kill \$pid 2>/dev/null || true; rm -f \"$k\"; rm -rf \"$r\"" EXIT
 tailscaled --tun=userspace-networking --state=$r/state --statedir=$r --socket=$r/sock --port=0 >$r/log 2>&1 & pid=$!
 for i in $(seq 40); do [ -S $r/sock ] && break; sleep 0.5; done
 tailscale --socket=$r/sock up --auth-key="file:$k" --hostname="$(uname -n)-boot" --advertise-tags=tag:unlock \
