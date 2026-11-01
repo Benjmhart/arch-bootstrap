@@ -187,6 +187,7 @@ xorg-xsetroot
 xorg-xwayland
 xss-lock
 xprintidle
+xpra                  # remote GUI apps over ssh, on trial beside ssh -X (Ben, 2026-10-31)
 yazi
 ouch
 yubikey-manager

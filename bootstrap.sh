@@ -3418,9 +3418,12 @@ harden_sshd() {
   [[ -z ${PKG_EXCLUDED[openssh]:-} ]] || return 0
 
   local dropin=/etc/ssh/sshd_config.d/10-hardening.conf
+  # X11Forwarding (Ben, 2026-10-31, on trial beside xpra): `ssh -X host vivaldi` draws a remote GUI here. Only the
+  # peers' keys reach sshd at all (tailnet-only grants, from= on every key), and they could already run anything.
   local want="# Written by arch-bootstrap. Edit bootstrap.conf, not this file.
 PasswordAuthentication no
-PermitRootLogin no"
+PermitRootLogin no
+X11Forwarding yes"
   [[ -n $SSHD_ALLOW_USERS ]] && want+="
 AllowUsers $SSHD_ALLOW_USERS"
 
