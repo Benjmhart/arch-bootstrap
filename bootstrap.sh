@@ -1922,6 +1922,12 @@ install_tui_plugins() {
       fi
     done
   fi
+  # The fold plugin lives in the dotfiles (~/.config/herdr/fold; Ben 2026-11-01), so it is linked, not installed: the
+  # link points at the checkout, and an fpush moving the dotfiles updates it. No cargo needed.
+  if have herdr && [[ -f $HOME/.config/herdr/fold/herdr-plugin.toml ]]; then
+    if herdr plugin list 2>/dev/null | grep -q '^- local.fold '; then ok "herdr plugin local.fold linked"
+    else run herdr plugin link "$HOME/.config/herdr/fold" >/dev/null && did "herdr plugin local.fold linked"; fi
+  fi
   # A running server keeps the config.toml it started with, so new key bindings (the navigator's prefix+t) did nothing
   # after an fpush until a reload (station-maintenance beast-arch 118, 2026-10-18).
   if have herdr && herdr status server 2>/dev/null | grep -q '^status: running'; then
