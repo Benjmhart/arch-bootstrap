@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# unlock-key -- make this machine's YubiKey ssh key for the remote unlock (tools/unlock, dracut/90remote-unlock;
+# station-maintenance surfboard 04). Run on carbon and beast-arch with a YubiKey plugged in; once per YubiKey you want
+# to unlock with (micro already has its sk peer keys). Touch the key when it blinks. The public half goes to
+# ~/secrets/ssh/unlock/<host>-<serial>.pub (committed and pushed); the next fpush puts it in every enrolled initramfs.
+set -euo pipefail
+command -v ykman >/dev/null || { echo "ykman not installed"; exit 1; }
+serial=$(ykman list --serials | head -n1)
+[[ -n $serial ]] || { echo "no YubiKey plugged in"; exit 1; }
+host=$(uname -n) f=$HOME/.ssh/id_ed25519_sk_unlock_$serial pub=${SECRETS_DIR:-$HOME/secrets}/ssh/unlock/$host-$serial.pub
+if [[ -f $f ]]; then echo "already made: $f"; else
+  ssh-keygen -q -t ed25519-sk -f "$f" -N '' -C "ben@$host unlock yubikey $serial"
+fi
+pgrep -x keepassxc >/dev/null && { echo "close KeePassXC first (the secrets repo is about to be pulled)"; exit 1; }
+git -C "${pub%/ssh/unlock/*}" pull -q --ff-only
+mkdir -p "${pub%/*}"; cp "$f.pub" "$pub"
+git -C "${pub%/ssh/unlock/*}" add "$pub"
+if git -C "${pub%/ssh/unlock/*}" diff --cached --quiet; then echo "already in secrets: $pub"; exit 0; fi
+git -C "${pub%/ssh/unlock/*}" commit -q -m "ssh/unlock: $host YubiKey $serial key for the remote unlock (tools/unlock-key)"
+git -C "${pub%/ssh/unlock/*}" push -q
+echo "added $pub; it reaches the initramfs images at the next fpush"

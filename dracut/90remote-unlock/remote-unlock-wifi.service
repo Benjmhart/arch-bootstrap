@@ -1,0 +1,15 @@
+[Unit]
+Description=Wi-Fi for the remote unlock (remote-unlock)
+DefaultDependencies=no
+After=systemd-udevd.service
+Before=initrd-switch-root.target
+Conflicts=initrd-switch-root.target
+
+[Service]
+ExecStart=/usr/bin/remote-unlock-wifi up
+ExecStopPost=/usr/bin/remote-unlock-wifi down
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=sysinit.target

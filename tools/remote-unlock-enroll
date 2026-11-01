@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# remote-unlock-enroll <host>... -- make each host's boot node "<host>-boot" for the remote unlock (dracut/90remote-unlock,
+# station-maintenance surfboard 04). Run on micro, the Tailnet Lock signer. Once per host; then the next bootstrap run
+# (fpush) builds the image with it. micro itself is refused: nothing may reach it (Ben, 2026-10-03 and 2026-10-31).
+#
+# Needs an auth key from the admin console (Settings > Keys > Generate auth key): Reusable, Expiration 1 day,
+# Pre-approved, Tags: tag:unlock (the tailnet policy must define tag:unlock first). It is read hidden, signed here for
+# Tailnet Lock (`tailscale lock sign`), copied to each host as a 0600 file for the one `tailscale up`, and deleted.
+# Each host asks for its sudo password once. Revoke the key in the console when done.
+set -euo pipefail
+(( $# )) || { echo "usage: remote-unlock-enroll <host>...   (e.g. beast-arch media-center carbon surfboard)"; exit 2; }
+for h in "$@"; do [[ $h != micro ]] || { echo "micro is never remotely unlockable (it takes no inbound)"; exit 2; }; done
+read -rsp "tag:unlock auth key (hidden): " key; echo
+[[ $key == tskey-auth-* ]] || { echo "that is not an auth key (tskey-auth-...)"; exit 1; }
+t=$(mktemp -d); trap 'rm -f "$t/key"; rmdir "$t"' EXIT
+(umask 077; printf '%s\n' "$key" > "$t/key"); unset key
+signed=$(tailscale lock sign "file:$t/key") || { echo "tailscale lock sign failed: is the key pre-approved?"; exit 1; }
+(umask 077; printf '%s\n' "$signed" > "$t/key"); unset signed
+
+# Runs on the host as root. Its own tailscaled (userspace, its own state, socket and a random port) beside the real
+# one; the state it leaves is the boot node, which the initramfs runs at every boot.
+remote='set -euo pipefail
+c=/etc/remote-unlock k=$1
+if [ -f $c/tailscaled.state ]; then echo "already enrolled ($c/tailscaled.state)"; rm -f "$k"; exit 0; fi
+install -d -m 700 $c
+r=$(mktemp -d); trap "kill \$pid 2>/dev/null; rm -f \"$k\"; rm -rf \"$r\"" EXIT
+tailscaled --tun=userspace-networking --state=$r/state --statedir=$r --socket=$r/sock --port=0 >$r/log 2>&1 & pid=$!
+for i in $(seq 40); do [ -S $r/sock ] && break; sleep 0.5; done
+tailscale --socket=$r/sock up --auth-key="file:$k" --hostname="$(uname -n)-boot" --advertise-tags=tag:unlock \
+  --accept-dns=false --accept-routes=false --timeout=90s
+tailscale --socket=$r/sock status --self --peers=false
+# Into place only after a successful `up`: a failed one also leaves a state file, of a node that never logged in.
+kill $pid; wait $pid 2>/dev/null || true
+install -m 600 $r/state $c/tailscaled.state
+echo "enrolled: $(uname -n)-boot"'
+for h in "$@"; do
+  echo "== $h"
+  dst=$(ssh "$h" 'mkdir -p ~/.cache && mktemp -p ~/.cache unlock-key.XXXXXX')
+  scp -q "$t/key" "$h:$dst"
+  ssh -t "$h" "sudo bash -c $(printf %q "$remote") enroll $(printf %q "$dst")" || echo "!! $h: enrolment failed"
+done
+echo "Next: fpush (each enrolled host builds its image with the boot node), then test: reboot one, \`unlock <host>\`."

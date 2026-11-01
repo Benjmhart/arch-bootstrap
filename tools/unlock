@@ -1,22 +1,26 @@
 #!/usr/bin/env bash
-# unlock <host> [address] -- type <host>'s disk passphrase from here while it boots (station-maintenance surfboard 04).
-# Its initramfs joins Wi-Fi and runs sshd (dracut/90wifi-unlock, setup_wifi_unlock); micro's peer key may run only the
-# passphrase prompt there. Waits up to 3 minutes for the machine to come up, so it can be started before the reboot.
-# The address is the host's WIFI_UNLOCK_ADDRESS in bootstrap.conf (the tailnet does not exist yet in an initramfs).
-# The initramfs has its own host key, kept as "<host>-initramfs" in known_hosts: trusted on first use, checked after.
+# unlock <host> -- type <host>'s disk passphrase from here while it boots, at home or away (station-maintenance
+# surfboard 04). Its initramfs joins the tailnet as "<host>-boot" and runs sshd (dracut/90remote-unlock); only YubiKey
+# (sk) keys may log in, and all they can run is the passphrase prompt: touch the key when it blinks. Works from micro,
+# carbon and beast-arch (tag:unlock's grant). Waits up to 3 minutes for the boot node, so it can be started before the
+# reboot. The initramfs has its own host key, kept as "<host>-initramfs" in known_hosts: trusted on first use.
 set -euo pipefail
-host=${1:?usage: unlock <host> [address]}
-case $host in
-  surfboard) addr=${2:-192.168.1.88} ;;
-  *) addr=${2:?no address known for $host: unlock $host <address>} ;;
-esac
-echo "waiting for $host's initramfs at $addr ..."
-for _ in $(seq 60); do
-  if timeout 3 bash -c "</dev/tcp/$addr/22" 2>/dev/null; then
-    exec ssh -F /dev/null -t -i "$HOME/.ssh/id_ed25519_peer" -o IdentitiesOnly=yes -o IdentityAgent=none \
-      -o ConnectTimeout=5 -o HostKeyAlias="$host-initramfs" -o StrictHostKeyChecking=accept-new \
+host=${1:?usage: unlock <host>}
+keys=()
+for k in "$HOME"/.ssh/id_ed25519_sk_peer_* "$HOME"/.ssh/id_ed25519_sk_unlock_*; do
+  [[ -f $k && $k != *.pub ]] && keys+=(-i "$k")
+done
+(( ${#keys[@]} )) || { echo "no YubiKey ssh key here (~/.ssh/id_ed25519_sk_unlock_*): tools/unlock-key makes one"; exit 1; }
+echo "waiting for $host-boot on the tailnet ..."
+for _ in $(seq 90); do
+  addr=$(tailscale ip -4 "$host-boot" 2>/dev/null || true)
+  if [[ -n $addr ]] && timeout 3 bash -c "</dev/tcp/$addr/22" 2>/dev/null; then
+    echo "connecting to $host-boot ($addr): touch your YubiKey when it blinks"
+    exec ssh -F /dev/null -t "${keys[@]}" -o IdentitiesOnly=yes -o IdentityAgent=none \
+      -o ConnectTimeout=10 -o HostKeyAlias="$host-initramfs" -o StrictHostKeyChecking=accept-new \
       -o UserKnownHostsFile="$HOME/.ssh/known_hosts" "root@$addr"
   fi
   sleep 2
 done
-echo "$host's initramfs never answered at $addr:22 (still off, booted past it, or not on Wi-Fi)"; exit 1
+echo "$host-boot never answered on the tailnet (still off, booted past it, offline, or not enrolled: tools/remote-unlock-enroll)"
+exit 1

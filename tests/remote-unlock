@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# tests/remote-unlock -- dracut/90remote-unlock builds an initramfs whose sshd and tailscaled actually start. Builds an image as a user
+# (a copy of dracut's module tree plus this module, fake inputs: no ~/secrets), unpacks it, and runs its own sshd in a
+# user-namespace chroot. The first real boot (surfboard 2026-10-31) died on "Missing privilege separation directory:
+# /usr/share/empty.sshd", which the host's sshd -t could never show. Needs dracut, sshd, tailscaled, unshare.
+# Run: tests/remote-unlock
+set -uo pipefail
+repo=$(cd "$(dirname "$0")/.." && pwd)
+command -v dracut >/dev/null || { echo "skip: dracut not installed"; exit 0; }
+t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
+cp -r /usr/lib/dracut "$t/base"; cp -r "$repo/dracut/90remote-unlock" "$t/base/modules.d/"
+mkdir -p "$t/conf" "$t/confdir" "$t/root"
+printf 'network={\n\tssid="Test"\n\tpsk=0000\n}\n' > "$t/conf/wpa_supplicant.conf"
+echo '{}' > "$t/conf/tailscaled.state"
+ssh-keygen -q -t ed25519 -N '' -f "$t/conf/ssh_host_ed25519_key"
+echo "restrict,pty,command=\"/usr/bin/unlock-prompt\" $(cut -d' ' -f1-2 "$t/conf/ssh_host_ed25519_key.pub")" > "$t/conf/authorized_keys"
+pass=0 fail=0
+ok()  { if eval "$2"; then echo "  ok   $1"; pass=$((pass + 1)); else echo "  FAIL $1"; fail=$((fail + 1)); fi; }
+REMOTE_UNLOCK_DIR=$t/conf dracutbasedir=$t/base dracut --no-hostonly --conf /dev/null --confdir "$t/confdir" --tmpdir "$t" \
+  --force --no-compress -m "systemd systemd-cryptsetup remote-unlock" "$t/img" "$(uname -r)" >"$t/build.log" 2>&1
+ok "image builds" '[[ -s $t/img ]]' || { tail -20 "$t/build.log"; exit 1; }
+(cd "$t/root" && lsinitrd --unpack "$t/img" >/dev/null 2>&1)
+r=$t/root
+for f in usr/bin/wpa_supplicant usr/bin/sshd usr/bin/tailscaled usr/bin/systemd-tty-ask-password-agent \
+         usr/bin/remote-unlock-wifi usr/bin/unlock-prompt etc/remote-unlock/tailscaled.state etc/resolv.conf \
+         etc/ssl/certs/ca-certificates.crt usr/lib/systemd/systemd-networkd root/.ssh/authorized_keys; do ok "$f" "[[ -e $r/$f ]]"; done
+for n in /sys/class/net/*/device/driver/module; do   # this machine's own network drivers
+  [[ -e $n ]] || continue; m=$(basename "$(readlink -f "$n")")
+  ok "driver $m" "find $r/usr/lib/modules -name '$m.ko*' | grep -q ."
+done
+ok "units enabled (Wi-Fi too)" "[[ -L $r/etc/systemd/system/sysinit.target.wants/remote-unlock-tailscale.service && -L $r/etc/systemd/system/sysinit.target.wants/remote-unlock-sshd.service && -L $r/etc/systemd/system/sysinit.target.wants/remote-unlock-wifi.service ]]"   # absolute links: -L, not -e
+ok "secrets are 0600" "[[ \$(stat -c %a $r/etc/ssh/ssh_host_ed25519_key $r/etc/remote-unlock/wpa_supplicant.conf $r/etc/remote-unlock/tailscaled.state | sort -u) == 600 ]]"
+mkdir -p "$r/run/sshd"
+out=$(unshare -r -m --propagation private bash -c "mount --rbind /dev '$r/dev'
+  chroot '$r' /usr/bin/sshd -D -e -p 2299 -o ListenAddress=127.0.0.1 & p=\$!; sleep 2
+  kill -0 \$p 2>/dev/null && echo UP; kill \$p 2>/dev/null; wait" 2>&1)
+ok "the image's own sshd starts and stays up" '[[ $out == *UP* ]]' || echo "$out" | sed 's/^/       /'
+# tailscaled with no network at all (-n): it must start from the image (binary, CA bundle) without touching the tailnet.
+cp "$t/conf/tailscaled.state" "$r/etc/remote-unlock/tailscaled.state"; mkdir -p "$r/run/remote-unlock"
+out=$(unshare -r -n -m --propagation private bash -c "mount --rbind /dev '$r/dev'
+  chroot '$r' /usr/bin/tailscaled --tun=userspace-networking --state=/etc/remote-unlock/tailscaled.state \
+    --statedir=/run/remote-unlock --socket=/run/remote-unlock/tailscaled.sock --port=0 & p=\$!; sleep 3
+  kill -0 \$p 2>/dev/null && echo UP; kill \$p 2>/dev/null; wait" 2>&1)
+ok "the image's own tailscaled starts and stays up" '[[ $out == *UP* ]]' || echo "$out" | tail -5 | sed 's/^/       /'
+echo "$pass passed, $fail failed"; (( fail == 0 ))

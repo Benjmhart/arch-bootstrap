@@ -1,5 +1,5 @@
 [Unit]
-Description=sshd for the remote unlock (wifi-unlock)
+Description=sshd for the remote unlock (remote-unlock)
 DefaultDependencies=no
 Before=initrd-switch-root.target
 Conflicts=initrd-switch-root.target

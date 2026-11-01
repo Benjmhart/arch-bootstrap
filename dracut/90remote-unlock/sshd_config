@@ -1,6 +1,7 @@
-# wifi-unlock: root by key only, and the key's forced command (unlock-prompt) is all it can run.
+# remote-unlock: root by a YubiKey (sk) key only, and the key's forced command (unlock-prompt) is all it can run.
 PermitRootLogin forced-commands-only
 AuthenticationMethods publickey
+PubkeyAcceptedAlgorithms sk-ssh-ed25519@openssh.com
 AuthorizedKeysFile .ssh/authorized_keys
 HostKey /etc/ssh/ssh_host_ed25519_key
 UsePAM no

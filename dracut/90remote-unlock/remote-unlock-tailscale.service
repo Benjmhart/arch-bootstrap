@@ -1,0 +1,17 @@
+[Unit]
+Description=Tailscale for the remote unlock (remote-unlock: node <host>-boot)
+DefaultDependencies=no
+After=systemd-udevd.service
+Before=initrd-switch-root.target
+Conflicts=initrd-switch-root.target
+
+[Service]
+# Userspace networking: no tun device, no firewall. A connection to this node's tailnet address is handed to
+# 127.0.0.1:<port> (tailscale wgengine/netstack acceptTCP), so sshd needs nothing more.
+ExecStart=/usr/bin/tailscaled --tun=userspace-networking --state=/etc/remote-unlock/tailscaled.state --statedir=/run/remote-unlock --socket=/run/remote-unlock/tailscaled.sock --port=0
+RuntimeDirectory=remote-unlock
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=sysinit.target

@@ -1,0 +1,14 @@
+#!/bin/sh
+# Wi-Fi for the remote unlock (remote-unlock-wifi.service): wpa_supplicant on the first wireless interface; networkd's
+# DHCP then gets it an address. down: undone before switch-root, so NetworkManager gets a clean interface.
+dev=
+for i in $(seq 60); do
+    for w in /sys/class/net/*/wireless; do [ -e "$w" ] && dev=${w%/wireless} && dev=${dev##*/} && break 2; done
+    sleep 0.5
+done
+[ -n "$dev" ] || { echo "remote-unlock: no wireless interface"; exit 1; }
+case $1 in
+    up)   ip link set "$dev" up
+          exec wpa_supplicant -i "$dev" -c /etc/remote-unlock/wpa_supplicant.conf ;;
+    down) ip addr flush dev "$dev"; ip link set "$dev" down ;;
+esac
