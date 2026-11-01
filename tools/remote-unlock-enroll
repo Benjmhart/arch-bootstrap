@@ -11,7 +11,12 @@ set -euo pipefail
 (( $# )) || { echo "usage: remote-unlock-enroll <host>...   (e.g. beast-arch media-center carbon surfboard)"; exit 2; }
 for h in "$@"; do [[ $h != micro ]] || { echo "micro is never remotely unlockable (it takes no inbound)"; exit 2; }; done
 read -rsp "tag:unlock auth key (hidden): " key; echo
-[[ $key == tskey-auth-* ]] || { echo "that is not an auth key (tskey-auth-...)"; exit 1; }
+key=${key//[[:space:]]/}; key=${key#$'\e[200~'}; key=${key%$'\e[201~'}   # stray spaces, a bracketed paste
+if [[ $key != tskey-auth-* ]]; then
+  # Never the key itself: its first 5 characters and its length say which mistake it was.
+  echo "that is not an auth key: got ${#key} characters starting '${key:0:5}', want tskey-auth-... The full key is shown"
+  echo "once, in the dialog right after Generate; the Keys list shows only its ID (k...)."; exit 1
+fi
 t=$(mktemp -d); trap 'rm -f "$t/key"; rmdir "$t"' EXIT
 (umask 077; printf '%s\n' "$key" > "$t/key"); unset key
 signed=$(tailscale lock sign "file:$t/key") || { echo "tailscale lock sign failed: is the key pre-approved?"; exit 1; }
