@@ -33,3 +33,7 @@ ventoy-bin                           b185aeda22473076cc0cb7d330bc8bc0b43c8a0e
 xdg-desktop-portal-termfilechooser   7b759fbd09fd94dad25005891061a2a267d0c4f6
 yay                                  cb43f84828ab4f9700f7c6f9c6d7a923d4cfaff0
 zoom                                 9cf1e9686715d0677db2eb4106c2d59aee6d7ca0
+# ZSA Keymapp (station-maintenance beast-arch 108, Ben 2026-11-01): live Moonlander layer overlay. zsa-udev first
+# (keymapp depends on it; its rules use group plugdev, so setup_zsa adds a uaccess rule for the seat user instead).
+zsa-udev                             513a62cd8768773ed7ba0b7c3cf0a4ddadd7d3f7   # only: beast-arch
+zsa-keymapp-bin                      a2cddd725473d7becea6291e5aebacc8e8a254cc   # only: beast-arch

@@ -4631,6 +4631,16 @@ WantedBy=multi-user.target" "ClamAV desktop alerts" && changed=1
 }
 
 
+# ZSA keyboards (station-maintenance beast-arch 108): Keymapp reads the board over USB/hidraw. zsa-udev's rules give
+# group plugdev, which nobody is in; uaccess gives the seat user alone. Every host: it only matches ZSA's vendor id.
+setup_zsa() {
+  if put_etc_file /etc/udev/rules.d/70-zsa-uaccess.rules \
+'# Written by arch-bootstrap: ZSA keyboards (Keymapp) for the seat user (beast-arch 108).
+ACTION=="add|change", SUBSYSTEM=="usb|hidraw", ATTRS{idVendor}=="3297", TAG+="uaccess"' "ZSA keyboard access"; then
+    run sudo udevadm control --reload; run sudo udevadm trigger --subsystem-match=usb --subsystem-match=hidraw
+  fi
+}
+
 # YubiKeys (station-maintenance beast-arch 88). The password stays the fallback everywhere.
 #  - udev: the seat user may reach a YubiKey's OTP interface (ykman otp, KeePassXC
 #    challenge-response). systemd's 60-fido-id.rules grants the FIDO interface only.
@@ -5047,6 +5057,7 @@ stage_services() {
   install_system_dropins
   setup_rescue_ventoy_upgrade
   setup_yubikey
+  setup_zsa
   setup_wake
   setup_boot
   install_browser_search_policy
@@ -5379,6 +5390,7 @@ stage_verify() {
       "pacman -Q nvidia-580xx-dkms nvidia-580xx-utils >/dev/null 2>&1 && [[ \$(pacman -Qq nvidia-utils) != nvidia-utils ]]"
   fi
   check "YubiKey OTP udev rule"          "[ -f /etc/udev/rules.d/70-yubikey-uaccess.rules ]"
+  check "ZSA keyboard udev rule"         "[ -f /etc/udev/rules.d/70-zsa-uaccess.rules ]"
   if [[ -s $SECRETS_DIR/yubikey/u2f_mappings ]]; then check "sudo: YubiKey touch (pam_u2f)" "grep -q pam_u2f /etc/pam.d/sudo"; fi
   if [[ -s $SECRETS_DIR/yubikey/u2f_mappings ]]; then check "tty login: YubiKey touch (pam_u2f)" "grep -q pam_u2f /etc/pam.d/login"; fi
   check "sudo over ssh: client YubiKey (pam_rssh)" "grep -q pam_rssh /etc/pam.d/sudo"
