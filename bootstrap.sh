@@ -4697,6 +4697,24 @@ exit 1' "sudo: password-only under ssh or sudo -S"; then
   return 0
 }
 
+# Wake from suspend (station-maintenance surfboard 04, Ben 2026-11-01): a host listed in secrets wake/hosts wakes on a
+# Wi-Fi magic packet, which tools/wake has the LAN peers send. NetworkManager arms WoWLAN at suspend for connections
+# with wake-on-wlan set. A changed connection takes it at its next activation; not reapplied here, because fpush
+# reaches this machine over that Wi-Fi.
+setup_wake() {
+  local mac c t n=0
+  mac=$(awk -v h="$(uname -n)" '$1 == h { print $2 }' "$SECRETS_DIR/wake/hosts" 2>/dev/null || true)
+  [[ -n $mac ]] && have nmcli || return 0
+  ip -o link | grep -qi "link/ether $mac" || warn "wake/hosts gives $mac for this machine, but no interface has it -- tools/wake will miss it"
+  while IFS=: read -r c t; do
+    # -g prints the flags in hex: 0x1 = "default" (off), magic = 0x8.
+    [[ $t == 802-11-wireless ]] && ! (( $(nmcli -g 802-11-wireless.wake-on-wlan c show "$c") & 0x8 )) || continue
+    run sudo nmcli c modify "$c" 802-11-wireless.wake-on-wlan magic && n=$((n + 1))
+  done < <(nmcli -t -f UUID,TYPE c show)
+  if (( n )); then did "Wi-Fi wake on magic packet: $n connection(s), live at their next activation (a reboot)"
+  else ok "Wi-Fi wake on magic packet"; fi
+}
+
 # Boot (Ben, 2026-10-16: "one setup everywhere, one boot path"; station-maintenance beast-arch 95):
 # GRUB -> kernel + dracut initramfs on every machine. dracut's systemd initramfs unlocks / with a FIDO2
 # YubiKey (PIN + touch) or the passphrase; mkinitcpio builds only the fallback image (busybox `encrypt`,
@@ -5018,6 +5036,7 @@ stage_services() {
   install_system_dropins
   setup_rescue_ventoy_upgrade
   setup_yubikey
+  setup_wake
   setup_boot
   install_browser_search_policy
   tune_storage_and_swap
@@ -5352,6 +5371,10 @@ stage_verify() {
   if [[ -s $SECRETS_DIR/yubikey/u2f_mappings ]]; then check "sudo: YubiKey touch (pam_u2f)" "grep -q pam_u2f /etc/pam.d/sudo"; fi
   if [[ -s $SECRETS_DIR/yubikey/u2f_mappings ]]; then check "tty login: YubiKey touch (pam_u2f)" "grep -q pam_u2f /etc/pam.d/login"; fi
   check "sudo over ssh: client YubiKey (pam_rssh)" "grep -q pam_rssh /etc/pam.d/sudo"
+  if awk -v h="$(uname -n)" '$1 == h { f=1 } END { exit !f }' "$SECRETS_DIR/wake/hosts" 2>/dev/null; then
+    check "Wi-Fi wake on magic packet (wake/hosts)" \
+      "( for c in \$(nmcli -t -f UUID,TYPE c show | awk -F: '\$2 == \"802-11-wireless\" { print \$1 }'); do (( \$(nmcli -g 802-11-wireless.wake-on-wlan c show \$c) & 0x8 )) || exit 1; done )"
+  fi
   if zram_only_swap; then
     check "zram swap tuning live (swappiness 180)" "[ \"\$(sysctl -n vm.swappiness)\" = 180 ]"
   fi

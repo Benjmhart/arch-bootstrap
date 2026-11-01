@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# wake <host> -- wake a sleeping machine from anywhere (station-maintenance surfboard 04). The tailnet cannot reach a
+# suspended machine, so every LAN peer that answers over ssh (media-center, beast-arch, carbon: three chances) sends
+# the Wake-on-LAN magic packet to the MAC in ~/secrets/wake/hosts; then this waits for <host> on the tailnet. The
+# host must be listed there, which also turns on its Wi-Fi wake-on-wlan (bootstrap setup_wake).
+set -euo pipefail
+host=${1:?usage: wake <host>}
+read -r mac lanip < <(awk -v h="$host" '$1 == h { print $2, $3 }' "${SECRETS_DIR:-$HOME/secrets}/wake/hosts" 2>/dev/null || true)
+[[ -n ${mac:-} ]] || { echo "$host is not in ~/secrets/wake/hosts"; exit 1; }
+# Magic packet: 6x FF + the MAC 16 times, UDP port 9, three times each, to the all-ones broadcast, every LAN broadcast
+# address, and unicast to any IP this peer's neighbour table has for the MAC. Measured 2026-11-01 (surfboard awake, a
+# listener on an open port): Wi-Fi drops broadcasts often (media-center's 0 of 4, carbon's 2 of 3), unicast arrived
+# every time; asleep, iwlwifi's WoWLAN answers ARP itself, so the unicast still finds it. A neighbour entry is dropped
+# a while after the host goes quiet, so wake/hosts may also give its last LAN IP (third column; DHCP, so best effort).
+send='import socket, subprocess, sys, time
+mac = sys.argv[1].lower(); p = b"\xff" * 6 + bytes.fromhex(mac.replace(":", "")) * 16
+ip = lambda *a: subprocess.run(["ip", "-4", "-o", *a], capture_output=True, text=True).stdout
+addr = ip("addr", "show", "scope", "global").split()
+dests = {"255.255.255.255"} | {addr[i + 1] for i, w in enumerate(addr) if w == "brd"}
+dests |= set(sys.argv[2:]) | {l.split()[0] for l in ip("neigh").splitlines() if mac in l.lower().split()}
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+for _ in range(3):
+    for d in sorted(dests): s.sendto(p, (d, 9))
+    time.sleep(0.2)
+print(" ".join(sorted(dests)))'
+sent=0
+peers=${WAKE_PEERS:-media-center beast-arch carbon}
+[[ " $peers " == *" $(uname -n) "* ]] || peers+=" $(uname -n)"   # this machine too: useful at home, harmless away
+for peer in $peers; do
+  [[ $peer == "$host" ]] && continue
+  if [[ $peer == "$(uname -n)" ]]; then to=$(python3 -c "$send" "$mac" ${lanip:-})
+  else to=$(ssh -o ConnectTimeout=8 -o BatchMode=yes -o ForwardAgent=no "$peer" python3 - "$mac" ${lanip:-} <<<"$send" 2>/dev/null) || to=""; fi
+  if [[ -n $to ]]; then echo "$peer: magic packet sent ($to)"; sent=$((sent + 1)); else echo "$peer: unreachable"; fi
+done
+(( sent )) || { echo "no LAN peer reachable: nothing sent"; exit 1; }
+echo "waiting for $host on the tailnet ..."
+for _ in $(seq 45); do
+  if tailscale ping -c 1 --timeout 3s "$host" >/dev/null 2>&1; then echo "$host is awake"; exit 0; fi
+  sleep 1
+done
+echo "$host did not answer within ~3 min (still asleep, a peer not on the home LAN, or wake-on-wlan not active yet)"
+exit 1
