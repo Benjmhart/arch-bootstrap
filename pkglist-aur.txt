@@ -25,6 +25,7 @@ lib32-nvidia-580xx-utils             489271acfd01c91bc07201300e6b63f3d2a8e2ba   
 localsend-bin                        f35ec0d6bd56c3c9fc4611f91972c31c38210654
 otf-hasklig                          4284295c6f73dcf3ffd60e00662159eb9a1f0a11
 pacmixer                             138b40fef079b75acc8a812811e2a7fde99cab3b
+pam_rssh                             88dedd0b7b7f1ff2e3f69d357efff676826c4769
 python-elgato-streamdeck             8d104c56189aa8973453605b23a331d31e92a882   # only: beast-arch
 rambox-pro-bin                       a37f848866508e5de743684e9a9030a5fad560de
 streamdeck-ui                        fd887de11f6eaa3265e2fdc7645712136b3fc640   # only: beast-arch

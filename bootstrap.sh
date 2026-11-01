@@ -3665,6 +3665,32 @@ restart_stale_tailscaled() {
     && ok "tailscaled $daemon -> $client: restart scheduled in 2 min (the tailnet drops for a few seconds)"
 }
 
+# sudo_agent: on a machine with YubiKey sk keys (micro's peer keys, tools/unlock-key's unlock keys), a user ssh-agent
+# at $XDG_RUNTIME_DIR/ssh-sudo-agent.sock that holds only those (touch-required) keys; ssh_tailnet_peers forwards it.
+# Adding an sk key needs no touch and no key plugged in; each signature does. Returns 1 where there are none.
+sudo_agent() {
+  compgen -G "$HOME/.ssh/id_ed25519_sk_peer_*.pub" >/dev/null || compgen -G "$HOME/.ssh/id_ed25519_sk_unlock_*.pub" >/dev/null || return 1
+  local unit=ssh-sudo-agent.service
+  local want="# Written by arch-bootstrap (sudo_agent; station-maintenance beast-arch 133).
+[Unit]
+Description=ssh-agent holding only the YubiKey sk keys, forwarded to tailnet peers for sudo
+
+[Service]
+ExecStartPre=-/usr/bin/rm -f %t/ssh-sudo-agent.sock
+ExecStart=/usr/bin/ssh-agent -D -a %t/ssh-sudo-agent.sock
+ExecStartPost=/bin/sh -c 'until [ -S %t/ssh-sudo-agent.sock ]; do sleep 0.1; done; for k in %h/.ssh/id_ed25519_sk_peer_* %h/.ssh/id_ed25519_sk_unlock_*; do case $\$k in *.pub) ;; *) [ -f $\$k ] && SSH_AUTH_SOCK=%t/ssh-sudo-agent.sock ssh-add -q $\$k ;; esac; done; true'
+
+[Install]
+WantedBy=default.target"
+  local f="$HOME/.config/systemd/user/$unit"
+  if [[ -f $f && "$(cat "$f")" == "$want" ]]; then ok "ssh sudo agent unit up to date"
+  elif (( DRY_RUN )); then info "(dry run) would write $f"
+  else mkdir -p "${f%/*}"; printf '%s\n' "$want" > "$f"; systemctl --user daemon-reload; did "wrote $f"
+    systemctl --user restart "$unit" 2>/dev/null || true; fi
+  (( DRY_RUN )) || systemctl --user enable --now "$unit" >/dev/null 2>&1 || warn "could not start $unit"
+  return 0
+}
+
 ssh_tailnet_peers() {
   [[ -n $SSH_PEERS ]] || return 0
   local suffix
@@ -3681,6 +3707,9 @@ ssh_tailnet_peers() {
   # $PEER_KEY goes first and has no passphrase: ssh between the machines is passwordless (Ben 2026-10-21, replacing
   # beast-arch 104 gap 5's touch-first order). YubiKey peer keys (micro) stay listed as the fallback.
   for k in "$HOME"/.ssh/id_ed25519_sk_peer_*; do [[ -f $k && $k != *.pub ]] && sk+=("$k"); done
+  # sudo over ssh by a touch here (beast-arch 133, see setup_yubikey): a machine with YubiKey sk keys forwards an
+  # agent holding only those, never the main agent with its deploy and peer keys.
+  local fwd=""; sudo_agent && fwd="\${XDG_RUNTIME_DIR}/ssh-sudo-agent.sock"
   for peer in $SSH_PEERS; do
     [[ $peer == "$self" ]] && continue
     want+=$'\n'"Host $peer"$'\n'"    HostName $peer.$suffix"$'\n'"    HostKeyAlias $peer"
@@ -3691,6 +3720,7 @@ ssh_tailnet_peers() {
     # connection then waited for a touch ahead of $PEER_KEY, and the agent stalled meanwhile (micro, 2026-10-21).
     (( ${#sk[@]} )) && want+=$'\n'"    IdentityAgent none"
     (( ${#sk[@]} )) && want+=$'\n'"    ControlMaster auto"$'\n'"    ControlPath ~/.ssh/cm-%C"$'\n'"    ControlPersist 10m"
+    [[ -n $fwd ]] && want+=$'\n'"    ForwardAgent $fwd"
   done
   want+=$'\n'"$end"
 
@@ -4610,6 +4640,13 @@ WantedBy=multi-user.target" "ClamAV desktop alerts" && changed=1
 #    password, when sudo reads a pipe (sudo -S: fleet push, scripts) or runs under ssh, where
 #    the key is at the other end; otherwise it would wait out a touch nobody can give.
 #  - screen lock (i3lock) by touch: Enter, then touch; the password when no key is plugged in.
+#  - tty login by touch (beast-arch 133, Ben 2026-11-01: touch OR password). A touch login leaves gnome-keyring
+#    locked (it unlocks from the typed password), so the first app that needs it asks once.
+#  - sudo over ssh by a touch at the CLIENT (beast-arch 133): micro, beast-arch and carbon run a second ssh-agent
+#    holding only their YubiKey sk keys and forward it to the peers (ssh_tailnet_peers); the remote shell links it to
+#    ~/.ssh/sudo-agent.sock (dotfiles .zshenv) and pam_rssh asks it to sign. Accepted keys = the remote-unlock set,
+#    all touch-required: ssh/fleet/micro-peer-*.pub + ssh/unlock/*.pub. pam_rssh does NOT check the signature's
+#    user-presence flag (1.2.1, src/sign_verify.rs), so that set must never hold a no-touch-required (-nt) key.
 setup_yubikey() {
   if put_etc_file /etc/udev/rules.d/70-yubikey-uaccess.rules \
 '# Written by arch-bootstrap: YubiKey OTP interface for the seat user (beast-arch 88).
@@ -4624,9 +4661,10 @@ ACTION=="add|change", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1050", TAG+="uacces
   put_etc_file /etc/u2f_mappings "$(cat "$map")" "YubiKeys allowed for sudo" || true
   if put_etc_file "$guard" '#!/bin/sh
 # Written by arch-bootstrap. pam_exec (seteuid) runs this from /etc/pam.d/sudo; exit 0 skips the
-# YubiKey for this sudo: stdin is not a terminal (sudo -S), or an ancestor is sshd.
+# YubiKey for this sudo: stdin is not a terminal (sudo -S), or an ancestor is sshd. With "pipe", only the first.
 p=$PPID
 case $(readlink "/proc/$p/fd/0") in /dev/pts/*|/dev/tty*) ;; *) exit 0 ;; esac
+[ "$1" = pipe ] && exit 1
 while [ "$p" -gt 1 ]; do
   case $(cat "/proc/$p/comm") in sshd*) exit 0 ;; esac
   p=$(sed "s/.*) //" "/proc/$p/stat" | cut -d" " -f2)
@@ -4638,6 +4676,19 @@ exit 1' "sudo: password-only under ssh or sudo -S"; then
   local u2f="pam_u2f.so authfile=/etc/u2f_mappings origin=pam://fleet appid=pam://fleet cue nouserok"
   pam_prepend "$pamfile" "sudo: YubiKey touch, password fallback" \
     "auth\t\t[success=1 default=ignore]\tpam_exec.so quiet seteuid $guard" "auth\t\tsufficient\t$u2f"
+  # Ahead of that: the forwarded client key, skipped (with the local key) under sudo -S, where the password is
+  # already on stdin and a touch would leave it to be read by the command.
+  local f keys=""
+  for f in "$SECRETS_DIR"/ssh/fleet/micro-peer-*.pub "$SECRETS_DIR"/ssh/unlock/*.pub; do [[ -f $f ]] && keys+="$(cat "$f")"$'\n'; done
+  if [[ ! -f /usr/lib/security/pam_rssh.so ]]; then warn "pam_rssh not installed -- sudo over ssh stays password-only"
+  elif [[ -n $keys ]]; then
+    put_etc_file /etc/sudo-agent-keys "${keys%$'\n'}" "YubiKey ssh keys accepted for sudo over ssh" || true
+    pam_prepend "$pamfile" "sudo over ssh: touch at the client's YubiKey" \
+      "auth\t\t[success=3 default=ignore]\tpam_exec.so quiet seteuid $guard pipe" \
+      "auth\t\tsufficient\tpam_rssh.so auth_key_file=/etc/sudo-agent-keys ssh_agent_addr=/home/\${user}/.ssh/sudo-agent.sock cue [cue_prompt=Touch the YubiKey at your machine]"
+  fi
+  # tty login (Ben, 2026-11-01): touch or password, after pam_nologin.
+  [[ -f /etc/pam.d/login ]] && PAM_AT='^auth[[:space:]]+include' pam_prepend /etc/pam.d/login "tty login: YubiKey touch, password fallback" "auth\t\tsufficient\t$u2f"
   # Screen lock (Ben, 2026-10-16): Enter then touch; with no key plugged in pam_u2f fails at once and
   # the typed password is checked. No guard: i3lock is always local.
   [[ -f /etc/pam.d/i3lock ]] && pam_prepend /etc/pam.d/i3lock "screen lock: YubiKey touch, password fallback" "auth\t\tsufficient\t$u2f"
@@ -4903,20 +4954,20 @@ if [ -f /boot/initramfs-linux-fallback.img ]; then
     "$common cryptdevice=UUID=$luks_uuid:root $tail" initramfs-linux-fallback.img
 fi'
 
-# pam_prepend <pam file> <what> <line>...: put the lines ahead of the file's first auth line, once
-# (skipped when pam_u2f is already there). A PAM file written from a bad match can lock you out,
-# so it installs only when every line landed and the original auth line is still there.
+# pam_prepend <pam file> <what> <line>...: put the lines ahead of the file's first auth line (PAM_AT: the first
+# line matching that regex instead), once: skipped when the last line is already there. A PAM file written from a
+# bad match can lock you out, so it installs only when every line landed and the original line is still there.
 pam_prepend() {
-  local f=$1 what=$2; shift 2
-  if grep -q pam_u2f "$f"; then ok "$what already in place ($f)"; return 0; fi
-  if (( DRY_RUN )); then info "(dry run) would add pam_u2f to $f"; return 0; fi
-  local tmp first l; tmp="$(mktemp)"; first=$(grep -m1 '^auth' "$f")
-  awk -v add="$(printf '%b\n' "$@")" '/^auth/ && !d { print add; d=1 } { print }' "$f" > "$tmp"
+  local f=$1 what=$2 at=${PAM_AT:-^auth}; shift 2
+  if grep -qxF "$(printf '%b' "${!#}")" "$f"; then ok "$what already in place ($f)"; return 0; fi
+  if (( DRY_RUN )); then info "(dry run) would add to $f: $what"; return 0; fi
+  local tmp first l; tmp="$(mktemp)"; first=$(grep -m1 -E "$at" "$f")
+  awk -v add="$(printf '%b\n' "$@")" -v at="$at" '$0 ~ at && !d { print add; d=1 } { print }' "$f" > "$tmp"
   local ok=1
   for l in "$@"; do grep -qxF "$(printf '%b' "$l")" "$tmp" || ok=0; done
   [[ -n $first ]] && grep -qxF "$first" "$tmp" || ok=0
   if (( ok )); then run sudo install -m 644 "$tmp" "$f"; did "$what ($f)"
-  else warn "could not place pam_u2f in $f -- left untouched"; fi
+  else warn "could not place $what in $f -- left untouched"; fi
   rm -f "$tmp"
 }
 
@@ -5299,6 +5350,8 @@ stage_verify() {
   fi
   check "YubiKey OTP udev rule"          "[ -f /etc/udev/rules.d/70-yubikey-uaccess.rules ]"
   if [[ -s $SECRETS_DIR/yubikey/u2f_mappings ]]; then check "sudo: YubiKey touch (pam_u2f)" "grep -q pam_u2f /etc/pam.d/sudo"; fi
+  if [[ -s $SECRETS_DIR/yubikey/u2f_mappings ]]; then check "tty login: YubiKey touch (pam_u2f)" "grep -q pam_u2f /etc/pam.d/login"; fi
+  check "sudo over ssh: client YubiKey (pam_rssh)" "grep -q pam_rssh /etc/pam.d/sudo"
   if zram_only_swap; then
     check "zram swap tuning live (swappiness 180)" "[ \"\$(sysctl -n vm.swappiness)\" = 180 ]"
   fi
