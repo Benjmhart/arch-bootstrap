@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily: push unpushed work in ~/projects, report what should be tracked (arch-bootstrap chores/repo-hygiene)
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=30min
+Unit=chore@repo-hygiene.service
+
+[Install]
+WantedBy=timers.target
