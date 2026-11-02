@@ -3761,6 +3761,13 @@ ssh_tailnet_peers() {
 enable_system_units() {
   local entry pkg unit why
 
+  # The resident freshclam daemon competes with clamav-freshclam-once.timer for /var/log/clamav/freshclam.log, so the
+  # timer's run fails every night ("Failed to lock the log file"). Found enabled by hand on beast-arch (since
+  # 2026-10-23; station-maintenance beast-arch 134's chore failures, 2026-11-02). The timer is the design: turn it off.
+  if systemctl is-enabled --quiet clamav-freshclam.service 2>/dev/null; then
+    run sudo systemctl disable --now clamav-freshclam.service && did "clamav-freshclam.service (resident) off: the once-timer updates signatures"
+  fi
+
   for entry in "${SYSTEM_UNITS[@]}"; do
     IFS='|' read -r pkg unit why <<< "$entry"
 

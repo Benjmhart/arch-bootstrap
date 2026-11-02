@@ -58,6 +58,9 @@ if [[ ! -f $cache/$iso ]]; then
   # sed quits on the first match itself: `| head -n1` would SIGPIPE sed, and pipefail
   # turns that into exit 141 -- which is how the first real run died, silently.
   mirror=$(sed -n 's|^Server *= *\(.*\)/\$repo/os/\$arch.*|\1|p;T;q' /etc/pacman.d/mirrorlist)
+  # A dated archive mirror (repo-date pins pacman to archive.archlinux.org/repos/Y/M/D) has no iso/ under it; the
+  # archive keeps ISOs at its root. Failed 2026-11-02 with a 404 on .../repos/2026/10/31/iso/2026.11.01/.
+  [[ $mirror == https://archive.archlinux.org/repos/* ]] && mirror=https://archive.archlinux.org
   echo "downloading $iso from $mirror"
   curl -fL --retry 3 --no-progress-meter -o "$cache/$iso.part" "$mirror/iso/$ver/$iso"
   curl -fsSL -o "$cache/$iso.sig" "https://archlinux.org/iso/$ver/$iso.sig"
