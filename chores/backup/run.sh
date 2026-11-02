@@ -40,10 +40,14 @@ fi
 if [[ ${1:-} != tunnel ]]; then
   pull=$HOME/fleet-saves/surfboard
   mkdir -p "$pull"
-  if ssh -o BatchMode=yes -o ConnectTimeout=10 surfboard 'tar -C ~/.config/retroarch -c saves states' | tar -x -C "$pull"; then
+  # An idle tunnel to surfboard takes longer than ssh's 10 s to come back (00:35:45 2026-11-02: tailscaled's "new
+  # contact" via DERP, then direct): 5 of 6 nights 2026-10-28..11-02 timed out while it was up. Ping wakes the path.
+  if ! tailscale ping -c 1 --timeout 20s surfboard >/dev/null 2>&1; then
+    echo "skip  surfboard saves: not on the tailnet (off, asleep, or in Windows)"
+  elif ssh -o BatchMode=yes -o ConnectTimeout=30 surfboard 'cd ~/.config/retroarch && tar -c $(ls -d saves states 2>/dev/null)' | tar -x -C "$pull"; then
     echo "saves surfboard: $(find "$pull" -type f | wc -l) files"
   else
-    echo "skip  surfboard saves: not copied (off, or in Windows?)"
+    echo "FAIL  surfboard saves: surfboard answered on the tailnet but the copy failed"
   fi
 fi
 
