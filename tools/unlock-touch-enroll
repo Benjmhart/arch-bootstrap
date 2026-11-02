@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# unlock-touch-enroll <host> -- let `unlock <host>` open <host>'s disk with a YubiKey touch instead of the typed
+# passphrase (station-maintenance surfboard 04; Ben 2026-11-01: "switch to unlocking with a touch on the yubikey").
+# Run on beast-arch or carbon (micro never commits to secrets) with ONE YubiKey plugged in; once per YubiKey.
+#
+# The YubiKey makes a FIDO2 credential (no PIN: makeCredUvNotRqd; touch only) and derives a 32-byte secret from it
+# with hmac-secret and a random salt. That secret, base64, becomes a new LUKS key slot on <host>'s root; the typed
+# passphrase stays. Only the credential id and salt are kept (~/secrets/unlock-touch/<host>-<serial>): without the
+# physical key they derive nothing. Touches: 3 here (create, derive, derive again to check), then sudo on <host>, then the existing
+# passphrase once (cryptsetup luksAddKey asks for it), then a check that the new slot opens the disk.
+set -euo pipefail
+host=${1:?usage: unlock-touch-enroll <host>}
+[[ $(uname -n) != micro ]] || { echo "run this on beast-arch or carbon: micro never commits to ~/secrets"; exit 1; }
+for c in ykman fido2-token fido2-cred fido2-assert openssl; do command -v $c >/dev/null || { echo "$c not installed"; exit 1; }; done
+serial=$(ykman list --serials | head -n1); dev=$(fido2-token -L | head -n1 | cut -d: -f1)
+[[ -n $serial && -n $dev && $(ykman list --serials | wc -l) == 1 ]] || { echo "plug in exactly one YubiKey"; exit 1; }
+pgrep -x keepassxc >/dev/null && { echo "close KeePassXC first (the secrets repo is about to be pulled)"; exit 1; }
+sec=${SECRETS_DIR:-$HOME/secrets} f=unlock-touch/$host-$serial
+git -C "$sec" pull -q --ff-only
+b64() { openssl rand -base64 32; }
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+if [[ -f $sec/$f ]]; then echo "credential exists ($f): deriving again"; read -r rp cred salt <"$sec/$f"
+else
+  rp=unlock.$host salt=$(b64)
+  echo "touch the YubiKey ($serial) to create the credential"
+  printf '%s\n' "$(b64)" "$rp" ben "$(b64)" | fido2-cred -M -h -o "$tmp/cred" "$dev"
+  cred=$(sed -n 5p "$tmp/cred")
+fi
+derive() { printf '%s\n' "$(b64)" "$rp" "$cred" "$salt" | fido2-assert -G -h "$dev" | tail -n1; }
+echo "touch the YubiKey ($serial) again to derive the disk secret"; key=$(derive)
+[[ ${#key} == 44 ]] || { echo "no hmac-secret came back (got ${#key} chars)"; exit 1; }
+# Everything rests on the key deriving the same secret every time: check it before it becomes a key slot.
+echo "and once more, to check it derives the same secret"; [[ $(derive) == "$key" ]] || { echo "second derivation differs -- not enrolled"; exit 1; }
+# The new key goes over as a file in <host>'s /run/user (tmpfs, 0700), never on a command line.
+k=/run/user/$(id -u)/unlock-touch.key
+printf '%s' "$key" | ssh "$host" "umask 077; cat > $k"
+echo "on $host: sudo (touch), then the disk's CURRENT passphrase for luksAddKey"
+ssh -t "$host" "set -e; trap 'shred -u $k 2>/dev/null || rm -f $k' EXIT
+  u=\$(sed -n 's/.*rd\.luks\.name=\([^= ]*\)=root.*/\1/p' /proc/cmdline); [ -n \"\$u\" ]
+  d=/dev/disk/by-uuid/\$u
+  if sudo cryptsetup open --test-passphrase --key-file $k \"\$d\" 2>/dev/null; then echo 'this key already opens the disk'
+  else sudo cryptsetup luksAddKey --pbkdf argon2id \"\$d\" $k
+       sudo cryptsetup open --test-passphrase --key-file $k \"\$d\" && echo 'new key slot opens the disk'; fi"
+mkdir -p "$sec/unlock-touch"; printf '%s %s %s\n' "$rp" "$cred" "$salt" >"$sec/$f"
+git -C "$sec" add "$f"
+if git -C "$sec" diff --cached --quiet; then echo "already in secrets: $f"; exit 0; fi
+git -C "$sec" commit -q -m "unlock-touch: $host YubiKey $serial credential for touch unlock (tools/unlock-touch-enroll)"
+git -C "$sec" push -q
+echo "done: \`unlock $host\` now asks for touches instead of the passphrase (this key: $serial); the fleet gets $f at the next fpush"

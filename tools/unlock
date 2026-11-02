@@ -11,12 +11,42 @@ for k in "$HOME"/.ssh/id_ed25519_sk_peer_* "$HOME"/.ssh/id_ed25519_sk_unlock_*; 
   [[ -f $k && $k != *.pub ]] && keys+=(-i "$k")
 done
 (( ${#keys[@]} )) || { echo "no YubiKey ssh key here (~/.ssh/id_ed25519_sk_unlock_*): tools/unlock-key makes one"; exit 1; }
+# Touch unlock (tools/unlock-touch-enroll; Ben 2026-11-01): a plugged YubiKey with a credential for <host> derives the
+# disk secret (one touch), and it is typed into the passphrase prompt for you. Without one: type the passphrase.
+disk=""
+if command -v fido2-assert >/dev/null && command -v ykman >/dev/null; then
+  for s in $(ykman list --serials 2>/dev/null); do
+    f=${SECRETS_DIR:-$HOME/secrets}/unlock-touch/$host-$s; [[ -f $f ]] || continue
+    read -r rp cred salt <"$f"
+    for dev in $(fido2-token -L 2>/dev/null | cut -d: -f1); do
+      echo "touch the YubiKey ($s) for $host's disk"
+      disk=$(printf '%s\n' "$(openssl rand -base64 32)" "$rp" "$cred" "$salt" | fido2-assert -G -h "$dev" 2>/dev/null | tail -n1) || disk=""
+      [[ ${#disk} == 44 ]] && break 2; disk=""
+    done
+  done
+  [[ -n $disk ]] || echo "no touch credential for $host on a plugged YubiKey: type the passphrase when asked"
+fi
+# Types $UNLOCK_DISK once, at systemd's "Please enter passphrase for disk" (not at unlock-prompt's own waiting line,
+# which also says "passphrase"), half a second late; after that the session is yours, so a wrong secret falls back to
+# typing.
+inject='import os, pty, re, sys, time
+key = os.environ.pop("UNLOCK_DISK").encode(); state = {"sent": False, "seen": b""}
+def read(fd):
+    data = os.read(fd, 1024)
+    if not state["sent"]:
+        state["seen"] = (state["seen"] + data)[-512:]
+        if re.search(rb"(?i)enter passphrase for disk", state["seen"]):
+            time.sleep(0.5)   # the agent prints its prompt BEFORE turning echo off; typed sooner, it echoes or is flushed
+            os.write(fd, key + b"\r"); state["sent"] = True
+    return data
+sys.exit(os.waitstatus_to_exitcode(pty.spawn(sys.argv[1:], read)))'
 echo "waiting for $host-boot on the tailnet ..."
 for _ in $(seq 90); do
   addr=$(tailscale ip -4 "$host-boot" 2>/dev/null || true)
   if [[ -n $addr ]] && timeout 3 bash -c "</dev/tcp/$addr/22" 2>/dev/null; then
     echo "connecting to $host-boot ($addr): touch your YubiKey when it blinks"
-    exec ssh -F /dev/null -t "${keys[@]}" -o IdentitiesOnly=yes -o IdentityAgent=none \
+    run=(); if [[ -n $disk ]]; then export UNLOCK_DISK=$disk; run=(python3 -c "$inject"); fi   # env, not argv: ps shows argv
+    exec "${run[@]}" ssh -F /dev/null -t "${keys[@]}" -o IdentitiesOnly=yes -o IdentityAgent=none \
       -o ConnectTimeout=10 -o HostKeyAlias="$host-initramfs" -o StrictHostKeyChecking=accept-new \
       -o UserKnownHostsFile="$HOME/.ssh/known_hosts" "root@$addr"
   fi
