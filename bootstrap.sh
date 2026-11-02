@@ -1906,7 +1906,8 @@ install_herdr_integrations() {
 # i don't want to manage these manually"; station-maintenance beast-arch 118/119). Updates are NOT reviewed one by one:
 # a plugin is arbitrary code (herdr-navigator v0.3.6 and smart-enter were read on 2026-10-18), Ben's accepted trade-off.
 # Keys and settings stay in the dotfiles; plugin code and yazi's package.toml live only on each machine.
-HERDR_PLUGINS="${HERDR_PLUGINS:-thanhdat77/herdr-navigator}"
+# Benjmhart/herdr-folders (Ben's own, published 2026-11-01): python3 only, but rides the cargo gate below with navigator.
+HERDR_PLUGINS="${HERDR_PLUGINS:-thanhdat77/herdr-navigator Benjmhart/herdr-folders}"
 YAZI_PLUGINS="${YAZI_PLUGINS:-yazi-rs/plugins:smart-enter ndtoan96/ouch Rolv-Apneseth/starship}"
 install_tui_plugins() {
   local repo tag p
