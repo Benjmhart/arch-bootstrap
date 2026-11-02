@@ -4277,6 +4277,22 @@ Section \"InputClass\"
 EndSection$edge" "pointer + touchpad speed $POINTER_ACCEL under X${edge:+, edge scroll} (next X start)" || true
 }
 
+# Caps Lock is Escape under X, for every keyboard including hotplugged ones. `.xinitrc`'s `setxkbmap -option caps:escape`
+# reaches only the devices present at login: a keyboard-class device added later (a YubiKey replug, the MSI board's
+# Mystic Light HID re-enumerating) gets only these xorg.conf.d options, and once it sends a key X switches to its keymap,
+# so Caps was Caps_Lock again on beast-arch 2026-11-02 (YubiKey replugged 10:18/10:24). Later files win per option, so this
+# replaces 00-keyboard.conf's XkbOptions: terminate:ctrl_alt_bksp is carried over (localectl's default here).
+# ponytail: a host with other localectl XkbOptions loses them; merge from 00-keyboard.conf if one ever has any.
+setup_caps_escape() {
+  put_etc_file /etc/X11/xorg.conf.d/10-caps-escape.conf \
+"# Written by arch-bootstrap (setup_caps_escape). Edit bootstrap.sh, not this file.
+Section \"InputClass\"
+    Identifier \"caps is escape\"
+    MatchIsKeyboard \"on\"
+    Option \"XkbOptions\" \"terminate:ctrl_alt_bksp,caps:escape\"
+EndSection" "Caps Lock = Escape for every keyboard under X, hotplugged too (next X start)" || true
+}
+
 # micro's touchpad (ThinkPad X131e, SynPS/2 Synaptics) reports a phantom contact with nobody touching it: pressure
 # 48-52, ~20 samples/s, charger in or out; a real finger presses 76 median, up to 152 (measured 2026-10-17 23:15).
 # libinput's default threshold counts the phantom as a finger, so the cursor jittered at rest and a real finger read as
@@ -5082,6 +5098,7 @@ stage_services() {
   setup_games_at_login
   setup_lid
   setup_pointer
+  setup_caps_escape
   setup_touchpad_quirks
   setup_firewall
   disable_llmnr
