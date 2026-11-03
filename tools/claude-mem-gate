@@ -1,0 +1,90 @@
+#!/usr/bin/env python3
+"""claude-mem-gate -- a secret gate in front of claude-mem (station-maintenance beast-arch 08; Ben 2026-11-02: "can the
+tool call processing be a pipeline").
+
+Installed as ~/bin/claude-mem, which comes before claude-mem's own ~/.local/bin/claude-mem on PATH, so every hook the
+plugin declares (`claude-mem hook claude-code <event>`) runs this first. Everything is passed through unchanged except
+the observation event (PostToolUse / PostToolUseFailure: the tool's input AND output, which claude-mem stores in
+plaintext and sends to its observer model). An observation is DROPPED -- never reaches claude-mem -- when:
+  - the tool input names a secret path (~/secrets, a .kdbx, ~/.ssh, a .env, credentials, KeePassXC), or
+  - tools/secret-scan finds anything in the input or output (key blocks, password/token assignments, key and vault
+    files, browser profile data), or
+  - the gate itself fails (fail closed).
+claude-mem's own regex redaction (CLAUDE_MEM_REDACT_*) stays on behind this as a second layer. Dropped events are
+logged to ~/.claude-mem/gate.log by tool and reason only, never content.
+Also exports DO_NOT_TRACK=1 and CLAUDE_MEM_TELEMETRY=0 for every call, so the worker a hook starts inherits them
+(telemetry off; ~/.claude-mem/telemetry.json says the same).
+Self-test: claude-mem-gate --self-test
+"""
+import json, os, re, subprocess, sys, time
+
+REAL = os.environ.get("CLAUDE_MEM_GATE_REAL", os.path.expanduser("~/.local/bin/claude-mem"))
+SCAN = os.path.join(os.path.dirname(os.path.realpath(__file__)), "secret-scan")
+LOG = os.path.expanduser("~/.claude-mem/gate.log")
+DENY = re.compile(r"(^|[\s\"'=:/])(~|/home/[^/\s\"']+)/secrets(/|\b)|\.kdbx\b|/\.ssh/|(^|/)\.env(\b|\.)|"
+                  r"credentials|keepassxc|/etc/(shadow|gshadow)\b|\.claude/\.credentials", re.I)
+
+def strings(o):
+    if isinstance(o, str): yield o
+    elif isinstance(o, dict):
+        for v in o.values(): yield from strings(v)
+    elif isinstance(o, list):
+        for v in o: yield from strings(v)
+
+def verdict(ev):
+    """None to pass the event on, or the reason to drop it."""
+    ti = ev.get("tool_input") or {}
+    if any(DENY.search(s) for s in strings(ti)):
+        return "secret path in the tool input"
+    label = (ti.get("file_path") or ti.get("path") or "tool-event") if isinstance(ti, dict) else "tool-event"
+    lines = [l for s in list(strings(ti)) + list(strings(ev.get("tool_response", ev.get("tool_output", "")))) for l in s.splitlines()]
+    diff = f"+++ b/{label}\n" + "".join("+" + l + "\n" for l in lines)
+    r = subprocess.run([sys.executable, SCAN], input=diff, capture_output=True, text=True, timeout=30)
+    if r.returncode != 0:
+        return f"secret-scan failed (rc {r.returncode})"
+    if r.stdout.strip():   # "path: kind (n lines)" -- kinds only go to the log
+        return "secret-scan: " + "; ".join(sorted({l.rsplit(": ", 1)[-1] for l in r.stdout.splitlines()}))
+    return None
+
+def log(tool, reason):
+    try:
+        os.makedirs(os.path.dirname(LOG), exist_ok=True)
+        with open(LOG, "a") as f:
+            f.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S%z')} dropped {tool}: {reason}\n")
+    except OSError:
+        pass
+
+def main():
+    os.environ["DO_NOT_TRACK"] = "1"; os.environ["CLAUDE_MEM_TELEMETRY"] = "0"
+    if sys.argv[1:4] != ["hook", "claude-code", "observation"]:
+        os.execv(REAL, [REAL] + sys.argv[1:])
+    raw = sys.stdin.buffer.read()
+    tool = "?"
+    try:
+        ev = json.loads(raw); tool = ev.get("tool_name", "?")
+        reason = verdict(ev)
+    except Exception as e:   # fail closed: an event the gate cannot read is not stored
+        reason = f"gate error: {type(e).__name__}"
+    if reason:
+        log(tool, reason); sys.exit(0)
+    sys.exit(subprocess.run([REAL] + sys.argv[1:], input=raw).returncode)
+
+def self_test():
+    k = "-----" + "BEGIN OPENSSH PRIVATE KEY" + "-----"   # built from pieces so this file does not match itself
+    cases = [
+        ({"tool_name": "Bash", "tool_input": {"command": "ls ~/projects"}, "tool_response": {"stdout": "a\nb"}}, None),
+        ({"tool_name": "Read", "tool_input": {"file_path": "/home/ben/secrets/wifi/x.psk"}, "tool_response": "psk"}, "path"),
+        ({"tool_name": "Bash", "tool_input": {"command": "cat k"}, "tool_response": {"stdout": k + "\nabc"}}, "scan"),
+        ({"tool_name": "Bash", "tool_input": {"command": "env"}, "tool_response": {"stdout": "x\ntoken = abcd1234efgh5678\n"}}, "scan"),
+        ({"tool_name": "Read", "tool_input": {"file_path": "/home/ben/.ssh/id_ed25519"}, "tool_response": "x"}, "path"),
+        ({"tool_name": "Bash", "tool_input": {"command": "keepassxc-cli show Passwords.kdbx x"}, "tool_response": ""}, "path"),
+    ]
+    for ev, want in cases:
+        got = verdict(ev)
+        ok = (got is None) if want is None else (got is not None and (("path" in got) == (want == "path")))
+        assert ok, (ev["tool_input"], want, got)
+    print(f"claude-mem-gate self-test: ok ({len(cases)} cases)")
+
+if __name__ == "__main__":
+    if sys.argv[1:] == ["--self-test"]: self_test()
+    else: main()

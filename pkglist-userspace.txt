@@ -9,6 +9,7 @@ base-devel
 bat
 btop
 bubblewrap
+bun                   # only: beast-arch
 cbatticon
 chromium
 clamav

@@ -124,6 +124,13 @@ PACMAN_IGNORE="${PACMAN_IGNORE:-}"
 # and backup (beast-arch 92) are on everywhere and fleet-due on micro, whatever this says (beast-arch 76); the rest are opt-in.
 CHORES="${CHORES:-}"
 
+# claude-mem trial (station-maintenance beast-arch 08; Ben 2026-11-02: beast-arch for now, these repos). The plugin is
+# enabled per repo only (.claude/settings.local.json, git-ignored globally), from a local clone pinned to a reviewed
+# commit; never through its npx installer. CLAUDE_MEM_COMMIT moves only after a re-review.
+CLAUDE_MEM_HOSTS="${CLAUDE_MEM_HOSTS:-beast-arch}"
+CLAUDE_MEM_REPOS="${CLAUDE_MEM_REPOS:-station-maintenance mlabs-marketing personal-comms tax-prep orchestrator}"
+CLAUDE_MEM_COMMIT="${CLAUDE_MEM_COMMIT:-02584c4ac9d92fea45adf5c61e22c546b5738621}"   # v15.9.0, reviewed 2026-11-02
+
 # /tmp: RAM or disk. systemd's static tmp.mount makes /tmp a tmpfs at size=50% of
 # RAM, which is an UNBOUNDED claim on memory that no quota limits -- on a 32 GiB
 # box that is a 16 GiB ceiling one runaway `dd` can reach. Setting this to `true`
@@ -4766,6 +4773,59 @@ setup_wake() {
   else ok "Wi-Fi wake on magic packet"; fi
 }
 
+# setup_claude_mem: the claude-mem trial (beast-arch 08) on the hosts in CLAUDE_MEM_HOSTS.
+#  - source: ~/.local/share/claude-mem-src at CLAUDE_MEM_COMMIT (a directory marketplace: no auto-update).
+#  - the gate: ~/bin/claude-mem -> tools/claude-mem-gate, ahead of claude-mem's ~/.local/bin/claude-mem on PATH: drops
+#    observations that touch secret paths or that tools/secret-scan flags, and turns telemetry off for every hook.
+#  - ~/.claude-mem/settings.json: our keys forced over the defaults the worker seeds; telemetry.json enabled=false.
+#  - each repo in CLAUDE_MEM_REPOS: marketplace + plugin declared at LOCAL scope (its .claude/settings.local.json).
+#    The worker (127.0.0.1:37700, Chroma via uvx) and ~/.local/bin/claude-mem appear at the first session there.
+setup_claude_mem() {
+  [[ " $CLAUDE_MEM_HOSTS " == *" $(uname -n) "* ]] || return 0
+  if ! have bun || ! have claude; then warn "claude-mem: bun or claude not installed -- trial not set up"; return 0; fi
+  local src=$HOME/.local/share/claude-mem-src d=$HOME/.claude-mem r dir
+  if (( DRY_RUN )); then info "(dry run) would set up claude-mem ${CLAUDE_MEM_COMMIT:0:7} for: $CLAUDE_MEM_REPOS"; return 0; fi
+  if [[ ! -d $src/.git ]] && ! run git clone -q https://github.com/thedotmack/claude-mem.git "$src"; then
+    warn "claude-mem: clone failed -- trial not set up"; return 0
+  fi
+  if [[ $(git -C "$src" rev-parse HEAD 2>/dev/null) != "$CLAUDE_MEM_COMMIT" ]]; then
+    if run git -C "$src" fetch -q origin && run git -C "$src" checkout -q "$CLAUDE_MEM_COMMIT"; then did "claude-mem source at ${CLAUDE_MEM_COMMIT:0:7}"
+    else warn "claude-mem: could not check out ${CLAUDE_MEM_COMMIT:0:7} -- trial not set up"; return 0; fi
+  fi
+  mkdir -p "$HOME/bin" "$d"
+  if [[ $(readlink "$HOME/bin/claude-mem") != "$SCRIPT_DIR/tools/claude-mem-gate" ]]; then
+    run ln -sfn "$SCRIPT_DIR/tools/claude-mem-gate" "$HOME/bin/claude-mem" && did "claude-mem secret gate on PATH (~/bin/claude-mem)"
+  fi
+  python3 - "$d" <<'PY'
+import json, os, sys, uuid
+d = sys.argv[1]; p = os.path.join(d, "settings.json")
+want = {  # beast-arch 08: Ben 2026-11-02 -- spending fine, telemetry off, background service ok, redaction on
+    "CLAUDE_MEM_REDACT_ENABLED": "true", "CLAUDE_MEM_REDACT_GENERIC_ENABLED": "true",
+    "CLAUDE_MEM_SKIP_BASH_PATTERNS": r"keepassxc|secrets/|\.kdbx", "CLAUDE_MEM_EXCLUDED_PROJECTS": "~/secrets/**,~/.dot/**",
+    "CLAUDE_MEM_FILE_READ_GATE_ENABLED": "false", "CLAUDE_MEM_DELIVERABLES_ENABLED": "false",
+    "CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED": "false", "CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH": "false",
+    "CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER": "off", "CLAUDE_MEM_WELCOME_HINT_ENABLED": "false",
+    "CLAUDE_MEM_TELEGRAM_ENABLED": "false", "CLAUDE_MEM_GROK_BOT_INJECT_ENABLED": "false",
+    "CLAUDE_MEM_GROK_BOT_AWARENESS_ENABLED": "false", "CLAUDE_MEM_CCS_ALIGN_ENABLED": "false"}
+cur = json.load(open(p)) if os.path.exists(p) else {}
+if any(cur.get(k) != v for k, v in want.items()):
+    cur.update(want); json.dump(cur, open(p, "w"), indent=2); print("did settings")
+t = os.path.join(d, "telemetry.json"); tc = json.load(open(t)) if os.path.exists(t) else {}
+if tc.get("enabled") is not False or not isinstance(tc.get("installId"), str):
+    json.dump({"enabled": False, "installId": tc.get("installId") or str(uuid.uuid4()), "decidedAt": "2026-11-02T00:00:00Z"}, open(t, "w"))
+    print("did telemetry")
+PY
+  for r in $CLAUDE_MEM_REPOS; do
+    dir=$HOME/projects/$r
+    [[ -d $dir/.git ]] || { warn "claude-mem: ~/projects/$r is not a repo here -- skipped"; continue; }
+    grep -q '"claude-mem@thedotmack": *true' "$dir/.claude/settings.local.json" 2>/dev/null && continue
+    if ( cd "$dir" && claude plugin marketplace add "$src" --scope local >/dev/null && claude plugin install claude-mem@thedotmack --scope local >/dev/null ); then
+      did "claude-mem enabled in $r (local scope)"
+    else warn "claude-mem: enabling in $r failed"; fi
+  done
+  ok "claude-mem trial: ${CLAUDE_MEM_COMMIT:0:7}, repos: $CLAUDE_MEM_REPOS"
+}
+
 # Boot (Ben, 2026-10-16: "one setup everywhere, one boot path"; station-maintenance beast-arch 95):
 # GRUB -> kernel + dracut initramfs on every machine. dracut's systemd initramfs unlocks / with a FIDO2
 # YubiKey (PIN + touch) or the passphrase; mkinitcpio builds only the fallback image (busybox `encrypt`,
@@ -5100,6 +5160,7 @@ stage_services() {
   setup_yubikey
   setup_zsa
   setup_wake
+  setup_claude_mem
   setup_boot
   install_browser_search_policy
   tune_storage_and_swap
