@@ -4747,6 +4747,15 @@ exit 1' "sudo: password-only under ssh or sudo -S"; then
   fi
   # tty login (Ben, 2026-11-01): touch or password, after pam_nologin.
   [[ -f /etc/pam.d/login ]] && PAM_AT='^auth[[:space:]]+include' pam_prepend /etc/pam.d/login "tty login: YubiKey touch, password fallback" "auth\t\tsufficient\t$u2f"
+  # xsecurelock trial on micro (Ben 2026-11-03; beast-arch 132, micro 16): its own PAM service, the same touch-or-password
+  # stack (Arch builds it for system-auth, which has no YubiKey). ~/.local/bin/lock uses it wherever it is installed.
+  if [[ -x /usr/bin/xsecurelock ]]; then
+    put_etc_file /etc/pam.d/xsecurelock "#%PAM-1.0
+# Written by arch-bootstrap (setup_yubikey). XSECURELOCK_PAM_SERVICE=xsecurelock in ~/.local/bin/lock.
+auth		sufficient	$u2f
+auth		include		system-local-login
+account		include		system-local-login" "xsecurelock: YubiKey touch, password fallback" || true
+  fi
   # Screen lock (Ben, 2026-10-16): Enter then touch; with no key plugged in pam_u2f fails at once and
   # the typed password is checked. No guard: i3lock is always local.
   [[ -f /etc/pam.d/i3lock ]] && pam_prepend /etc/pam.d/i3lock "screen lock: YubiKey touch, password fallback" "auth\t\tsufficient\t$u2f"
@@ -5497,6 +5506,7 @@ stage_verify() {
   if [[ -s $SECRETS_DIR/yubikey/u2f_mappings ]]; then check "sudo: YubiKey touch (pam_u2f)" "grep -q pam_u2f /etc/pam.d/sudo"; fi
   if [[ -s $SECRETS_DIR/yubikey/u2f_mappings ]]; then check "tty login: YubiKey touch (pam_u2f)" "grep -q pam_u2f /etc/pam.d/login"; fi
   check "sudo over ssh: client YubiKey (pam_rssh)" "grep -q pam_rssh /etc/pam.d/sudo"
+  if [[ -x /usr/bin/xsecurelock ]]; then check "xsecurelock: YubiKey touch (pam_u2f)" "grep -q pam_u2f /etc/pam.d/xsecurelock"; fi
   if awk -v h="$(uname -n)" '$1 == h { f=1 } END { exit !f }' "$SECRETS_DIR/wake/hosts" 2>/dev/null; then
     check "Wi-Fi wake on magic packet (wake/hosts)" \
       "( for c in \$(nmcli -t -f UUID,TYPE c show | awk -F: '\$2 == \"802-11-wireless\" { print \$1 }'); do (( \$(nmcli -g 802-11-wireless.wake-on-wlan c show \$c) & 0x8 )) || exit 1; done )"

@@ -187,6 +187,7 @@ xorg-xrandr
 xorg-xset
 xorg-xsetroot
 xorg-xwayland
+xsecurelock           # only: micro
 xss-lock
 xprintidle
 xpra                  # remote GUI apps over ssh, on trial beside ssh -X (Ben, 2026-10-31)
