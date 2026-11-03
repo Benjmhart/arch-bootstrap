@@ -4,6 +4,7 @@
 # Image plumbing (kernel, grub, cloud-init, sudo) is in chores/cloud-image/build-in-guest,
 # not here, so this list stays usable for a headless box installed by other means.
 7zip
+atuin
 base-devel
 bat
 bubblewrap

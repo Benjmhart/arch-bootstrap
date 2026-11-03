@@ -2613,6 +2613,17 @@ fcitx5_add_mozc() {
   did "fcitx5: mozc added to the input-method group (Super+\` toggles it)"
 }
 
+# atuin (station-maintenance beast-arch 139, Ben 2026-11-02): shell history in SQLite with a Ctrl-R search TUI; .zshrc
+# binds it (after fzf, up arrow left alone). Imports the existing zsh history once, so the first search is not empty. No
+# account and auto_sync off (~/.config/atuin/config.toml in the dotfiles): nothing leaves the machine.
+setup_atuin() {
+  have atuin || return 0
+  if [[ -f ${XDG_DATA_HOME:-$HOME/.local/share}/atuin/history.db ]]; then ok "atuin history database present"
+  elif (( DRY_RUN )); then info "(dry run) would import ~/.zsh_history into atuin"
+  elif run atuin import zsh >/dev/null 2>&1; then did "atuin: imported ~/.zsh_history"
+  else warn "atuin import zsh failed -- the Ctrl-R search starts empty"; fi
+}
+
 install_oh_my_zsh() {
   local zdir="${ZSH:-$HOME/.oh-my-zsh}"
   if [[ -f $zdir/oh-my-zsh.sh ]]; then
@@ -2890,6 +2901,7 @@ stage_session() {
   fi
 
   install_oh_my_zsh
+  setup_atuin
   fcitx5_add_mozc
 
   # NetworkManager. Not hardware -- the general network stack, and easy to

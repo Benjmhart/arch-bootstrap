@@ -4,6 +4,7 @@ age
 alacritty
 alsa-utils
 arandr
+atuin
 base-devel
 bat
 btop
