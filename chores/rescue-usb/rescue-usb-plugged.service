@@ -1,0 +1,10 @@
+[Unit]
+Description=Rescue stick plugged in: refresh it (arch-bootstrap chores/rescue-usb; station-maintenance beast-arch 84)
+
+# Started by the udev rule setup_rescue_ventoy_upgrade writes (SYSTEMD_USER_WANTS, matched on RESCUE_USB_SERIAL), on the
+# hosts where the weekly chore is enabled. The stick lives in beast-arch, so it "appears" at every boot: skip the first
+# 5 minutes after boot, and skip when the chore ran in the last 12 hours (each run is a full rebuild, ~7 min, 5-7 GB).
+[Service]
+Type=oneshot
+ExecCondition=/bin/sh -c 'up=$(cut -d. -f1 /proc/uptime); [ "$up" -gt 300 ] || exit 1; f="$HOME/.local/state/chores/rescue-usb.json"; [ ! -f "$f" ] || [ $(( $(date +%%s) - $(stat -c %%Y "$f") )) -gt 43200 ]'
+ExecStart=/usr/bin/systemctl --user start --no-block chore@rescue-usb.service
