@@ -4747,7 +4747,7 @@ exit 1' "sudo: password-only under ssh or sudo -S"; then
   fi
   # tty login (Ben, 2026-11-01): touch or password, after pam_nologin.
   [[ -f /etc/pam.d/login ]] && PAM_AT='^auth[[:space:]]+include' pam_prepend /etc/pam.d/login "tty login: YubiKey touch, password fallback" "auth\t\tsufficient\t$u2f"
-  # xsecurelock trial on micro (Ben 2026-11-03; beast-arch 132, micro 16): its own PAM service, the same touch-or-password
+  # xsecurelock, every machine (Ben 2026-11-04, after the micro trial; beast-arch 132, micro 16): its own PAM service, the same touch-or-password
   # stack (Arch builds it for system-auth, which has no YubiKey). ~/.local/bin/lock uses it wherever it is installed.
   if [[ -x /usr/bin/xsecurelock ]]; then
     put_etc_file /etc/pam.d/xsecurelock "#%PAM-1.0
