@@ -120,8 +120,9 @@ PROJECT_REPOS="${PROJECT_REPOS:-}"
 PACMAN_IGNORE="${PACMAN_IGNORE:-}"
 
 # Chores to enable on this machine: names of directories under chores/, each with a
-# chore-NAME.timer. See chores/chore-run for the protocol. low-disk, virus-scan (beast-arch 129), repo-hygiene (134)
-# and backup (beast-arch 92) are on everywhere and fleet-due on micro, whatever this says (beast-arch 76); the rest are opt-in.
+# chore-NAME.timer. See chores/chore-run for the protocol. low-disk, virus-scan (beast-arch 129), repo-hygiene (134),
+# clipboard-wipe (145) and backup (beast-arch 92) are on everywhere and fleet-due on micro, whatever this says (beast-arch 76);
+# the rest are opt-in.
 CHORES="${CHORES:-}"
 
 # claude-mem trial (station-maintenance beast-arch 08; Ben 2026-11-02: beast-arch for now, these repos). The plugin is
@@ -3658,7 +3659,7 @@ install_chores() {
     run systemctl --user disable --now chore-backup.timer
     did "chore backup off here: micro backs this machine up over its tunnel"
   fi
-  for c in low-disk virus-scan repo-hygiene $extra $CHORES; do
+  for c in low-disk virus-scan repo-hygiene clipboard-wipe $extra $CHORES; do
     [[ -f $d/$c/chore-$c.timer ]] || { warn "CHORES names '$c', but there is no chores/$c/chore-$c.timer"; continue; }
     if systemctl --user is-enabled --quiet "chore-$c.timer" 2>/dev/null; then
       ok "chore $c scheduled"

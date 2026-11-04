@@ -1,0 +1,10 @@
+[Unit]
+Description=Nightly 02:00: empty the clipboard and its history (arch-bootstrap chores/clipboard-wipe)
+
+[Timer]
+OnCalendar=*-*-* 02:00:00
+AccuracySec=1min
+Unit=chore@clipboard-wipe.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# tests/clipboard-wipe -- chores/clipboard-wipe clears the three X selections, empties clipmenu (line cache AND the clip
+# files clipdel leaves behind, keeping its lock files), wipes cliphist, and does nothing without a session. Fake xsel,
+# xset, clipdel and cliphist; a temp CM_DIR and XDG_CACHE_HOME, so the real clipboard is never touched. Run: tests/clipboard-wipe
+set -uo pipefail
+r=$(cd "$(dirname "$0")/.." && pwd)/chores/clipboard-wipe/run.sh
+t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
+mkdir -p "$t/bin" "$t/cm/clipmenu.6.$USER" "$t/cache/cliphist"
+for c in xsel xset cliphist; do printf '#!/bin/sh\necho "%s $*" >> %s/calls\n' "$c" "$t" > "$t/bin/$c"; done
+printf '#!/bin/sh\necho "clipdel $*" >> %s/calls; : > "$CM_DIR/clipmenu.6.$USER/line_cache"\n' "$t" > "$t/bin/clipdel"
+chmod +x "$t/bin"/*
+export PATH=$t/bin:/usr/bin:/bin CM_DIR=$t/cm XDG_CACHE_HOME=$t/cache
+cm=$t/cm/clipmenu.6.$USER
+pass=0 fail=0
+check() { if eval "$2"; then pass=$((pass+1)); echo "pass  $1"; else fail=$((fail+1)); echo "FAIL  $1"; fi; }
+fill() { : > "$t/calls"; echo "1 secret" > "$cm/line_cache"; echo secret > "$cm/123 7"; echo orphan > "$cm/456 7"
+         : > "$cm/lock"; : > "$cm/session_lock"; : > "$t/cache/cliphist/db"; }
+
+fill; out=$(DISPLAY=:9 "$r"); rc=$?
+check "X session: rc 0"                        '(( rc == 0 ))'
+check "clears clipboard, primary, secondary"   'grep -qx "xsel --clear --clipboard" $t/calls && grep -qx "xsel --clear --primary" $t/calls && grep -qx "xsel --clear --secondary" $t/calls'
+check "clipdel . (not .*)"                     'grep -qx "clipdel -d ." $t/calls'
+check "every clip file gone, orphans too"      '[[ ! -e "$cm/123 7" && ! -e "$cm/456 7" ]]'
+check "line cache and locks kept"              '[[ -e $cm/line_cache && -e $cm/lock && -e $cm/session_lock ]]'
+check "cliphist wiped"                         'grep -qx "cliphist wipe" $t/calls'
+check "summary line"                           '[[ $out == "clipboard cleared: "* ]]'
+
+fill; out=$(env -u DISPLAY -u WAYLAND_DISPLAY "$r"); rc=$?
+check "no session: rc 0"                       '(( rc == 0 ))'
+check "no session: no xsel"                    '! grep -q "^xsel" $t/calls'
+
+fill; printf '#!/bin/sh\nexit 1\n' > "$t/bin/xsel"; out=$(DISPLAY=:9 "$r"); rc=$?
+check "a failed step: rc 1, named"             '(( rc == 1 )) && [[ $out == *"FAILED X clipboard"* ]]'
+
+echo "$pass passed, $fail failed"; (( fail == 0 ))
