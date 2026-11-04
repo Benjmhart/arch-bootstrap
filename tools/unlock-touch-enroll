@@ -33,9 +33,11 @@ echo "touch the YubiKey ($serial) again to derive the disk secret"; key=$(derive
 echo "and once more, to check it derives the same secret"; [[ $(derive) == "$key" ]] || { echo "second derivation differs -- not enrolled"; exit 1; }
 # The new key goes over as a file in <host>'s /run/user (tmpfs, 0700), never on a command line.
 k=/run/user/$(id -u)/unlock-touch.key
-printf '%s' "$key" | ssh "$host" "umask 077; cat > $k"
+# Run on <host> over ssh, or directly when <host> is this machine (carbon has no ssh to itself; 2026-11-04, beast-arch 144).
+on_host() { if [[ $host == "$(uname -n)" ]]; then bash -c "$2"; else ssh $1 "$host" "$2"; fi; }
+printf '%s' "$key" | on_host "" "umask 077; cat > $k"
 echo "on $host: sudo (touch), then the disk's CURRENT passphrase for luksAddKey"
-ssh -t "$host" "set -e; trap 'shred -u $k 2>/dev/null || rm -f $k' EXIT
+on_host -t "set -e; trap 'shred -u $k 2>/dev/null || rm -f $k' EXIT
   u=\$(sed -n 's/.*rd\.luks\.name=\([^= ]*\)=root.*/\1/p' /proc/cmdline); [ -n \"\$u\" ]
   d=/dev/disk/by-uuid/\$u
   if sudo cryptsetup open --test-passphrase --key-file $k \"\$d\" 2>/dev/null; then echo 'this key already opens the disk'
