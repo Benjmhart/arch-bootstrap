@@ -63,7 +63,8 @@ if [[ " \$* " == *" -n "* ]]; then [[ -e "$t/ticket" ]]; exit; fi
 exit 0
 EOF
 printf '#!/bin/bash\n[[ -e "%s/locked" ]] && printf "When Type Source Valid\\n%%s TTY /dev/pts/0 V\\n" "$(date "+%%F %%T")" "$(date "+%%F %%T")" "$(date "+%%F %%T")"\nexit 0\n' "$t" > "$t/bin/faillock"   # stub: the real one reads THIS machine's lockouts
-printf '#!/bin/bash\n[[ "$*" == "-x keepassxc" && -e "%s/kpx.${FLEET_HOST:-x}" ]]\n' "$t" > "$t/bin/pgrep"
+printf '#!/bin/bash\n[[ "$*" == "-x keepassxc" && -e "%s/kpx.${FLEET_HOST:-x}" ]] || [[ "$*" == "-x herdr" && -e "%s/herdr.on" ]]\n' "$t" "$t" > "$t/bin/pgrep"
+printf '#!/bin/sh\necho "herdr: $*" >> "$HOME/herdr.calls"\n' > "$t/bin/herdr"   # stub: a running herdr server
 chmod +x "$t/bin/"*; export PATH="$t/bin:$PATH"
 
 # fleet-apply as machine $1 (its own HOME), request in the remaining args, stdin passed through
@@ -115,6 +116,12 @@ check "wrong password: nonzero, bootstrap never ran, one sudo attempt" '(( rc !=
 sec3=$(commit "$t/sec-seed" Passwords.kdbx v3 "vault v3"); touch "$t/kpx.self"
 check "snapshot changes the vault while KeePassXC runs: error, secrets not moved" '! echo pw-ok | fa self apply "$ab2" "$dot2" "$sec3" >/dev/null 2>&1 && [[ $(secat self) == "$sec2" ]]'
 rm "$t/kpx.self"
+dot3=$(commit "$t/dot-seed" .config/herdr/config.toml w13 "herdr width"); dot4=$(commit "$t/dot-seed" .zshrc rc4 "dot four"); touch "$t/herdr.on"
+out=$(echo pw-ok | fa self apply "$ab2" "$dot3" "$sec2" keys 2>&1)
+check "herdr config changed, server running: reloaded"      'grep -qx "herdr: server reload-config" "$H/herdr.calls" && grep -q "herdr config reloaded" <<<"$out"'
+rm -f "$H/herdr.calls"; echo pw-ok | fa self apply "$ab2" "$dot4" "$sec2" keys >/dev/null 2>&1
+check "...herdr config unchanged: no reload"                '[[ ! -e $H/herdr.calls ]]'
+rm "$t/herdr.on"
 
 # ================= fleet-apply secrets-push (h1 is the vault host)
 sp() { fa "$1" secrets-push 2>&1; }

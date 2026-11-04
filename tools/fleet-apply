@@ -264,7 +264,15 @@ if [[ -z ${FLEET_APPLY_REEXEC:-} && $(sha256sum < "$REPO/tools/fleet-apply") != 
   FLEET_APPLY_REEXEC=1 exec "$REPO/tools/fleet-apply" "${req[@]}" < <(printf '%s\n' "$pw")
 fi
 if [[ -d $DOTDIR ]]; then
+  dot_was=$(git --git-dir="$DOTDIR" rev-parse HEAD)
   move dotfiles "${FLEET_DOT_BRANCH:-master}" "$dot" 0 git --git-dir="$DOTDIR" --work-tree="$HOME"
+  # A running herdr server keeps its old config until told (station-maintenance beast-arch 143, 2026-11-04).
+  herdr=$(PATH=$HOME/.local/bin:$PATH command -v herdr || true)
+  if [[ -n $herdr ]] && pgrep -x herdr >/dev/null \
+     && ! git --git-dir="$DOTDIR" --work-tree="$HOME" diff --quiet "$dot_was" "$dot" -- ':/.config/herdr'; then
+    if "$herdr" server reload-config >/dev/null; then echo "ok    herdr config reloaded"
+    else echo "note  herdr: reload-config failed; run \`herdr server reload-config\`"; fi
+  fi
 fi
 move secrets "${FLEET_SEC_BRANCH:-master}" "$sec" 1 git -C "$SECRETS"
 # git writes a changed file with the umask (644), so the vault turned world-readable on beast-arch when 19a3c2e was
