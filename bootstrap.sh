@@ -5149,14 +5149,6 @@ echo y | /usr/bin/ventoy -u \"\$disk\"" "rescue-ventoy-upgrade" || true
     warn "could not write $sf"
   fi
   rm -f "$tmp"
-  # Plug-in trigger (Ben 2026-11-04, beast-arch 84): inserting the stick refreshes it, where the weekly chore runs.
-  # The guards against the at-boot "insert" and repeats are in the unit (chores/rescue-usb/rescue-usb-plugged.service).
-  if systemctl --user is-enabled --quiet chore-rescue-usb.timer 2>/dev/null; then
-    run systemctl --user --quiet link "$SCRIPT_DIR/chores/rescue-usb/rescue-usb-plugged.service"
-    put_etc_file /etc/udev/rules.d/71-rescue-usb-plugged.rules '# Written by arch-bootstrap (setup_rescue_ventoy_upgrade, RESCUE_USB_SERIAL; beast-arch 84).
-ACTION=="add", SUBSYSTEM=="block", ENV{DEVTYPE}=="disk", ENV{ID_SERIAL_SHORT}=="'"$RESCUE_USB_SERIAL"'", TAG+="systemd", ENV{SYSTEMD_USER_WANTS}+="rescue-usb-plugged.service"' \
-      "rescue stick plug-in trigger" && run sudo udevadm control --reload
-  fi
 }
 
 stage_services() {
