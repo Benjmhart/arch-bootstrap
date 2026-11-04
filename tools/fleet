@@ -329,28 +329,45 @@ show_holds_list() {
   done < "$PKGDIR/holds"
 }
 
-# apply_all <ab> <dot> <sec> <hosts...> -- stages in $stages, password in $pw. Fills result[].
+# apply_one <host>: one machine, its result to $STATE/result-<host>, one finished block on the screen. The bootstrap's
+# output goes to a log here on micro, not the screen: one line per machine (Ben 2026-10-21).
+apply_one() {
+  local h=$1 log=$STATE/apply-$1.log t0=$SECONDS rc out
+  printf '%s\n' "$pw" | on "$h" apply "$ab" "$dot" "$sec" "${stages[@]}" > "$log" 2>&1; rc=$?
+  if (( rc == 0 )); then echo ok > "$STATE/result-$h"; out="ok ($(( (SECONDS - t0) / 60 ))m$(( (SECONDS - t0) % 60 ))s)"
+  else
+    echo "FAILED rc=$rc -- $log" > "$STATE/result-$h"
+    # what stopped it: the warnings and the stop line, colour codes stripped
+    out="FAILED rc=$rc"$'\n'$(sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g; s/\x1b\][^\x07\x1b]*\(\x07\|\x1b\\\)//g' "$log" \
+      | grep -E '(^| )(warn|FAIL|ERROR|error:|Stopped at)' | tail -6 | sed 's/^ */      /')
+  fi
+  printf '=== %-13s %s\n' "$h" "$out"
+  return "$rc"
+}
+
+# apply_all <ab> <dot> <sec> <hosts...> -- stages in $stages, password in $pw. Fills result[]. micro first and alone
+# (nothing else is tried if it fails); the rest in parallel (Ben 2026-11-04), so the slowest machine sets the time.
 apply_all() {
-  local ab=$1 dot=$2 sec=$3; shift 3; local h st rc micro_ok=1
+  local ab=$1 dot=$2 sec=$3; shift 3; local h st micro_ok=1; local -a par=()
   for h in "$@"; do
     if (( ! micro_ok )); then result[$h]="not attempted ($SELF failed)"; continue; fi
     [[ ${result[$h]:-} == "skip (offline"* ]] && { printf '=== %-13s skip (offline on the tailnet)\n' "$h"; continue; }
     if [[ -n ${secrets_bad[$h]:-} ]]; then result[$h]="FAILED secrets out of sync, not updated: ${secrets_bad[$h]#FAIL  secrets: }"; continue; fi
     st=$(on "$h" status 2>&1 | tail -1)
     if [[ ${stages[*]:-} != keys && $st == "$ab $dot $sec "*" rc=0 "* ]]; then result[$h]="skip (already at this snapshot)"; continue; fi
-    # The bootstrap's output goes to a log here on micro, not the screen: one line per machine (Ben 2026-10-21).
-    local log=$STATE/apply-$h.log t0=$SECONDS
-    printf '=== %-13s applying ... ' "$h"
-    printf '%s\n' "$pw" | on "$h" apply "$ab" "$dot" "$sec" "${stages[@]}" > "$log" 2>&1; rc=$?
-    if (( rc == 0 )); then result[$h]="ok"; echo "ok ($(( (SECONDS - t0) / 60 ))m$(( (SECONDS - t0) % 60 ))s)"
+    rm -f "$STATE/result-$h"
+    if [[ $h == "$SELF" ]]; then
+      printf '=== %-13s applying ...\n' "$h"
+      apply_one "$h" || micro_ok=0
+      result[$h]=$(< "$STATE/result-$h")
     else
-      result[$h]="FAILED rc=$rc -- $log"; echo "FAILED rc=$rc"
-      # what stopped it: the warnings and the stop line, colour codes stripped
-      sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g; s/\x1b\][^\x07\x1b]*\(\x07\|\x1b\\\)//g' "$log" \
-        | grep -E '(^| )(warn|FAIL|ERROR|error:|Stopped at)' | tail -6 | sed 's/^ */      /'
+      par+=("$h"); apply_one "$h" &
     fi
-    [[ $h == "$SELF" ]] && (( rc != 0 )) && micro_ok=0
   done
+  (( ${#par[@]} )) || return 0
+  printf '=== applying in parallel: %s\n' "${par[*]}"
+  wait
+  for h in "${par[@]}"; do [[ -f $STATE/result-$h ]] && result[$h]=$(< "$STATE/result-$h"); done
 }
 
 unlock() {  # the fleet key (one passphrase) and the sudo password (stdin), both checked first
