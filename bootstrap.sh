@@ -1923,7 +1923,8 @@ install_tui_plugins() {
       tag=$(git ls-remote --tags --refs "https://github.com/$repo" 'v*' 2>/dev/null | sed 's#.*/##' | sort -V | tail -1)
       [[ -n $tag ]] || { warn "herdr plugin $repo: no release tag found -- left as is"; continue; }
       # Reinstalling at the newer tag is also how the plugin's own updater upgrades.
-      if herdr plugin list 2>/dev/null | grep -w "${repo#*/}" | grep -qw "${tag#v}"; then
+      # The list shows "[github:<repo>@<tag>]"; `grep -w 0.3.6` never matched "@v0.3.6", so every fpush rebuilt it.
+      if herdr plugin list 2>/dev/null | grep -qF "[github:$repo@$tag]"; then
         ok "herdr plugin ${repo#*/} at $tag"
       else
         run herdr plugin install "$repo" --ref "$tag" --yes && did "herdr plugin ${repo#*/} at $tag"
