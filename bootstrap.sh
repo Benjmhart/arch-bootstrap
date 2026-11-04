@@ -2623,12 +2623,16 @@ fcitx5_add_mozc() {
 # atuin (station-maintenance beast-arch 139, Ben 2026-11-02): shell history in SQLite with a Ctrl-R search TUI; .zshrc
 # binds it (after fzf, up arrow left alone). Imports the existing zsh history once, so the first search is not empty. No
 # account and auto_sync off (~/.config/atuin/config.toml in the dotfiles): nothing leaves the machine.
+# A stamp, not the database: atuin 18 keeps its database in ~/.atuin/data/ (not ~/.local/share/atuin), and shells record
+# into it from the first login, so "the database exists" or "it has entries" says nothing about the import (2026-11-04:
+# every host had atuin bound and an empty history).
 setup_atuin() {
   have atuin || return 0
-  if [[ -f ${XDG_DATA_HOME:-$HOME/.local/share}/atuin/history.db ]]; then ok "atuin history database present"
+  local stamp=${XDG_STATE_HOME:-$HOME/.local/state}/atuin-zsh-imported
+  if [[ -f $stamp ]]; then ok "atuin: ~/.zsh_history imported ($(cat "$stamp"))"
   elif (( DRY_RUN )); then info "(dry run) would import ~/.zsh_history into atuin"
-  elif run atuin import zsh >/dev/null 2>&1; then did "atuin: imported ~/.zsh_history"
-  else warn "atuin import zsh failed -- the Ctrl-R search starts empty"; fi
+  elif run atuin import zsh >/dev/null 2>&1; then mkdir -p "${stamp%/*}"; date -Is > "$stamp"; did "atuin: imported ~/.zsh_history"
+  else warn "atuin import zsh failed -- the Ctrl-R search starts without the old history"; fi
 }
 
 install_oh_my_zsh() {
@@ -2908,7 +2912,6 @@ stage_session() {
   fi
 
   install_oh_my_zsh
-  setup_atuin
   fcitx5_add_mozc
 
   # NetworkManager. Not hardware -- the general network stack, and easy to
@@ -5170,6 +5173,7 @@ stage_services() {
   setup_zsa
   setup_wake
   setup_claude_mem
+  setup_atuin     # services, not stage_session: fpush never runs stage_session (the 11-03 import never happened)
   setup_boot
   install_browser_search_policy
   tune_storage_and_swap

@@ -56,6 +56,8 @@ def log(tool, reason):
 
 def main():
     os.environ["DO_NOT_TRACK"] = "1"; os.environ["CLAUDE_MEM_TELEMETRY"] = "0"
+    if not os.access(REAL, os.X_OK):   # first session: the plugin builds its launcher during SessionStart; until then, a no-op
+        sys.exit(0)
     if sys.argv[1:4] != ["hook", "claude-code", "observation"]:
         os.execv(REAL, [REAL] + sys.argv[1:])
     raw = sys.stdin.buffer.read()
