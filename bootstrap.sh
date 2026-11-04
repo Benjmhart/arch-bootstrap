@@ -5709,9 +5709,9 @@ main() {
   trap 'ERR_AT="line $LINENO in ${FUNCNAME[0]:-main}: $(sed -n "${LINENO}s/^ *//p" "${BASH_SOURCE[0]}" 2>/dev/null)"' ERR
   for s in "${STAGES[@]}"; do
     if selected "$s"; then
-      CURRENT_STAGE="$s"; STAGE_DEFERRED=0
+      CURRENT_STAGE="$s"; STAGE_DEFERRED=0; t0=$SECONDS
       "stage_$s"
-      CURRENT_STAGE=""
+      CURRENT_STAGE=""; info "stage $s took $(( SECONDS - t0 ))s"   # the fpush logs show where the time goes
       if (( STAGE_DEFERRED )); then
         DEFERRED+=("$s")
       else
