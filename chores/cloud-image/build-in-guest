@@ -42,7 +42,7 @@ mount "${disk}3" /mnt
 mount --mkdir "${disk}2" /mnt/efi
 
 step "pacstrap"
-mapfile -t pkgs < <(grep -v '^\s*#' "$in/pkglist-headless.txt" | grep -v '^\s*$')
+mapfile -t pkgs < <(grep -hv '^\s*#' "$in/pkglist-headless.txt" "$in/pkglist-cloud.txt" | awk 'NF {print $1}')
 pacstrap -K /mnt base linux grub efibootmgr sudo cloud-init cloud-guest-utils "${pkgs[@]}"
 genfstab -U /mnt >> /mnt/etc/fstab
 rm -rf /mnt/var/cache/pacman/pkg/*                      # ~600 MiB of downloads, on a 4 GiB disk
@@ -148,7 +148,7 @@ done
 c systemctl enable "${units[@]}"
 
 step "user ben"
-c useradd -m -G wheel -s /usr/bin/zsh ben
+c useradd -m -G wheel,docker -s /usr/bin/zsh ben
 c passwd -l ben >/dev/null
 u() { arch-chroot -u ben /mnt env HOME=/home/ben bash -c "$1"; }
 cp "$in/dotfiles.tar" /mnt/var/tmp/          # the host's ~/.dot: the repo is private, the image has no key
@@ -165,6 +165,13 @@ u "curl -fsSL https://claude.ai/install.sh | bash"
 # nvm, as bootstrap.sh stage toolchains pins it; .zshrc sources it unguarded.
 # PROFILE=/dev/null: its installer would otherwise append to the dotfiles' .zshrc.
 u "curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | PROFILE=/dev/null bash" >/dev/null
+# Languages (beast-arch 85, Ben 2026-11-04): what bootstrap.sh stage 25 gives a desktop -- rust stable (rustup is in
+# pkglist-cloud), ghcup's ghc + cabal (stack from pacman), node via nvm + the npm globals in pkglist-npm.txt.
+cp "$in/pkglist-npm.txt" /mnt/var/tmp/
+u "rustup default stable >/dev/null"
+u "curl --proto '=https' --tlsv1.2 -sSf https://get-ghcup.haskell.org | BOOTSTRAP_HASKELL_NONINTERACTIVE=1 BOOTSTRAP_HASKELL_INSTALL_NO_STACK=1 sh >/dev/null"
+u "source ~/.nvm/nvm.sh && nvm install --lts >/dev/null && grep -vE '^\s*(#|$)' /var/tmp/pkglist-npm.txt | awk '{print \$1}' | xargs -r npm install -g --silent"
+rm /mnt/var/tmp/pkglist-npm.txt
 # oh-my-zsh + the plugins .zshrc names: bootstrap.sh install_oh_my_zsh does the same
 # (clone, never upstream's install.sh, which would replace the dotfiles' .zshrc).
 # ponytail: URLs copied from bootstrap.sh OMZ_REMOTE / OMZ_EXTERNAL_PLUGINS.

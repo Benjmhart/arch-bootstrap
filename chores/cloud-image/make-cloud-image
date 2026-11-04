@@ -22,7 +22,7 @@
 set -euo pipefail
 iso=${1:?usage: make-cloud-image ISO OUT.img [GiB]}
 out=${2:?usage: make-cloud-image ISO OUT.img [GiB]}
-size=${3:-4}
+size=${3:-16}   # GiB; 16 since the image carries every CLI tool and language (beast-arch 85); cloud-init grows it
 here="$(dirname "$(readlink -f "$0")")"
 repo="$here/../.."
 limit=${BUILD_TIMEOUT:-1800}   # seconds; a build took ~130s on beast-arch (2026-10-08)
@@ -36,7 +36,7 @@ trap '[[ -n $pid ]] && kill "$pid" 2>/dev/null; rm -rf "$tmp"' EXIT
 
 # ---- the input disk
 mkdir "$tmp/in"
-cp "$here/build-in-guest" "$repo/pkglist-headless.txt" /etc/pacman.d/mirrorlist "$tmp/in/"
+cp "$here/build-in-guest" "$repo/pkglist-headless.txt" "$repo/pkglist-cloud.txt" "$repo/pkglist-npm.txt" /etc/pacman.d/mirrorlist "$tmp/in/"
 git clone -q --no-local "$repo" "$tmp/arch-bootstrap"
 git -C "$tmp/arch-bootstrap" remote set-url origin https://github.com/Benjmhart/arch-bootstrap
 tar -C "$tmp" -cf "$tmp/in/arch-bootstrap.tar" arch-bootstrap

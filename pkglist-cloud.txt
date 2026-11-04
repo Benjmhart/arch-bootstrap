@@ -1,0 +1,54 @@
+# Cloud image extras (station-maintenance beast-arch 85; Ben 2026-11-04: "an image with all of my commandline and tui
+# utilities and languages"). pacstrapped with pkglist-headless.txt by chores/cloud-image/build-in-guest.
+# From pkglist-userspace.txt: every package that runs without a display. Sorted 2026-11-04 by dependencies (anything
+# needing X/Wayland/GTK/Qt/Electron, fonts, themes, drivers = out), then by hand: btop/cmake/ffmpeg/vifm/poppler are
+# CLI despite a graphics dep; out on purpose: clipboard tools, gnome-keyring, pipewire/alsa, networkmanager (cloud-init
+# owns networking), YubiKey tools (no USB), dracut (would change the image's initramfs), adsb_deku (radio hardware).
+# Languages: rustup, stack, go, ruby, luarocks, clang here; rust stable, ghcup's ghc+cabal, nvm's node + npm globals
+# are installed as ben in build-in-guest. A smaller server / Proxmox template may come later (Ben).
+age
+btop
+clamav
+clang
+cmake
+direnv
+dmidecode
+docker
+docker-compose
+eva
+fastfetch
+fd
+ffmpeg
+gdu
+git-delta
+glow
+go
+inotify-tools
+libisoburn
+luarocks
+magic-wormhole
+ollama
+pandoc-cli
+pastebinit
+patchelf
+pkgconf
+pnpm
+poppler
+poppler-data
+python-gobject
+python-plyvel
+qemu-system-x86
+restic
+ripgrep-all
+ruby
+rustup
+shellcheck
+shfmt
+squashfs-tools
+stack
+tealdeer
+texlive-basic
+texlive-fontsrecommended
+texlive-latex
+texlive-latexrecommended
+vifm
