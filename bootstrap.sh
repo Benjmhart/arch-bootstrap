@@ -101,6 +101,9 @@ SSH_PEERS="${SSH_PEERS:-}"
 # authorized_keys? "ask" prompts per peer, "no" never adds any. Set "no" on a host that must
 # not be reachable (micro, an outbound-only recovery box).
 AUTHORIZE_PEERS="${AUTHORIZE_PEERS:-ask}"
+# Machines with outbound ssh that get a Host block (pinned host keys) for every cloud box recorded in secrets
+# cloud-box/ (tools/cloud-box; stage 60). Ben 2026-11-05: beast-arch, carbon and micro -- never the inbound-only ones.
+CLOUD_BOX_CLIENTS="${CLOUD_BOX_CLIENTS:-beast-arch carbon micro}"
 # Wifi regulatory country for wireless-regdb (two letters, or 00 = world). See set_wireless_regdom.
 WIRELESS_REGDOM="${WIRELESS_REGDOM:-00}"
 # This machine's own key for ssh to the peers (stage 75 generates it; never copied
@@ -3783,6 +3786,19 @@ ssh_tailnet_peers() {
   done
 }
 
+# ~/.ssh/config Host blocks and pinned host keys for the cloud boxes recorded in secrets cloud-box/, on
+# CLOUD_BOX_CLIENTS only. tools/cloud-box writes them, the same code its create and delete run: one format.
+ssh_cloud_boxes() {
+  [[ " $CLOUD_BOX_CLIENTS " == *" $(uname -n) "* ]] || return 0
+  local out a=(); (( DRY_RUN )) && a=(--dry-run)
+  out=$(SECRETS_DIR=$SECRETS_DIR PEER_KEY=$PEER_KEY "$SCRIPT_DIR/tools/cloud-box" ssh-config "${a[@]}") \
+    || { warn "tools/cloud-box ssh-config failed"; return 0; }
+  case $out in
+    "up to date: "*) ok "${out#up to date: }" ;;
+    *) (( DRY_RUN )) && info "(dry run) $out"; did "$out" ;;
+  esac
+}
+
 enable_system_units() {
   local entry pkg unit why
 
@@ -5166,6 +5182,7 @@ stage_services() {
   harden_sshd
   stop_sshd_no_inbound
   ssh_tailnet_peers
+  ssh_cloud_boxes
   restart_stale_tailscaled
   install_chores
   install_rclone_conf

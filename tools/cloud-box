@@ -6,6 +6,7 @@
 #   cloud-box delete NAME            the server only; its volume and the data on it stay (and stay billed)
 #   cloud-box delete-volume VOLUME   the volume and everything on it, for good
 #   cloud-box list
+#   cloud-box ssh-config [--dry-run] this machine's ~/.ssh/config Host blocks + pinned host keys, from the records
 #
 # Ben 2026-11-05: "small plan with a 100gb volume". The image's 24 GiB root keeps the OS and the toolchains; /nix and
 # ~/projects live on the volume (bind mounts from /mnt/data), so deleting and re-creating the server keeps the nix store
@@ -16,20 +17,27 @@
 # Keys, all from the secrets repo, all public: ssh login = ssh/pubkeys/*.pub (each fleet machine's peer key, as
 # tailnet peers use). sudo = the fleet's touch-required YubiKey set (bootstrap.sh setup_yubikey: ssh/fleet/micro-peer-*
 # + ssh/unlock/*), sk- lines only, to /etc/sudo-agent-keys.in; the image keeps only sk- lines of it for pam_rssh.
-# Client: a `Host NAME` block in ~/.ssh/config with the peer key and, where this machine runs the fleet's sudo agent,
-# ForwardAgent of THAT agent only (sk keys), as ssh_tailnet_peers does for peers. Never the main agent.
+# Record: create writes secrets cloud-box/NAME (name, ipv4, server, volume, the box's ssh host keys as seen at create)
+# and commits + pushes it; delete removes it. Only that path is committed, never the vault. micro never commits to
+# secrets: there the record is printed, to be committed from beast-arch or carbon.
+# Client: `ssh-config` writes a `# >>> cloud-box NAME` Host block per record into ~/.ssh/config (and removes blocks
+# whose record is gone), with the peer key and, where this machine runs the fleet's sudo agent, ForwardAgent of THAT
+# agent only (sk keys), as ssh_tailnet_peers does for peers -- never the main agent; host keys PINNED in
+# ~/.ssh/known_hosts.cloud-box from the records (StrictHostKeyChecking yes). create and delete run it; so does
+# bootstrap.sh stage services (fpush) on CLOUD_BOX_CLIENTS (beast-arch carbon micro). Ben 2026-11-05.
 set -euo pipefail
-S=${SECRETS_DIR:-$HOME/secrets}
+S=${SECRETS_DIR:-$HOME/secrets} rec=${SECRETS_DIR:-$HOME/secrets}/cloud-box
 type=${HZ_TYPE:-cx23} loc=${HZ_LOC:-nbg1} gb=${CLOUD_BOX_VOLUME_GB:-100}
 peer=${PEER_KEY:-$HOME/.ssh/id_ed25519_peer} cfg=$HOME/.ssh/config kh=$HOME/.ssh/known_hosts.cloud-box
-tok=$(<"$HOME/.config/hcloud/token-rw")
-api() { local m=$1 p=$2; shift 2; curl -sS -X "$m" -H "Authorization: Bearer $tok" -H 'Content-Type: application/json' "https://api.hetzner.cloud/v1/$p" "$@"; }
+# THE login key set of every box (ben's authorized_keys there). Ben 2026-11-05: the fleet machines' peer keys.
+login_keys() { cat "$S"/ssh/pubkeys/*.pub; }
+api() { local m=$1 p=$2 tok; shift 2; tok=$(<"$HOME/.config/hcloud/token-rw")
+  curl -sS -X "$m" -H "Authorization: Bearer $tok" -H 'Content-Type: application/json' "https://api.hetzner.cloud/v1/$p" "$@"; }
 wait_action() { local s; for _ in $(seq 120); do s=$(api GET "actions/$1" | jq -r .action.status); [[ $s == success ]] && return; [[ $s == error ]] && { api GET "actions/$1" | jq -c .action.error; return 1; }; sleep 3; done; return 1; }
 die() { echo "cloud-box: $*" >&2; exit 1; }
 ours() { jq -e '.labels.purpose == "cloud-box"' >/dev/null; }
 server_json() { api GET "servers?name=$1" | jq -c '.servers[0] // empty'; }
 volume_json() { api GET "volumes?name=$1" | jq -c '.volumes[0] // empty'; }
-unblock() { [[ -f $cfg ]] && sed -i "\|^# >>> cloud-box $1 |,\|^# <<< cloud-box $1\$|d" "$cfg"; ssh-keygen -q -R "cloud-box-$1" -f "$kh" >/dev/null 2>&1 || true; rm -f "$kh.old"; }
 name_ok() { [[ $1 =~ ^[a-z][a-z0-9-]{0,40}$ ]] || die "bad name '$1' (lowercase letters, digits, -)"; }
 
 # Runs as root from cloud-init bootcmd on EVERY boot, before sshd: mount the volume, seed /nix and ~/projects onto it
@@ -58,6 +66,58 @@ if ! mountpoint -q /nix; then
   systemctl --no-block stop nix-daemon.service 2>/dev/null || true; systemctl --no-block restart nix-daemon.socket
 fi'
 
+field() { awk -v k="$1" '$1 == k {print $2; exit}' "$2"; }
+
+# ~/.ssh/config: every `# >>> cloud-box` block out, one per record in (at the end); $kh: exactly the records' host keys.
+# Extra arguments are record files counted for this run only (micro's, before it is in secrets).
+ssh_config() {
+  local dry=0 f n ip k blocks="" keys="" names=() old cur rest want
+  [[ ${1:-} == --dry-run ]] && { dry=1; shift; }
+  for f in "$rec"/* "$@"; do
+    [[ -f $f ]] || continue
+    n=$(field name "$f"); ip=$(field ipv4 "$f")
+    k=$(awk -v a="cloud-box-$n" '$1 == "hostkey" && $2 ~ /^(ssh-ed25519|ecdsa-sha2-nistp[0-9]+|ssh-rsa)$/ && $3 ~ /^[A-Za-z0-9+\/=]+$/ {print a, $2, $3}' "$f")
+    if [[ ! $n =~ ^[a-z][a-z0-9-]{0,40}$ || ! $ip =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ || -z $k ]]; then
+      echo "cloud-box: skipped $f: needs name, ipv4 and at least one hostkey" >&2; continue; fi
+    [[ " ${names[*]} " == *" $n "* ]] && continue
+    names+=("$n") keys+=$k$'\n'
+    blocks+="# >>> cloud-box $n (arch-bootstrap tools/cloud-box, from secrets cloud-box/$n)
+Host $n
+    HostName $ip
+    User ben
+    HostKeyAlias cloud-box-$n
+    UserKnownHostsFile $kh
+    StrictHostKeyChecking yes
+    IdentityFile $peer
+    IdentitiesOnly yes
+"
+    # shellcheck disable=SC2016
+    [[ -f $HOME/.config/systemd/user/ssh-sudo-agent.service ]] && blocks+='    ForwardAgent ${XDG_RUNTIME_DIR}/ssh-sudo-agent.sock'$'\n'
+    blocks+="# <<< cloud-box $n"$'\n'
+  done
+  [[ $(grep -c '^# >>> cloud-box ' "$cfg" 2>/dev/null) == "$(grep -c '^# <<< cloud-box ' "$cfg" 2>/dev/null)" ]] \
+    || die "$cfg has a cloud-box start marker without its end (or the reverse): fix it by hand; nothing written"
+  old=$(sed -n 's/^# >>> cloud-box \([^ ]*\) .*/\1/p' "$cfg" 2>/dev/null | paste -sd' ' || true)
+  cur=$(cat "$cfg" 2>/dev/null || true)
+  rest=$(sed '/^# >>> cloud-box /,/^# <<< cloud-box /d' "$cfg" 2>/dev/null || true)
+  want=$rest; [[ -n $rest && -n $blocks ]] && want+=$'\n'; want+=${blocks%$'\n'}
+  if [[ $cur == "$want" && "$(cat "$kh" 2>/dev/null || true)" == "${keys%$'\n'}" ]]; then
+    echo "up to date: ssh config for cloud boxes: ${names[*]:-none}"; return 0; fi
+  if (( dry )); then echo "would write ssh config for cloud boxes: ${names[*]:-none} (now: ${old:-none})"; return 0; fi
+  mkdir -p "${cfg%/*}"; f=$(mktemp "$cfg.XXXXXX"); printf '%s\n' "$want" > "$f"; chmod 600 "$f"; mv "$f" "$cfg"
+  if [[ -n $keys ]]; then printf '%s' "$keys" > "$kh"; chmod 644 "$kh"; else rm -f "$kh"; fi
+  echo "wrote ssh config for cloud boxes: ${names[*]:-none} (was: ${old:-none})"
+}
+
+# Commit and push secrets cloud-box/NAME as it now is in the work tree (written, or removed): that path only.
+record_commit() {
+  git -C "$S" add -A -- "cloud-box/$1"
+  git -C "$S" diff --cached --quiet -- "cloud-box/$1" && return 0
+  git -C "$S" commit -q -m "$2" -- "cloud-box/$1" || { echo "WARN: could not commit cloud-box/$1 in $S"; return 0; }
+  git -C "$S" push -q || echo "WARN: secrets not pushed (cloud-box/$1 is committed): push it by hand, never --force"
+  echo "secrets: $(git -C "$S" log -1 --format='%h %s')"
+}
+
 cost() {   # monthly gross EUR, from the API
   api GET pricing | jq -r --arg t "$type" --arg l "$loc" --argjson gb "$gb" '.pricing as $p
     | ($p.server_types[] | select(.name == $t) | .prices[] | select(.location == $l) | .price_monthly.gross | tonumber) as $s
@@ -66,14 +126,18 @@ cost() {   # monthly gross EUR, from the API
 }
 
 create() {
-  local name=$1 vol=${2:-$1} snap v vid created=0 login sudo f hash ud r sid ip dev
+  local name=$1 vol=${2:-$1} snap v vid created=0 login sudo f hash ud r sid ip dev hk out
   name_ok "$name"; name_ok "$vol"
   [[ -z $(server_json "$name") ]] || die "a server named $name exists"
   if grep -qx "Host $name" "$cfg" 2>/dev/null && ! grep -q "^# >>> cloud-box $name " "$cfg"; then die "~/.ssh/config already has 'Host $name' -- pick another name"; fi
+  if [[ $(uname -n) != micro ]]; then
+    git -C "$S" pull -q --ff-only || die "could not fast-forward $S (where the box's record goes); nothing created"
+    [[ ! -e $rec/$name ]] || die "secrets has a record cloud-box/$name already: cloud-box delete $name first"
+  fi
   snap=$(api GET 'images?type=snapshot&label_selector=purpose%3Darch-cloud&sort=created:desc' | jq -r '.images[0].id // empty')
   [[ -n $snap ]] || die "no snapshot labelled purpose=arch-cloud"
 
-  login=$(cat "$S"/ssh/pubkeys/*.pub) || die "no login keys in $S/ssh/pubkeys"
+  login=$(login_keys) || die "no login keys in $S/ssh/pubkeys"
   sudo=""   # the fleet's sudo set; any line that is not a YubiKey key is left out here, and again by the image
   for f in "$S"/ssh/fleet/micro-peer-*.pub "$S"/ssh/unlock/*.pub; do
     [[ -f $f ]] || continue
@@ -110,20 +174,25 @@ create() {
   wait_action "$(jq -r .action.id <<<"$r")"
   ip=$(api GET "servers/$sid" | jq -r .server.public_net.ipv4.ip)
 
-  unblock "$name"
-  [[ -s $cfg && -n $(tail -c1 "$cfg") ]] && echo >> "$cfg"   # no newline at the end: the block would join the last line
-  { printf '# >>> cloud-box %s (arch-bootstrap tools/cloud-box; server %s)\n' "$name" "$sid"
-    printf 'Host %s\n    HostName %s\n    User ben\n    HostKeyAlias cloud-box-%s\n' "$name" "$ip" "$name"
-    # ponytail: trust on first use; pre-generating the host key into user-data would pin it.
-    printf '    UserKnownHostsFile %s\n    StrictHostKeyChecking accept-new\n' "$kh"
-    printf '    IdentityFile %s\n    IdentitiesOnly yes\n' "$peer"
-    [[ -f $HOME/.config/systemd/user/ssh-sudo-agent.service ]] && printf '    ForwardAgent ${XDG_RUNTIME_DIR}/ssh-sudo-agent.sock\n'
-    printf '# <<< cloud-box %s\n' "$name"; } >> "$cfg"
-  chmod 600 "$cfg"
-
-  echo "server $name ($sid, $type $loc) at $ip from snapshot $snap; waiting for ssh..."
+  echo "server $name ($sid, $type $loc) at $ip from snapshot $snap; waiting for its ssh host keys..."
+  # The host keys as seen now, pinned from here on (cloud-init makes them before sshd starts; checked again below).
+  hk=""; for _ in $(seq 60); do hk=$(ssh-keyscan -T 5 "$ip" 2>/dev/null | awk 'NF == 3 {print "hostkey", $2, $3}' | sort -u || true); [[ -n $hk ]] && break; sleep 5; done
+  [[ -n $hk ]] || die "no ssh host key from $ip in 5 min; server $name ($sid) and volume $vol stay: cloud-box delete $name"
+  out=$rec/$name; [[ $(uname -n) == micro ]] && out=$(mktemp)
+  mkdir -p "${out%/*}"
+  printf '%s\n' "# cloud-box record (arch-bootstrap tools/cloud-box). bootstrap.sh stage services writes ~/.ssh/config from it." \
+    "name $name" "ipv4 $ip" "server $sid" "volume $vol" "created $(date -u +%FT%TZ) on $(uname -n)" "$hk" > "$out"
+  if [[ $(uname -n) == micro ]]; then
+    echo "micro never commits to secrets: commit this as secrets cloud-box/$name from beast-arch or carbon (until then only this machine knows the box, and the next fpush here drops its block):"
+    sed 's/^/    /' "$out"
+  else
+    record_commit "$name" "cloud-box/$name: server $sid at $ip, volume $vol (arch-bootstrap tools/cloud-box create on $(uname -n))"
+  fi
+  ssh_config "$([[ $out == "$rec/$name" ]] || echo "$out")"
   for _ in $(seq 60); do ssh -o BatchMode=yes -o ConnectTimeout=5 -o ForwardAgent=no "$name" true 2>/dev/null && break; sleep 5; done
   ssh -o BatchMode=yes -o ForwardAgent=no "$name" 'cloud-init status --wait >/dev/null; findmnt -no SOURCE,TARGET /nix; findmnt -no SOURCE,TARGET ~/projects' || echo "WARN: ssh $name did not answer yet"
+  [[ $(ssh-keyscan -T 5 "$ip" 2>/dev/null | awk 'NF == 3 {print "hostkey", $2, $3}' | sort -u || true) == "$hk" ]] \
+    || echo "WARN: $name's host keys changed after create: the pinned ones are wrong; cloud-box delete $name and create again"
   cost || true
   echo "created: server $name ($sid)$( (( created )) && echo ", volume $vol ($vid)")"
   echo "use:     ssh $name"
@@ -144,8 +213,13 @@ delete() {
     [[ $st == off ]] || die "$name did not shut down within 3 min (status $st); not deleted, so the volume's data is safe -- retry, or shut it down from inside"
   fi
   wait_action "$(api DELETE "servers/$id" | jq -r .action.id)"
-  unblock "$name"
   echo "deleted server $name ($id)"
+  if [[ -e $rec/$name ]]; then
+    if [[ $(uname -n) == micro ]]; then echo "micro never commits to secrets: remove secrets cloud-box/$name from beast-arch or carbon"
+    else git -C "$S" pull -q --ff-only || echo "WARN: could not fast-forward $S"
+      rm -f "$rec/$name"; record_commit "$name" "cloud-box/$name: deleted, server $id (arch-bootstrap tools/cloud-box delete on $(uname -n))"; fi
+  fi
+  ssh_config
   jq -r '.volumes[]' <<<"$s" | while read -r v; do
     echo "volume $(api GET "volumes/$v" | jq -r .volume.name) ($v) kept, billed; delete it with: cloud-box delete-volume $(api GET "volumes/$v" | jq -r .volume.name)"; done
 }
@@ -169,5 +243,6 @@ case ${1:-} in
   delete) delete "${2:?usage: cloud-box delete NAME}" ;;
   delete-volume) delete_volume "${2:?usage: cloud-box delete-volume VOLUME}" ;;
   list) list ;;
-  *) sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  ssh-config) shift; ssh_config "$@" ;;
+  *) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# tests/cloud-box -- the client side of tools/cloud-box (station-maintenance beast-arch 85): `ssh-config` turns the
+# secrets cloud-box/ records into ~/.ssh/config Host blocks and pinned host keys (records added, changed, removed;
+# the rest of the file kept; idempotent; dry run writes nothing), and bootstrap.sh's ssh_cloud_boxes runs it on
+# CLOUD_BOX_CLIENTS only. Temp HOME and secrets; no network, no Hetzner.
+set -uo pipefail
+root=$(cd "$(dirname "$0")/.." && pwd)
+t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
+export HOME=$t/home SECRETS_DIR=$t/secrets
+mkdir -p "$HOME/.ssh" "$SECRETS_DIR/cloud-box"
+cfg=$HOME/.ssh/config kh=$HOME/.ssh/known_hosts.cloud-box rec=$SECRETS_DIR/cloud-box
+for k in h1 h2 h3; do ssh-keygen -q -t ed25519 -N '' -C x -f "$t/$k"; done
+key() { awk '{print $1, $2}' "$t/$1.pub"; }
+record() {   # NAME IP HOSTKEY...
+  local n=$1 ip=$2; shift 2
+  { echo "# test record"; echo "name $n"; echo "ipv4 $ip"; echo "server 1"; echo "volume $n"
+    for k in "$@"; do echo "hostkey $(key "$k")"; done; } > "$rec/$n"
+}
+cb() { "$root/tools/cloud-box" ssh-config "$@"; }
+pass=0 fail=0
+check() { if eval "$2"; then pass=$((pass+1)); echo "pass  $1"; else fail=$((fail+1)); echo "FAIL  $1"; fi; }
+G() { ssh -G -F "$cfg" "$1" 2>/dev/null | awk -v k="$2" '$1 == k {print $2}'; }
+
+check "no records, no config: up to date, nothing written" '[[ $(cb) == "up to date: "* && ! -e $cfg && ! -e $kh ]]'
+
+user=$'Host github.com\n    IdentityFile ~/.ssh/id_ed25519\n\nHost foo\n    HostName 10.0.0.1'
+printf '%s\n' "$user" > "$cfg"
+record alpha 192.0.2.10 h1
+record beta 192.0.2.20 h2
+cp "$cfg" "$t/before"
+check "dry run: says it would write" '[[ $(cb --dry-run) == "would write ssh config for cloud boxes: alpha beta (now: none)" ]]'
+check "dry run: writes nothing" 'cmp -s "$cfg" "$t/before" && [[ ! -e $kh ]]'
+check "added: wrote both" '[[ $(cb) == "wrote ssh config for cloud boxes: alpha beta (was: none)" ]]'
+check "added: the user's own Host blocks kept, first" '[[ $(head -5 "$cfg") == "$user" ]]'
+check "added: ssh resolves alpha to its address" '[[ $(G alpha hostname) == 192.0.2.10 && $(G beta hostname) == 192.0.2.20 ]]'
+check "added: host key checking strict (no TOFU)" '[[ $(G alpha stricthostkeychecking) == true && $(G alpha userknownhostsfile) == "$kh" ]]'
+check "added: peer key only" '[[ $(G alpha identitiesonly) == yes && $(G alpha identityfile) == "$HOME/.ssh/id_ed25519_peer" ]]'
+check "added: no ForwardAgent without the sudo agent unit" '! grep -q ForwardAgent "$cfg"'
+want_kh=$(printf 'cloud-box-alpha %s\ncloud-box-beta %s' "$(key h1)" "$(key h2)")
+check "added: pinned keys are exactly the records' keys" '[[ $(cat "$kh") == "$want_kh" ]]'
+check "added: ssh-keygen finds alpha's pinned key" '[[ $(ssh-keygen -F cloud-box-alpha -f "$kh" | grep -v "^#" | cut -d" " -f3) == $(awk "{print \$2}" "$t/h1.pub") ]]'
+cp "$cfg" "$t/after"
+check "idempotent: second run up to date" '[[ $(cb) == "up to date: ssh config for cloud boxes: alpha beta" ]] && cmp -s "$cfg" "$t/after"'
+
+mkdir -p "$HOME/.config/systemd/user"; touch "$HOME/.config/systemd/user/ssh-sudo-agent.service"
+cb >/dev/null
+check "sudo agent unit: ForwardAgent of that socket only" '[[ $(grep -c "ForwardAgent \${XDG_RUNTIME_DIR}/ssh-sudo-agent.sock" "$cfg") == 2 && $(grep -c ForwardAgent "$cfg") == 2 ]]'
+
+record alpha 192.0.2.11 h3
+cb >/dev/null
+check "changed: new address" '[[ $(G alpha hostname) == 192.0.2.11 ]]'
+check "changed: new pinned key, old one gone" 'grep -qF "cloud-box-alpha $(key h3)" "$kh" && ! grep -qF "$(key h1)" "$kh"'
+check "changed: one block per box" '[[ $(grep -c "^# >>> cloud-box alpha " "$cfg") == 1 && $(grep -c "^# <<< cloud-box alpha$" "$cfg") == 1 ]]'
+
+rm "$rec/beta"
+check "removed: says so" '[[ $(cb) == "wrote ssh config for cloud boxes: alpha (was: alpha beta)" ]]'
+check "removed: beta block and key gone" '! grep -q "cloud-box beta" "$cfg" && ! grep -q cloud-box-beta "$kh" && [[ -z $(G beta hostname | grep 192.0.2.20) ]]'
+
+printf '%s\n' "# no keys" "name gamma" "ipv4 192.0.2.30" > "$rec/gamma"
+check "record without a host key: skipped (never TOFU)" '! cb 2>/dev/null | grep -q gamma && ! grep -q gamma "$cfg"'
+rm "$rec/gamma"
+record "bad name" 192.0.2.40 h1 2>/dev/null; printf 'name Evil\nipv4 192.0.2.40\nhostkey %s\n' "$(key h1)" > "$rec/evil"
+check "bad name: skipped" '! cb 2>/dev/null | grep -qi evil && ! grep -qi evil "$cfg"'
+rm -f "$rec/evil" "$rec/bad name"
+
+cp "$cfg" "$t/good"; printf '# >>> cloud-box stray (half a block)\nHost stray\n' >> "$cfg"; cp "$cfg" "$t/broken"
+check "unbalanced markers: refuses, file untouched" '! cb >/dev/null 2>&1 && cmp -s "$cfg" "$t/broken"'
+cp "$t/good" "$cfg"
+
+rm "$rec/alpha"
+cb >/dev/null
+check "all removed: config back to the user's own, no known_hosts file" '[[ $(cat "$cfg") == "$user" && ! -e $kh ]]'
+
+# bootstrap.sh: on CLOUD_BOX_CLIENTS only
+eval "$(awk '/^ssh_cloud_boxes\(\) \{/,/^\}/' "$root/bootstrap.sh")"
+ok() { echo "ok $*"; }; did() { echo "did $*"; }; info() { :; }; warn() { echo "warn $*"; }
+SCRIPT_DIR=$root PEER_KEY=$HOME/.ssh/id_ed25519_peer CLOUD_BOX_CLIENTS="beast-arch carbon micro" DRY_RUN=0
+record alpha 192.0.2.10 h1
+cp "$cfg" "$t/before"
+for h in media-center surfboard; do
+  uname() { echo "$h"; }
+  check "bootstrap on $h: nothing written" '[[ -z $(ssh_cloud_boxes) ]] && cmp -s "$cfg" "$t/before" && [[ ! -e $kh ]]'
+done
+uname() { echo carbon; }
+DRY_RUN=1
+check "bootstrap dry run on carbon: would write, wrote nothing" '[[ $(ssh_cloud_boxes) == "did would write"* ]] && cmp -s "$cfg" "$t/before"'
+DRY_RUN=0
+check "bootstrap on carbon: writes" '[[ $(ssh_cloud_boxes) == "did wrote ssh config for cloud boxes: alpha"* && $(G alpha hostname) == 192.0.2.10 ]]'
+check "bootstrap on carbon again: ok, unchanged" '[[ $(ssh_cloud_boxes) == "ok ssh config for cloud boxes: alpha" ]]'
+
+echo "$pass passed, $fail failed"
+(( fail == 0 ))
