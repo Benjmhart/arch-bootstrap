@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # make-cloud-image ISO OUT.img [GiB] -- build a headless Arch cloud disk image (raw,
-# sparse, default 4 GiB) from an official Arch ISO. NO ROOT on this host.
+# sparse, default 16 GiB) from an official Arch ISO. NO ROOT on this host.
 #
 # Root is needed to partition, pacstrap and install GRUB, so all of that happens as
 # root INSIDE a throwaway KVM guest booted from the ISO (the same kernel+initrd-direct

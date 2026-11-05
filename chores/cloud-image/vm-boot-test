@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # vm-boot-test IMAGE [bios|uefi] -- boot a copy of the cloud image the way a provider
 # would and pass if ben can SSH in with a key that only cloud-init could have put there.
-# NO ROOT. The copy is grown to 8 GiB first, so growpart/resize_rootfs are tested too.
+# NO ROOT. The copy is grown by 4 GiB first, so growpart/resize_rootfs are tested too.
 #
 # The provider is faked with a NoCloud seed (an ISO labelled CIDATA: meta-data with a
 # hostname, user-data with a throwaway public key made just for this run), which is the
@@ -20,7 +20,7 @@ for c in qemu-system-x86_64 xorriso ssh-keygen; do command -v $c >/dev/null || {
 
 tmp=$(mktemp -d -p "$(dirname "$(readlink -f "$img")")"); pid=
 trap '[[ -n $pid ]] && kill "$pid" 2>/dev/null; rm -rf "$tmp"' EXIT
-cp --sparse=always "$img" "$tmp/disk.img"; truncate -s 8G "$tmp/disk.img"
+cp --sparse=always "$img" "$tmp/disk.img"; truncate -s +4G "$tmp/disk.img"   # +, not a fixed 8G: that SHRANK the 16 GiB image
 ssh-keygen -q -t ed25519 -N '' -C vm-boot-test -f "$tmp/key"
 mkdir "$tmp/seed"
 printf 'instance-id: vm-boot-test-%s\nlocal-hostname: cloudtest\n' "$$" > "$tmp/seed/meta-data"
