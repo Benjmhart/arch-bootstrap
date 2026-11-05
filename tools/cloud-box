@@ -7,6 +7,11 @@
 #   cloud-box delete-volume VOLUME   the volume and everything on it, for good
 #   cloud-box list
 #   cloud-box ssh-config [--dry-run] this machine's ~/.ssh/config Host blocks + pinned host keys, from the records
+#   cloud-box login-keys             the keys every box lets log in as ben (public; one per line)
+#
+# Login is by YubiKey touch only (Ben 2026-11-05: "yubikeys only by default, fallback to the existing drive encryption
+# and sudo passwords"): plug one in, ssh NAME, touch. sshd takes no passwords. Without a YubiKey: the Hetzner web
+# console (Cloud Console > server > Console), log in as ben with the sudo password set at create.
 #
 # Ben 2026-11-05: "small plan with a 100gb volume". The image's 24 GiB root keeps the OS and the toolchains; /nix and
 # ~/projects live on the volume (bind mounts from /mnt/data), so deleting and re-creating the server keeps the nix store
@@ -14,23 +19,35 @@
 # password as a $6$ hash; asked for when unset). Token: ~/.config/hcloud/token-rw. Touches only resources labelled
 # purpose=cloud-box, which it creates.
 #
-# Keys, all from the secrets repo, all public: ssh login = ssh/pubkeys/*.pub (each fleet machine's peer key, as
-# tailnet peers use). sudo = the fleet's touch-required YubiKey set (bootstrap.sh setup_yubikey: ssh/fleet/micro-peer-*
-# + ssh/unlock/*), sk- lines only, to /etc/sudo-agent-keys.in; the image keeps only sk- lines of it for pam_rssh.
+# Keys, all from the secrets repo, all public: ssh login AND sudo = the fleet's touch-required YubiKey set of Ben's four
+# YubiKeys (bootstrap.sh setup_yubikey: ssh/fleet/micro-peer-* + ssh/unlock/*; never micro-yubikey-nt-*, never a plain
+# key), sk- lines only: login_keys(). sudo gets them in /etc/sudo-agent-keys.in; the image keeps only sk- lines for
+# pam_rssh. authorized_keys carries no options, so sshd demands the touch flag on every login.
+# CLOUD_BOX_EXTRA_LOGIN_KEY=FILE.pub (tests only): one more login key for this box alone, and create checks with it.
 # Record: create writes secrets cloud-box/NAME (name, ipv4, server, volume, the box's ssh host keys as seen at create)
 # and commits + pushes it; delete removes it. Only that path is committed, never the vault. micro never commits to
 # secrets: there the record is printed, to be committed from beast-arch or carbon.
 # Client: `ssh-config` writes a `# >>> cloud-box NAME` Host block per record into ~/.ssh/config (and removes blocks
-# whose record is gone), with the peer key and, where this machine runs the fleet's sudo agent, ForwardAgent of THAT
+# whose record is gone), with every YubiKey handle on this machine (~/.ssh/id_ed25519_sk_peer_* on micro,
+# id_ed25519_sk_unlock_* from tools/unlock-key on beast-arch and carbon: whichever key is plugged works) and, where this machine runs the fleet's sudo agent, ForwardAgent of THAT
 # agent only (sk keys), as ssh_tailnet_peers does for peers -- never the main agent; host keys PINNED in
 # ~/.ssh/known_hosts.cloud-box from the records (StrictHostKeyChecking yes). create and delete run it; so does
 # bootstrap.sh stage services (fpush) on CLOUD_BOX_CLIENTS (beast-arch carbon micro). Ben 2026-11-05.
 set -euo pipefail
 S=${SECRETS_DIR:-$HOME/secrets} rec=${SECRETS_DIR:-$HOME/secrets}/cloud-box
 type=${HZ_TYPE:-cx23} loc=${HZ_LOC:-nbg1} gb=${CLOUD_BOX_VOLUME_GB:-100}
-peer=${PEER_KEY:-$HOME/.ssh/id_ed25519_peer} cfg=$HOME/.ssh/config kh=$HOME/.ssh/known_hosts.cloud-box
-# THE login key set of every box (ben's authorized_keys there). Ben 2026-11-05: the fleet machines' peer keys.
-login_keys() { cat "$S"/ssh/pubkeys/*.pub; }
+cfg=$HOME/.ssh/config kh=$HOME/.ssh/known_hosts.cloud-box
+# THE login (and sudo) key set of every box: touch-required YubiKey sk keys only. Fails if there are none.
+login_keys() {
+  local f out=""
+  for f in "$S"/ssh/fleet/micro-peer-*.pub "$S"/ssh/unlock/*.pub; do
+    [[ -f $f ]] || continue
+    if grep -qE '^sk-(ssh-ed25519|ecdsa-sha2-nistp256)@openssh\.com [A-Za-z0-9+/=]+( |$)' "$f"; then out+=$(head -1 "$f")$'\n'
+    else echo "cloud-box: left out (not an sk- key): ${f#"$S"/}" >&2; fi
+  done
+  [[ -n $out ]] || { echo "cloud-box: no YubiKey sk keys in $S/ssh/fleet/micro-peer-*.pub or $S/ssh/unlock/*.pub" >&2; return 1; }
+  printf '%s' "$out"
+}
 api() { local m=$1 p=$2 tok; shift 2; tok=$(<"$HOME/.config/hcloud/token-rw")
   curl -sS -X "$m" -H "Authorization: Bearer $tok" -H 'Content-Type: application/json' "https://api.hetzner.cloud/v1/$p" "$@"; }
 wait_action() { local s; for _ in $(seq 120); do s=$(api GET "actions/$1" | jq -r .action.status); [[ $s == success ]] && return; [[ $s == error ]] && { api GET "actions/$1" | jq -c .action.error; return 1; }; sleep 3; done; return 1; }
@@ -71,7 +88,9 @@ field() { awk -v k="$1" '$1 == k {print $2; exit}' "$2"; }
 # ~/.ssh/config: every `# >>> cloud-box` block out, one per record in (at the end); $kh: exactly the records' host keys.
 # Extra arguments are record files counted for this run only (micro's, before it is in secrets).
 ssh_config() {
-  local dry=0 f n ip k blocks="" keys="" names=() old cur rest want
+  local dry=0 f n ip k blocks="" keys="" names=() old cur rest want ids=""
+  for f in "$HOME"/.ssh/id_ed25519_sk_peer_* "$HOME"/.ssh/id_ed25519_sk_unlock_*; do
+    [[ -f $f && $f != *.pub ]] && ids+="    IdentityFile ~/.ssh/${f##*/}"$'\n'; done
   [[ ${1:-} == --dry-run ]] && { dry=1; shift; }
   for f in "$rec"/* "$@"; do
     [[ -f $f ]] || continue
@@ -88,8 +107,8 @@ Host $n
     HostKeyAlias cloud-box-$n
     UserKnownHostsFile $kh
     StrictHostKeyChecking yes
-    IdentityFile $peer
-    IdentitiesOnly yes
+${ids:-    # no YubiKey handle here (~/.ssh/id_ed25519_sk_*): tools/unlock-key makes one
+}    IdentitiesOnly yes
 "
     # shellcheck disable=SC2016
     [[ -f $HOME/.config/systemd/user/ssh-sudo-agent.service ]] && blocks+='    ForwardAgent ${XDG_RUNTIME_DIR}/ssh-sudo-agent.sock'$'\n'
@@ -126,7 +145,7 @@ cost() {   # monthly gross EUR, from the API
 }
 
 create() {
-  local name=$1 vol=${2:-$1} snap v vid created=0 login sudo f hash ud r sid ip dev hk out
+  local name=$1 vol=${2:-$1} snap v vid created=0 login sudo chk hash ud r sid ip dev hk out
   name_ok "$name"; name_ok "$vol"
   [[ -z $(server_json "$name") ]] || die "a server named $name exists"
   if grep -qx "Host $name" "$cfg" 2>/dev/null && ! grep -q "^# >>> cloud-box $name " "$cfg"; then die "~/.ssh/config already has 'Host $name' -- pick another name"; fi
@@ -137,13 +156,13 @@ create() {
   snap=$(api GET 'images?type=snapshot&label_selector=purpose%3Darch-cloud&sort=created:desc' | jq -r '.images[0].id // empty')
   [[ -n $snap ]] || die "no snapshot labelled purpose=arch-cloud"
 
-  login=$(login_keys) || die "no login keys in $S/ssh/pubkeys"
-  sudo=""   # the fleet's sudo set; any line that is not a YubiKey key is left out here, and again by the image
-  for f in "$S"/ssh/fleet/micro-peer-*.pub "$S"/ssh/unlock/*.pub; do
-    [[ -f $f ]] || continue
-    if grep -qE '^sk-(ssh-ed25519|ecdsa-sha2-nistp256)@openssh\.com ' "$f"; then sudo+=$(cat "$f")$'\n'; else echo "skipped for sudo (not an sk- key): ${f#"$S"/}"; fi
-  done
-  [[ -n $sudo ]] || echo "no sk- keys found: sudo on $name will be password-only"
+  sudo=$(login_keys) || die "no YubiKey keys to log in with; nothing created"
+  login=$sudo chk=(ssh -o BatchMode=yes -o ConnectTimeout=10 -o ForwardAgent=no)
+  echo "login and sudo: $(grep -c . <<<"$sudo") YubiKey sk keys (touch required)"
+  if [[ -n ${CLOUD_BOX_EXTRA_LOGIN_KEY:-} ]]; then
+    login+=$'\n'$(head -1 "$CLOUD_BOX_EXTRA_LOGIN_KEY") chk+=(-i "${CLOUD_BOX_EXTRA_LOGIN_KEY%.pub}")
+    echo "TEST: $CLOUD_BOX_EXTRA_LOGIN_KEY may log in to $name too (CLOUD_BOX_EXTRA_LOGIN_KEY)"
+  fi
   hash=${CLOUD_BOX_PASSWORD_HASH:-}
   [[ -n $hash ]] || { echo "ben's sudo password on $name:"; hash=$(openssl passwd -6); }
   [[ $hash == '$6$'* ]] || die "CLOUD_BOX_PASSWORD_HASH is not a \$6\$ hash"
@@ -189,8 +208,10 @@ create() {
     record_commit "$name" "cloud-box/$name: server $sid at $ip, volume $vol (arch-bootstrap tools/cloud-box create on $(uname -n))"
   fi
   ssh_config "$([[ $out == "$rec/$name" ]] || echo "$out")"
-  for _ in $(seq 60); do ssh -o BatchMode=yes -o ConnectTimeout=5 -o ForwardAgent=no "$name" true 2>/dev/null && break; sleep 5; done
-  ssh -o BatchMode=yes -o ForwardAgent=no "$name" 'cloud-init status --wait >/dev/null; findmnt -no SOURCE,TARGET /nix; findmnt -no SOURCE,TARGET ~/projects' || echo "WARN: ssh $name did not answer yet"
+  # sshd answered the keyscan, so cloud-init has put the keys in: one login, one touch (a few tries in case it is slow).
+  echo "checking $name over ssh: touch your YubiKey when it blinks"
+  for _ in 1 2 3; do "${chk[@]}" "$name" 'cloud-init status --wait >/dev/null; findmnt -no SOURCE,TARGET /nix; findmnt -no SOURCE,TARGET ~/projects' && break
+    echo "WARN: ssh $name failed (no YubiKey plugged in, or no touch?)"; sleep 5; done
   [[ $(ssh-keyscan -T 5 "$ip" 2>/dev/null | awk '$1 !~ /^#/ && NF == 3 {print "hostkey", $2, $3}' | sort -u || true) == "$hk" ]] \
     || echo "WARN: $name's host keys changed after create: the pinned ones are wrong; cloud-box delete $name and create again"
   cost || true
@@ -244,5 +265,6 @@ case ${1:-} in
   delete-volume) delete_volume "${2:?usage: cloud-box delete-volume VOLUME}" ;;
   list) list ;;
   ssh-config) shift; ssh_config "$@" ;;
-  *) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  login-keys) login_keys ;;
+  *) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

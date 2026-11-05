@@ -2,7 +2,7 @@
 # tests/cloud-box -- the client side of tools/cloud-box (station-maintenance beast-arch 85): `ssh-config` turns the
 # secrets cloud-box/ records into ~/.ssh/config Host blocks and pinned host keys (records added, changed, removed;
 # the rest of the file kept; idempotent; dry run writes nothing), and bootstrap.sh's ssh_cloud_boxes runs it on
-# CLOUD_BOX_CLIENTS only. Temp HOME and secrets; no network, no Hetzner.
+# CLOUD_BOX_CLIENTS only; `login-keys` is the YubiKey touch set only (Ben 2026-11-05). Temp HOME and secrets; no network, no Hetzner.
 set -uo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
@@ -34,7 +34,13 @@ check "added: wrote both" '[[ $(cb) == "wrote ssh config for cloud boxes: alpha 
 check "added: the user's own Host blocks kept, first" '[[ $(head -5 "$cfg") == "$user" ]]'
 check "added: ssh resolves alpha to its address" '[[ $(G alpha hostname) == 192.0.2.10 && $(G beta hostname) == 192.0.2.20 ]]'
 check "added: host key checking strict (no TOFU)" '[[ $(G alpha stricthostkeychecking) == true && $(G alpha userknownhostsfile) == "$kh" ]]'
-check "added: peer key only" '[[ $(G alpha identitiesonly) == yes && $(G alpha identityfile) == "$HOME/.ssh/id_ed25519_peer" ]]'
+check "added: no YubiKey handle here: no IdentityFile, says so" '[[ $(G alpha identitiesonly) == yes ]] && ! sed -n "/^# >>> cloud-box alpha /,/^# <<< cloud-box alpha/p" "$cfg" | grep -q IdentityFile && grep -q "no YubiKey handle here" "$cfg"'
+touch "$HOME/.ssh/id_ed25519_sk_unlock_111" "$HOME/.ssh/id_ed25519_sk_unlock_111.pub" "$HOME/.ssh/id_ed25519_sk_peer_222" \
+  "$HOME/.ssh/id_ed25519_sk_peer_222.pub" "$HOME/.ssh/id_ed25519_peer" "$HOME/.ssh/id_ed25519_sk_nt_333" "$HOME/.ssh/id_ed25519_sk_333"
+cb >/dev/null
+ids=$(sed -n "/^# >>> cloud-box alpha /,/^# <<< cloud-box alpha/p" "$cfg" | awk '$1 == "IdentityFile" {print $2}' | paste -sd' ')
+check "handles: every YubiKey handle here (peer + unlock), never the peer key, nt or other sk keys" '[[ $ids == "~/.ssh/id_ed25519_sk_peer_222 ~/.ssh/id_ed25519_sk_unlock_111" ]]'
+check "handles: IdentitiesOnly kept" '[[ $(G alpha identitiesonly) == yes && $(G beta identitiesonly) == yes ]]'
 check "added: no ForwardAgent without the sudo agent unit" '! grep -q ForwardAgent "$cfg"'
 want_kh=$(printf 'cloud-box-alpha %s\ncloud-box-beta %s' "$(key h1)" "$(key h2)")
 check "added: pinned keys are exactly the records' keys" '[[ $(cat "$kh") == "$want_kh" ]]'
@@ -70,6 +76,20 @@ cp "$t/good" "$cfg"
 rm "$rec/alpha"
 cb >/dev/null
 check "all removed: config back to the user's own, no known_hosts file" '[[ $(cat "$cfg") == "$user" && ! -e $kh ]]'
+
+# login-keys: the touch-required sk keys of the four YubiKeys (micro-peer-* + unlock/*), nothing else; none = failure
+S=$SECRETS_DIR; mkdir -p "$S/ssh/fleet" "$S/ssh/unlock" "$S/ssh/pubkeys"
+sk() { echo "sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29t$1 ben@$2"; }
+check "login-keys: none: fails" '! "$root/tools/cloud-box" login-keys >/dev/null 2>&1'
+sk P1 micro > "$S/ssh/fleet/micro-peer-1.pub"; sk P2 micro > "$S/ssh/fleet/micro-peer-2.pub"
+sk U1 beast-arch > "$S/ssh/unlock/beast-arch-1.pub"; sk U2 carbon > "$S/ssh/unlock/carbon-2.pub"
+sk NT micro > "$S/ssh/fleet/micro-yubikey-nt-1.pub"; sk Y micro > "$S/ssh/fleet/micro-yubikey-1.pub"; sk B micro > "$S/ssh/fleet/micro-backup.pub"
+cp "$t/h1.pub" "$S/ssh/pubkeys/beast-arch.pub"; cp "$t/h2.pub" "$S/ssh/unlock/plain-9.pub"
+lk=$("$root/tools/cloud-box" login-keys 2>"$t/lk.err")
+check "login-keys: exactly the micro-peer and unlock sk keys" '[[ $(awk "{print \$2}" <<<"$lk" | sed "s/.*Y29t//" | sort | paste -sd" ") == "P1 P2 U1 U2" ]]'
+check "login-keys: only sk- lines (no nt, no plain, no machine peer key)" '[[ $(grep -c . <<<"$lk") == 4 && $(grep -vc "^sk-ssh-ed25519@openssh.com " <<<"$lk") == 0 ]] && ! grep -qE "Y29tNT|$(awk "{print \$2}" "$t/h1.pub")" <<<"$lk"'
+check "login-keys: a plain key in the set is left out, loudly" 'grep -q "left out (not an sk- key): ssh/unlock/plain-9.pub" "$t/lk.err"'
+rm -rf "$S/ssh"
 
 # bootstrap.sh: on CLOUD_BOX_CLIENTS only
 eval "$(awk '/^ssh_cloud_boxes\(\) \{/,/^\}/' "$root/bootstrap.sh")"

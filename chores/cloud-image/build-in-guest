@@ -168,6 +168,10 @@ u "tar -xf /var/tmp/dotfiles.tar -C ~ \
 rm /mnt/var/tmp/dotfiles.tar
 cp "$in/arch-bootstrap.tar" /mnt/var/tmp/   # not /tmp: arch-chroot mounts a tmpfs there
 u "mkdir -p ~/projects ~/.local/bin && tar -xf /var/tmp/arch-bootstrap.tar -C ~/projects"; rm /mnt/var/tmp/arch-bootstrap.tar
+# One commit each, no history (Ben 2026-11-05; make-cloud-image clones them --depth 1).
+n=$(u "git --git-dir ~/.dot rev-list --count --all")/$(u "git -C ~/projects/arch-bootstrap rev-list --count --all")
+[[ $n == 1/1 ]] || { echo "dotfiles/arch-bootstrap commits in the image: $n, want 1/1"; exit 1; }
+echo "dotfiles and arch-bootstrap: 1 commit each"
 u "curl -fsSL https://github.com/herdrdev/herdr/releases/download/v$HERDR_VER/herdr-linux-x86_64 -o ~/.local/bin/herdr \
    && echo '$HERDR_SUM  /home/ben/.local/bin/herdr' | sha256sum -c --quiet && chmod +x ~/.local/bin/herdr"
 u "curl -fsSL https://claude.ai/install.sh | bash"

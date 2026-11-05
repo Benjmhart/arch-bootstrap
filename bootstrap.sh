@@ -3791,7 +3791,7 @@ ssh_tailnet_peers() {
 ssh_cloud_boxes() {
   [[ " $CLOUD_BOX_CLIENTS " == *" $(uname -n) "* ]] || return 0
   local out a=(); (( DRY_RUN )) && a=(--dry-run)
-  out=$(SECRETS_DIR=$SECRETS_DIR PEER_KEY=$PEER_KEY "$SCRIPT_DIR/tools/cloud-box" ssh-config "${a[@]}") \
+  out=$(SECRETS_DIR=$SECRETS_DIR "$SCRIPT_DIR/tools/cloud-box" ssh-config "${a[@]}") \
     || { warn "tools/cloud-box ssh-config failed"; return 0; }
   case $out in
     "up to date: "*) ok "${out#up to date: }" ;;

@@ -13,6 +13,8 @@
 # a clean clone of this repo's HEAD (never the gitignored bootstrap.conf), the herdr
 # pin read out of bootstrap.sh, and a bare clone of this host's dotfiles (DOTFILES_DIR,
 # default ~/.dot: committed state only, origin set to DOTFILES_REMOTE from bootstrap.conf).
+# Both are shallow, ONE commit each (Ben 2026-11-05: "only the current dotfiles. no history"; the dotfiles' history
+# holds personal data): the real HEAD commit, so the box can still fetch and pull from origin. build-in-guest checks it.
 # The dotfiles repo is private since 2026-10-16 and the image has no GitHub key, so the
 # guest cannot clone it; it gets this copy instead (station-maintenance beast-arch 85).
 #
@@ -37,12 +39,17 @@ trap '[[ -n $pid ]] && kill "$pid" 2>/dev/null; rm -rf "$tmp"' EXIT
 # ---- the input disk
 mkdir "$tmp/in"
 cp "$here/build-in-guest" "$repo/pkglist-headless.txt" "$repo/pkglist-cloud.txt" "$repo/pkglist-npm.txt" "$repo/pkglist-aur.txt" /etc/pacman.d/mirrorlist "$tmp/in/"
-git clone -q --no-local "$repo" "$tmp/arch-bootstrap"
+git clone -q --depth 1 --no-tags "file://$(readlink -f "$repo")" "$tmp/arch-bootstrap"
 git -C "$tmp/arch-bootstrap" remote set-url origin https://github.com/Benjmhart/arch-bootstrap
 tar -C "$tmp" -cf "$tmp/in/arch-bootstrap.tar" arch-bootstrap
 mkdir "$tmp/dot"
-git clone -q --bare --no-local "${DOTFILES_DIR:-$HOME/.dot}" "$tmp/dot/.dot"
+git clone -q --bare --depth 1 --no-tags "file://$(readlink -f "${DOTFILES_DIR:-$HOME/.dot}")" "$tmp/dot/.dot"
 git -C "$tmp/dot/.dot" remote set-url origin "$DOTFILES_REMOTE"
+# fpush leaves ~/.dot on a detached HEAD, which a shallow clone keeps (no branch at all): put it on master, tracking
+# origin, so the box can `git pull`. ponytail: the dotfiles' branch name, hardcoded.
+if ! git -C "$tmp/dot/.dot" symbolic-ref -q HEAD >/dev/null; then
+  git -C "$tmp/dot/.dot" update-ref refs/heads/master HEAD; git -C "$tmp/dot/.dot" symbolic-ref HEAD refs/heads/master; fi
+git -C "$tmp/dot/.dot" config branch.master.remote origin; git -C "$tmp/dot/.dot" config branch.master.merge refs/heads/master
 tar -C "$tmp/dot" -cf "$tmp/in/dotfiles.tar" .dot
 herdr_ver=$(sed -n 's/^ *local ver=\([0-9.]*\) arch sum asset$/\1/p' "$repo/bootstrap.sh")
 herdr_sum=$(sed -n 's/^ *x86_64) .*sum=\([0-9a-f]\{64\}\) ;;$/\1/p' "$repo/bootstrap.sh")
