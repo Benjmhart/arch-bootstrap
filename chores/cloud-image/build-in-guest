@@ -144,6 +144,9 @@ EOF
 # nix: as beast-arch's /etc/nix/nix.conf, nix-command + flakes; the daemon socket is 0666 and allowed-users is *, so
 # ben needs no group. docker: on at boot here (Ben 2026-11-05); bootstrap.sh's lean profile keeps it off on desktops.
 grep -q '^experimental-features' /mnt/etc/nix/nix.conf || echo 'experimental-features = nix-command flakes' >> /mnt/etc/nix/nix.conf
+# Arch's package creates no /nix/store, and every client command as ben then fails with 'opening file "/nix/store": No
+# such file or directory' (Hetzner, 2026-11-05). Same owner and mode as beast-arch's.
+c install -d -m 1775 -o root -g nixbld /nix/store
 units=(systemd-networkd systemd-resolved systemd-timesyncd sshd earlyoom tailscaled pacman-init nix-daemon.socket docker)
 for u in cloud-init-main cloud-init-local cloud-init-network cloud-init cloud-config cloud-final; do
   [[ -e /mnt/usr/lib/systemd/system/$u.service ]] && units+=("$u")
