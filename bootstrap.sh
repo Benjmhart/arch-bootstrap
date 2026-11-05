@@ -4784,6 +4784,12 @@ setup_wake() {
   done < <(nmcli -t -f UUID,TYPE c show)
   if (( n )); then did "Wi-Fi wake on magic packet: $n connection(s), live at their next activation (a reboot)"
   else ok "Wi-Fi wake on magic packet"; fi
+  # Light sleep (s2idle), not deep (S3): in S3 the platform cuts the Wi-Fi card's power, so nothing hears the packet
+  # (surfboard, ThinkPad P50, 2026-11-04: "iwlwifi: Can't resume, device_powered_off() was called during wowlan"; the
+  # same wake worked from s2idle, set by hand). Costs more battery asleep. Read at each suspend: no reboot needed.
+  local f=/etc/systemd/sleep.conf.d/50-wake.conf want=$'[Sleep]\nMemorySleepMode=s2idle'
+  if [[ $(cat "$f" 2>/dev/null) == "$want" ]]; then ok "suspend uses s2idle (Wi-Fi stays powered for wake)"
+  else printf '%s\n' "$want" | run sudo install -D -m 644 /dev/stdin "$f" && did "suspend uses s2idle: $f"; fi
 }
 
 # setup_claude_mem: the claude-mem trial (beast-arch 08) on the hosts in CLAUDE_MEM_HOSTS.
