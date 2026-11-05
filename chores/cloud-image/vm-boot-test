@@ -18,15 +18,16 @@ limit=${VM_BOOT_TIMEOUT:-240}
 for c in qemu-system-x86_64 xorriso ssh-keygen; do command -v $c >/dev/null || { echo "$c not installed -- cannot boot-test"; exit 75; }; done
 [[ -r /dev/kvm && -w /dev/kvm ]] || { echo "/dev/kvm not usable -- cannot boot-test"; exit 75; }
 
-tmp=$(mktemp -d -p "$(dirname "$(readlink -f "$img")")"); pid=
-trap '[[ -n $pid ]] && kill "$pid" 2>/dev/null; rm -rf "$tmp"' EXIT
+tmp=$(mktemp -d -p "$(dirname "$(readlink -f "$img")")"); pid= agent=
+trap '[[ -n $pid ]] && kill "$pid" 2>/dev/null; [[ -n $agent ]] && kill "$agent" 2>/dev/null; rm -rf "$tmp"' EXIT
 cp --sparse=always "$img" "$tmp/disk.img"; truncate -s +4G "$tmp/disk.img"   # +, not a fixed 8G: that SHRANK the 16 GiB image
 ssh-keygen -q -t ed25519 -N '' -C vm-boot-test -f "$tmp/key"
 mkdir "$tmp/seed"
 printf 'instance-id: vm-boot-test-%s\nlocal-hostname: cloudtest\n' "$$" > "$tmp/seed/meta-data"
 pw=$(openssl rand -hex 12)   # throwaway sudo password, set the way user-data.example does
-printf '#cloud-config\nssh_authorized_keys:\n  - %s\nchpasswd:\n  expire: false\n  users:\n    - {name: ben, type: hash, password: "%s"}\n' \
-  "$(cat "$tmp/key.pub")" "$(openssl passwd -6 "$pw")" > "$tmp/seed/user-data"
+# sudo keys as tools/cloud-box writes them, plus a plain key the image's filter must drop.
+printf '#cloud-config\nssh_authorized_keys:\n  - %s\nchpasswd:\n  expire: false\n  users:\n    - {name: ben, type: hash, password: "%s"}\nwrite_files:\n  - {path: /etc/sudo-agent-keys.in, permissions: "0644", content: "%s\\nsk-ssh-ed25519@openssh.com AAAAvmboottest fake\\n"}\n' \
+  "$(cat "$tmp/key.pub")" "$(openssl passwd -6 "$pw")" "$(cat "$tmp/key.pub")" > "$tmp/seed/user-data"
 # Provider vendor-data the image must ignore: Hetzner's makes root the default user.
 printf '#cloud-config\nsystem_info:\n  default_user: {name: root, lock_passwd: true, shell: /bin/bash}\n' > "$tmp/seed/vendor-data"
 xorriso -as mkisofs -quiet -V CIDATA -J -r -o "$tmp/seed.iso" "$tmp/seed" 2>/dev/null
@@ -64,6 +65,28 @@ for (( t = 0; t < limit; t += 5 )); do
       print -n \"ssh host key: \"; ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub | cut -d\" \" -f2
       print machine-id: \$(cat /etc/machine-id)
       systemctl is-system-running" 2>&1' | sed 's/^/  | /'
+    # pam_rssh, with a forwarded agent holding the plain login key: the filter dropped that key, so sudo on a terminal
+    # asks for the password (it gets none and is timed out); the same key placed in /etc/sudo-agent-keys by hand is
+    # accepted with no password (pam_rssh is wired); after the filter, refused again. Not sudo -n: without sudoers'
+    # noninteractive_auth it never calls PAM, so it proves nothing either way.
+    eval "$(ssh-agent -a "$tmp/agent.sock")" >/dev/null; agent=$SSH_AGENT_PID
+    SSH_AUTH_SOCK=$tmp/agent.sock ssh-add -q "$tmp/key"
+    "${s[@]}" 'cat > /tmp/pamtest' <<'EOF'
+set -u; pw=$1; k=/var/lib/cloud/scripts/per-boot/sudo-agent-keys
+try() { sudo -k; timeout --foreground 15 sudo -p '[password asked] ' true; }
+ln -sfn "$SSH_AUTH_SOCK" ~/.ssh/sudo-agent.sock
+echo "sudo-agent-keys: $(wc -l < /etc/sudo-agent-keys) line(s), types: $(cut -d' ' -f1 /etc/sudo-agent-keys | sort -u | paste -sd,)"
+grep -v '^sk-' /etc/sudo-agent-keys && { echo "FAIL: a non-sk key is trusted for sudo"; exit 1; }
+try && { echo "FAIL: sudo with the plain key, no password"; exit 1; }
+echo; echo "sudo with the plain key forwarded: not accepted, password asked"
+echo "$pw" | sudo -S -p '' sh -c 'grep vm-boot-test /home/ben/.ssh/authorized_keys > /etc/sudo-agent-keys'
+try || { echo; echo "FAIL: pam_rssh did not accept a key placed by hand (not wired?)"; exit 1; }
+echo "sudo with that key placed by hand: accepted, no password (pam_rssh is wired)"
+echo "$pw" | sudo -S -p '' "$k"
+try && { echo "FAIL: still accepted after the filter"; exit 1; }
+echo; echo "after the filter: password asked again; sk lines kept: $(grep -c '^sk-' /etc/sudo-agent-keys)"
+EOF
+    ssh -tt -o "ForwardAgent=$tmp/agent.sock" "${s[@]:1}" "bash /tmp/pamtest $pw" 2>&1 | tr -d '\r' | sed 's/^/  | /'
     exit 0
   fi
   kill -0 "$pid" 2>/dev/null || break

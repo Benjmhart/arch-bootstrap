@@ -177,14 +177,61 @@ cp "$in/pkglist-npm.txt" /mnt/var/tmp/
 u "rustup default stable >/dev/null"
 # AUR (Ben 2026-11-05): yay and pam_rssh, each built as ben from exactly its pkglist-aur.txt pin, as bootstrap.sh
 # aur_build_pinned does; their deps are already in the image (go, git, rustup's cargo, openssl, pam).
-# pam_rssh is installed but NOT wired into /etc/pam.d/sudo: bootstrap trusts only touch-required YubiKey keys from the
-# secrets repo, which this image does not have, so sudo stays password-only until that is decided.
 for n in yay pam_rssh; do
   pin=$(awk -v n=$n '$1 == n {print $2}' "$in/pkglist-aur.txt"); [[ -n $pin ]]
   u "git clone -q https://aur.archlinux.org/$n.git /var/tmp/aur/$n && cd /var/tmp/aur/$n && git checkout -q $pin && makepkg --noconfirm >/dev/null"
   f=$(u "cd /var/tmp/aur/$n && makepkg --packagelist" | grep "/$n-[0-9]")
   c pacman -U --noconfirm "$f"
 done
+
+# sudo over ssh by a touch at the client's YubiKey (Ben 2026-11-05: "yes"), the fleet's design (bootstrap.sh
+# setup_yubikey, beast-arch 133): the client forwards an agent holding only its sk keys, .zshenv links it to
+# ~/.ssh/sudo-agent.sock, pam_rssh asks it to sign. Trusted keys: /etc/sudo-agent-keys, which ONLY the per-boot filter
+# below writes, from /etc/sudo-agent-keys.in (user-data write_files; tools/cloud-box). pam_rssh 1.2.1 does not check the
+# user-presence flag, so a plain key there would be passwordless sudo (ruled out, Ben 2026-10-09): the filter keeps
+# sk- lines only. No .in = no file = sudo is password-only. The guard skips pam_rssh under sudo -S (password on stdin).
+# ponytail: guard copied from bootstrap.sh setup_yubikey (same path and text); change both together.
+guard=/usr/local/lib/arch-bootstrap/sudo-u2f-skip filter=/var/lib/cloud/scripts/per-boot/sudo-agent-keys
+mkdir -p "/mnt${guard%/*}" "/mnt${filter%/*}"
+cat > "/mnt$guard" <<'EOF'
+#!/bin/sh
+# Written by arch-bootstrap. pam_exec (seteuid) runs this from /etc/pam.d/sudo; exit 0 skips the
+# YubiKey for this sudo: stdin is not a terminal (sudo -S), or an ancestor is sshd. With "pipe", only the first.
+p=$PPID
+case $(readlink "/proc/$p/fd/0") in /dev/pts/*|/dev/tty*) ;; *) exit 0 ;; esac
+[ "$1" = pipe ] && exit 1
+while [ "$p" -gt 1 ]; do
+  case $(cat "/proc/$p/comm") in sshd*) exit 0 ;; esac
+  p=$(sed "s/.*) //" "/proc/$p/stat" | cut -d" " -f2)
+done
+exit 1
+EOF
+cat > "/mnt$filter" <<'EOF'
+#!/bin/sh
+# Written by arch-bootstrap chores/cloud-image (station-maintenance beast-arch 85). Every boot (cloud-final): rebuild
+# /etc/sudo-agent-keys, the keys pam_rssh accepts for sudo, from user-data's /etc/sudo-agent-keys.in, keeping ONLY
+# YubiKey (sk-) keys. A plain key there would mean sudo with no password and no touch. Nothing kept = no file.
+set -eu
+in=/etc/sudo-agent-keys.in out=/etc/sudo-agent-keys
+keys=$(grep -E '^sk-(ssh-ed25519|ecdsa-sha2-nistp256)@openssh\.com [A-Za-z0-9+/=]+( |$)' "$in" 2>/dev/null || true)
+if [ -z "$keys" ]; then rm -f "$out"; exit 0; fi
+printf '%s\n' "$keys" > "$out.new"; chown root:root "$out.new"; chmod 644 "$out.new"; mv "$out.new" "$out"
+EOF
+chmod 755 "/mnt$guard" "/mnt$filter"
+pam="auth\t\t[success=1 default=ignore]\tpam_exec.so quiet seteuid $guard pipe\nauth\t\tsufficient\tpam_rssh.so auth_key_file=/etc/sudo-agent-keys ssh_agent_addr=/home/\${user}/.ssh/sudo-agent.sock cue [cue_prompt=Touch the YubiKey at your machine]"
+awk -v add="$(printf '%b' "$pam")" '/^auth/ && !d { print add; d=1 } { print }' /mnt/etc/pam.d/sudo > /mnt/etc/pam.d/sudo.new
+mv /mnt/etc/pam.d/sudo.new /mnt/etc/pam.d/sudo; chmod 644 /mnt/etc/pam.d/sudo
+grep -q '^auth.*pam_rssh.so auth_key_file=/etc/sudo-agent-keys ' /mnt/etc/pam.d/sudo
+grep -q '^auth.*include.*system-auth' /mnt/etc/pam.d/sudo
+# The filter must drop everything but sk- keys, or the build fails: a plain key, an sk key behind an option
+# (no-touch-required), a comment; and with nothing kept, leave no file.
+printf '%s\n' 'ssh-ed25519 AAAAC3plain plain' 'no-touch-required sk-ssh-ed25519@openssh.com AAAAnt nt' '# sk-ssh-ed25519@openssh.com AAAAc c' \
+  'sk-ssh-ed25519@openssh.com AAAAsk1 ok1' 'sk-ecdsa-sha2-nistp256@openssh.com AAAAsk2 ok2' > /mnt/etc/sudo-agent-keys.in
+c "$filter"
+[[ $(cat /mnt/etc/sudo-agent-keys) == $'sk-ssh-ed25519@openssh.com AAAAsk1 ok1\nsk-ecdsa-sha2-nistp256@openssh.com AAAAsk2 ok2' ]]
+printf 'ssh-ed25519 AAAAC3plain plain\n' > /mnt/etc/sudo-agent-keys.in; c "$filter"; [[ ! -e /mnt/etc/sudo-agent-keys ]]
+rm /mnt/etc/sudo-agent-keys.in; c "$filter"; [[ ! -e /mnt/etc/sudo-agent-keys ]]
+echo "sudo: pam_rssh wired; key filter passed its checks"
 rm -rf /mnt/var/tmp/aur /mnt/home/ben/go /mnt/home/ben/.cache/go-build /mnt/home/ben/.cargo/registry /mnt/home/ben/.cargo/git
 u "curl --proto '=https' --tlsv1.2 -sSf https://get-ghcup.haskell.org | BOOTSTRAP_HASKELL_NONINTERACTIVE=1 BOOTSTRAP_HASKELL_INSTALL_NO_STACK=1 sh >/dev/null"
 u "source ~/.nvm/nvm.sh && nvm install $NODE_MAJOR >/dev/null && grep -vE '^\s*(#|$)' /var/tmp/pkglist-npm.txt | awk '{print \$1}' | xargs -r npm install -g --silent"
