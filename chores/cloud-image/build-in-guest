@@ -45,7 +45,7 @@ step "pacstrap"
 mapfile -t pkgs < <(grep -hv '^\s*#' "$in/pkglist-headless.txt" "$in/pkglist-cloud.txt" | awk 'NF {print $1}')
 pacstrap -K /mnt base linux grub efibootmgr sudo cloud-init cloud-guest-utils "${pkgs[@]}"
 genfstab -U /mnt >> /mnt/etc/fstab
-rm -rf /mnt/var/cache/pacman/pkg/*                      # ~600 MiB of downloads, on a 4 GiB disk
+rm -rf /mnt/var/cache/pacman/pkg/*                      # ~600 MiB of downloads, before the languages go on
 df -h /mnt | tail -1
 
 step "configure"; [[ -n ${BUILD_DEBUG:-} ]] && set -x

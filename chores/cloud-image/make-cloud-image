@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # make-cloud-image ISO OUT.img [GiB] -- build a headless Arch cloud disk image (raw,
-# sparse, default 16 GiB) from an official Arch ISO. NO ROOT on this host.
+# sparse, default 24 GiB) from an official Arch ISO. NO ROOT on this host.
 #
 # Root is needed to partition, pacstrap and install GRUB, so all of that happens as
 # root INSIDE a throwaway KVM guest booted from the ISO (the same kernel+initrd-direct
@@ -22,7 +22,7 @@
 set -euo pipefail
 iso=${1:?usage: make-cloud-image ISO OUT.img [GiB]}
 out=${2:?usage: make-cloud-image ISO OUT.img [GiB]}
-size=${3:-16}   # GiB; 16 since the image carries every CLI tool and language (beast-arch 85); cloud-init grows it
+size=${3:-24}   # GiB; cloud-init grows it. 16 ran out of space installing ghc (2026-11-05: 13G used when done, more while ghcup unpacks)
 here="$(dirname "$(readlink -f "$0")")"
 repo="$here/../.."
 limit=${BUILD_TIMEOUT:-1800}   # seconds; a build took ~130s on beast-arch (2026-10-08)
