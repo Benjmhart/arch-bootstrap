@@ -21,3 +21,8 @@ runcmd:
   # /etc/nftables.conf allows tailscale0, ICMP, tailscale's UDP 41641 and DHCP).
   # If tailscale fails, the box stays reachable on public :22, key-only.
   - [sh, -c, 'tailscale up --auth-key=tskey-auth-CHANGEME --hostname="$(cat /etc/hostname)" && systemctl enable --now nftables']
+# Optional: sudo by a touch at the client's YubiKey (pam_rssh, via the forwarded sudo agent). Only sk- lines are kept
+# (the image filters this file into /etc/sudo-agent-keys at every boot); without it sudo is password-only.
+# tools/cloud-box fills it from the secrets repo, the fleet's sudo set.
+#write_files:
+#  - {path: /etc/sudo-agent-keys.in, permissions: "0644", content: "sk-ssh-ed25519@openssh.com AAAA... ben@beast-arch\n"}

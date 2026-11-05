@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+# cloud-box -- a dev box on Hetzner Cloud from the kept arch-cloud image (station-maintenance beast-arch 85).
+#
+#   cloud-box create NAME [VOLUME]   server NAME from the newest snapshot labelled purpose=arch-cloud, plus the Volume
+#                                    VOLUME (default: NAME), re-attached if it exists, else created (ext4)
+#   cloud-box delete NAME            the server only; its volume and the data on it stay (and stay billed)
+#   cloud-box delete-volume VOLUME   the volume and everything on it, for good
+#   cloud-box list
+#
+# Ben 2026-11-05: "small plan with a 100gb volume". The image's 24 GiB root keeps the OS and the toolchains; /nix and
+# ~/projects live on the volume (bind mounts from /mnt/data), so deleting and re-creating the server keeps the nix store
+# and the work. Env: HZ_TYPE (cx23), HZ_LOC (nbg1), CLOUD_BOX_VOLUME_GB (100), CLOUD_BOX_PASSWORD_HASH (ben's sudo
+# password as a $6$ hash; asked for when unset). Token: ~/.config/hcloud/token-rw. Touches only resources labelled
+# purpose=cloud-box, which it creates.
+#
+# Keys, all from the secrets repo, all public: ssh login = ssh/pubkeys/*.pub (each fleet machine's peer key, as
+# tailnet peers use). sudo = the fleet's touch-required YubiKey set (bootstrap.sh setup_yubikey: ssh/fleet/micro-peer-*
+# + ssh/unlock/*), sk- lines only, to /etc/sudo-agent-keys.in; the image keeps only sk- lines of it for pam_rssh.
+# Client: a `Host NAME` block in ~/.ssh/config with the peer key and, where this machine runs the fleet's sudo agent,
+# ForwardAgent of THAT agent only (sk keys), as ssh_tailnet_peers does for peers. Never the main agent.
+set -euo pipefail
+S=${SECRETS_DIR:-$HOME/secrets}
+type=${HZ_TYPE:-cx23} loc=${HZ_LOC:-nbg1} gb=${CLOUD_BOX_VOLUME_GB:-100}
+peer=${PEER_KEY:-$HOME/.ssh/id_ed25519_peer} cfg=$HOME/.ssh/config kh=$HOME/.ssh/known_hosts.cloud-box
+tok=$(<"$HOME/.config/hcloud/token-rw")
+api() { local m=$1 p=$2; shift 2; curl -sS -X "$m" -H "Authorization: Bearer $tok" -H 'Content-Type: application/json' "https://api.hetzner.cloud/v1/$p" "$@"; }
+wait_action() { local s; for _ in $(seq 120); do s=$(api GET "actions/$1" | jq -r .action.status); [[ $s == success ]] && return; [[ $s == error ]] && { api GET "actions/$1" | jq -c .action.error; return 1; }; sleep 3; done; return 1; }
+die() { echo "cloud-box: $*" >&2; exit 1; }
+ours() { jq -e '.labels.purpose == "cloud-box"' >/dev/null; }
+server_json() { api GET "servers?name=$1" | jq -c '.servers[0] // empty'; }
+volume_json() { api GET "volumes?name=$1" | jq -c '.volumes[0] // empty'; }
+unblock() { [[ -f $cfg ]] && sed -i "\|^# >>> cloud-box $1 |,\|^# <<< cloud-box $1\$|d" "$cfg"; ssh-keygen -q -R "cloud-box-$1" -f "$kh" >/dev/null 2>&1 || true; rm -f "$kh.old"; }
+name_ok() { [[ $1 =~ ^[a-z][a-z0-9-]{0,40}$ ]] || die "bad name '$1' (lowercase letters, digits, -)"; }
+
+# Runs as root from cloud-init bootcmd on EVERY boot, before sshd: mount the volume, seed /nix and ~/projects onto it
+# the first time, bind them over the image's copies. fstab carries the same mounts from the next boot on, ahead of
+# nix-daemon.socket (nofail: a missing volume leaves the image's own /nix). Only --no-block systemctl calls here: a
+# blocking one could wait on boot ordering that waits on cloud-init.
+# shellcheck disable=SC2016
+volume_sh='set -eu
+dev=$1 d=/mnt/data
+for _ in $(seq 60); do [ -e "$dev" ] && break; sleep 1; done
+[ -e "$dev" ] || { echo "cloud-box: no volume at $dev -- /nix and ~/projects stay on the root fs"; exit 0; }
+grep -q "^$dev " /etc/fstab || printf "%s\n" "$dev $d ext4 defaults,nofail,discard 0 2" \
+  "$d/nix /nix none bind,nofail,x-systemd.requires-mounts-for=$d 0 0" \
+  "$d/projects /home/ben/projects none bind,nofail,x-systemd.requires-mounts-for=$d 0 0" >> /etc/fstab
+mkdir -p $d; mountpoint -q $d || mount $d
+if [ ! -d $d/nix ]; then
+  systemctl --no-block stop nix-daemon.socket nix-daemon.service 2>/dev/null || true
+  rm -rf $d/nix.new; cp -a /nix $d/nix.new; mv $d/nix.new $d/nix
+fi
+[ -d $d/projects ] || { rm -rf $d/projects.new; cp -a /home/ben/projects $d/projects.new; mv $d/projects.new $d/projects; }
+mountpoint -q /home/ben/projects || mount /home/ben/projects
+chown ben:ben /home/ben/projects
+if ! mountpoint -q /nix; then
+  mount /nix; chown root:nixbld /nix/store; chmod 1775 /nix/store
+  # nix-daemon.socket may already listen in the image /nix, now hidden: clients got "Connection refused" (2026-11-05).
+  systemctl --no-block stop nix-daemon.service 2>/dev/null || true; systemctl --no-block restart nix-daemon.socket
+fi'
+
+cost() {   # monthly gross EUR, from the API
+  api GET pricing | jq -r --arg t "$type" --arg l "$loc" --argjson gb "$gb" '.pricing as $p
+    | ($p.server_types[] | select(.name == $t) | .prices[] | select(.location == $l) | .price_monthly.gross | tonumber) as $s
+    | ($p.volume.price_per_gb_month.gross | tonumber) as $v
+    | "cost: server \($t) \($l) \($s*100|round/100) EUR/month (billed hourly while it exists, running or not); volume \($gb) GB \($v*$gb*100|round/100) EUR/month until deleted (\($p.currency), gross)"'
+}
+
+create() {
+  local name=$1 vol=${2:-$1} snap v vid created=0 login sudo f hash ud r sid ip dev
+  name_ok "$name"; name_ok "$vol"
+  [[ -z $(server_json "$name") ]] || die "a server named $name exists"
+  if grep -qx "Host $name" "$cfg" 2>/dev/null && ! grep -q "^# >>> cloud-box $name " "$cfg"; then die "~/.ssh/config already has 'Host $name' -- pick another name"; fi
+  snap=$(api GET 'images?type=snapshot&label_selector=purpose%3Darch-cloud&sort=created:desc' | jq -r '.images[0].id // empty')
+  [[ -n $snap ]] || die "no snapshot labelled purpose=arch-cloud"
+
+  login=$(cat "$S"/ssh/pubkeys/*.pub) || die "no login keys in $S/ssh/pubkeys"
+  sudo=""   # the fleet's sudo set; any line that is not a YubiKey key is left out here, and again by the image
+  for f in "$S"/ssh/fleet/micro-peer-*.pub "$S"/ssh/unlock/*.pub; do
+    [[ -f $f ]] || continue
+    if grep -qE '^sk-(ssh-ed25519|ecdsa-sha2-nistp256)@openssh\.com ' "$f"; then sudo+=$(cat "$f")$'\n'; else echo "skipped for sudo (not an sk- key): ${f#"$S"/}"; fi
+  done
+  [[ -n $sudo ]] || echo "no sk- keys found: sudo on $name will be password-only"
+  hash=${CLOUD_BOX_PASSWORD_HASH:-}
+  [[ -n $hash ]] || { echo "ben's sudo password on $name:"; hash=$(openssl passwd -6); }
+  [[ $hash == '$6$'* ]] || die "CLOUD_BOX_PASSWORD_HASH is not a \$6\$ hash"
+
+  v=$(volume_json "$vol")
+  if [[ -n $v ]]; then
+    ours <<<"$v" || die "volume $vol exists but is not labelled purpose=cloud-box -- not touching it"
+    [[ $(jq -r .location.name <<<"$v") == "$loc" ]] || die "volume $vol is in $(jq -r .location.name <<<"$v"), not $loc (HZ_LOC)"
+    [[ $(jq -r .server <<<"$v") == null ]] || die "volume $vol is attached to server $(jq -r .server <<<"$v")"
+    vid=$(jq -r .id <<<"$v"); echo "re-attaching volume $vol ($vid, $(jq -r .size <<<"$v") GB)"
+  else
+    r=$(api POST volumes -d "$(jq -n --arg n "$vol" --arg l "$loc" --argjson s "$gb" '{name:$n,size:$s,location:$l,format:"ext4",labels:{purpose:"cloud-box"}}')")
+    vid=$(jq -r '.volume.id // empty' <<<"$r"); [[ -n $vid ]] || die "volume create: $(jq -c .error <<<"$r")"
+    wait_action "$(jq -r .action.id <<<"$r")"; created=1; echo "created volume $vol ($vid, $gb GB, ext4)"
+  fi
+  dev=$(api GET "volumes/$vid" | jq -r .volume.linux_device)
+
+  ud="#cloud-config"$'\n'$(jq -n --arg h "$name" --arg login "$login" --arg pw "$hash" --arg sudo "$sudo" --arg sh "$volume_sh" --arg dev "$dev" '{
+    hostname: $h,
+    ssh_authorized_keys: ($login | split("\n") | map(select(length > 0))),
+    chpasswd: {expire: false, users: [{name: "ben", type: "hash", password: $pw}]},
+    write_files: [{path: "/etc/sudo-agent-keys.in", permissions: "0644", owner: "root:root", content: $sudo}],
+    bootcmd: [["sh", "-c", $sh, "cloud-box", $dev]]}')
+  r=$(api POST servers -d "$(jq -n --arg n "$name" --arg t "$type" --arg l "$loc" --argjson i "$snap" --arg u "$ud" --argjson v "$vid" \
+    '{name:$n,server_type:$t,location:$l,image:$i,user_data:$u,volumes:[$v],automount:false,labels:{purpose:"cloud-box"}}')")
+  sid=$(jq -r '.server.id // empty' <<<"$r")
+  [[ -n $sid ]] || { (( created )) && echo "the new volume $vol stays: cloud-box delete-volume $vol"; die "server create: $(jq -c .error <<<"$r")"; }
+  wait_action "$(jq -r .action.id <<<"$r")"
+  ip=$(api GET "servers/$sid" | jq -r .server.public_net.ipv4.ip)
+
+  unblock "$name"
+  [[ -s $cfg && -n $(tail -c1 "$cfg") ]] && echo >> "$cfg"   # no newline at the end: the block would join the last line
+  { printf '# >>> cloud-box %s (arch-bootstrap tools/cloud-box; server %s)\n' "$name" "$sid"
+    printf 'Host %s\n    HostName %s\n    User ben\n    HostKeyAlias cloud-box-%s\n' "$name" "$ip" "$name"
+    # ponytail: trust on first use; pre-generating the host key into user-data would pin it.
+    printf '    UserKnownHostsFile %s\n    StrictHostKeyChecking accept-new\n' "$kh"
+    printf '    IdentityFile %s\n    IdentitiesOnly yes\n' "$peer"
+    [[ -f $HOME/.config/systemd/user/ssh-sudo-agent.service ]] && printf '    ForwardAgent ${XDG_RUNTIME_DIR}/ssh-sudo-agent.sock\n'
+    printf '# <<< cloud-box %s\n' "$name"; } >> "$cfg"
+  chmod 600 "$cfg"
+
+  echo "server $name ($sid, $type $loc) at $ip from snapshot $snap; waiting for ssh..."
+  for _ in $(seq 60); do ssh -o BatchMode=yes -o ConnectTimeout=5 -o ForwardAgent=no "$name" true 2>/dev/null && break; sleep 5; done
+  ssh -o BatchMode=yes -o ForwardAgent=no "$name" 'cloud-init status --wait >/dev/null; findmnt -no SOURCE,TARGET /nix; findmnt -no SOURCE,TARGET ~/projects' || echo "WARN: ssh $name did not answer yet"
+  cost || true
+  echo "created: server $name ($sid)$( (( created )) && echo ", volume $vol ($vid)")"
+  echo "use:     ssh $name"
+  echo "delete:  cloud-box delete $name          (server only; volume $vol and its data stay, billed)"
+  echo "         cloud-box delete-volume $vol    (the data, for good)"
+}
+
+delete() {
+  local name=$1 s; name_ok "$name"
+  s=$(server_json "$name"); [[ -n $s ]] || die "no server named $name"
+  ours <<<"$s" || die "server $name is not labelled purpose=cloud-box -- not touching it"
+  # Shut down first: a delete is a power cut, and writes still in the page cache never reach the volume. Deleting
+  # right after writing left a 0-byte file in ~/projects and 0-byte nix store files the nix db called valid (2026-11-05).
+  local id st; id=$(jq -r .id <<<"$s")
+  if [[ $(jq -r .status <<<"$s") != off ]]; then
+    echo "shutting down $name..."; api POST "servers/$id/actions/shutdown" >/dev/null
+    for _ in $(seq 60); do st=$(api GET "servers/$id" | jq -r .server.status); [[ $st == off ]] && break; sleep 3; done
+    [[ $st == off ]] || die "$name did not shut down within 3 min (status $st); not deleted, so the volume's data is safe -- retry, or shut it down from inside"
+  fi
+  wait_action "$(api DELETE "servers/$id" | jq -r .action.id)"
+  unblock "$name"
+  echo "deleted server $name ($id)"
+  jq -r '.volumes[]' <<<"$s" | while read -r v; do
+    echo "volume $(api GET "volumes/$v" | jq -r .volume.name) ($v) kept, billed; delete it with: cloud-box delete-volume $(api GET "volumes/$v" | jq -r .volume.name)"; done
+}
+
+delete_volume() {
+  local v; name_ok "$1"
+  v=$(volume_json "$1"); [[ -n $v ]] || die "no volume named $1"
+  ours <<<"$v" || die "volume $1 is not labelled purpose=cloud-box -- not touching it"
+  [[ $(jq -r .server <<<"$v") == null ]] || die "volume $1 is attached to server $(jq -r .server <<<"$v"): cloud-box delete that server first"
+  api DELETE "volumes/$(jq -r .id <<<"$v")" | jq -e '.error' >/dev/null && die "delete failed"
+  echo "deleted volume $1 ($(jq -r .id <<<"$v"))"
+}
+
+list() {
+  api GET 'servers?label_selector=purpose%3Dcloud-box' | jq -r '.servers[] | "server \(.name) \(.id) \(.status) \(.server_type.name) \(.public_net.ipv4.ip) volumes=\(.volumes)"'
+  api GET 'volumes?label_selector=purpose%3Dcloud-box' | jq -r '.volumes[] | "volume \(.name) \(.id) \(.size)GB \(.location.name) server=\(.server)"'
+}
+
+case ${1:-} in
+  create) create "${2:?usage: cloud-box create NAME [VOLUME]}" "${3:-}" ;;
+  delete) delete "${2:?usage: cloud-box delete NAME}" ;;
+  delete-volume) delete_volume "${2:?usage: cloud-box delete-volume VOLUME}" ;;
+  list) list ;;
+  *) sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac
