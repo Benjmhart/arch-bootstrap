@@ -56,6 +56,8 @@ for (( t = 0; t < limit; t += 5 )); do
       cloud-init status; nvim --version | head -1; git --version; gh --version | head -1
       print herdr: \$(herdr --version); print claude: \$(claude --version)
       tailscale version | head -1; command -v starship zoxide yazi fzf rg
+      nix --version; print -n \"bun \"; bun --version; yay --version; pacman -Q pam_rssh
+      systemctl is-active docker nix-daemon.socket
       ! sudo -n true 2>/dev/null && print sudo: asks for a password
       print '"$pw"' | sudo -S -p \"\" true && print sudo: ok with the user-data password
       print '"$pw"' | sudo -S -p \"\" pacman-key --list-keys >/dev/null 2>&1 && print pacman keyring: initialised on this boot

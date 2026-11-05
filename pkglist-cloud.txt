@@ -4,10 +4,15 @@
 # needing X/Wayland/GTK/Qt/Electron, fonts, themes, drivers = out), then by hand: btop/cmake/ffmpeg/vifm/poppler are
 # CLI despite a graphics dep; out on purpose: clipboard tools, gnome-keyring, pipewire/alsa, networkmanager (cloud-init
 # owns networking), YubiKey tools (no USB), dracut (would change the image's initramfs), adsb_deku (radio hardware).
-# Languages: rustup, stack, go, ruby, luarocks, clang here; rust stable, ghcup's ghc+cabal, nvm's node + npm globals
+# Languages: rustup, stack, go, ruby, luarocks, clang, bun here; rust stable, ghcup's ghc+cabal, nvm's node + npm globals
 # are installed as ben in build-in-guest. A smaller server / Proxmox template may come later (Ben).
+# Ben 2026-11-05 added, and nothing else: nix (daemon socket on at boot, nix-command + flakes, as beast-arch's
+# /etc/nix/nix.conf), docker started at boot (the desktop lean profile still turns it off), bun, and from AUR at their
+# pkglist-aur.txt pins yay and pam_rssh (installed; sudo's PAM is left password-only). Still out (Ben): antigravity-cli,
+# networkmanager, dracut, YubiKey tools, android-tools, linux-headers, xpra, anything graphical.
 age
 btop
+bun
 clamav
 clang
 cmake
@@ -27,6 +32,7 @@ inotify-tools
 libisoburn
 luarocks
 magic-wormhole
+nix
 ollama
 pandoc-cli
 pastebinit

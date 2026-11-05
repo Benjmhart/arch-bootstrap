@@ -141,7 +141,10 @@ ExecStart=/usr/bin/pacman-key --populate
 WantedBy=multi-user.target
 EOF
 
-units=(systemd-networkd systemd-resolved systemd-timesyncd sshd earlyoom tailscaled pacman-init)
+# nix: as beast-arch's /etc/nix/nix.conf, nix-command + flakes; the daemon socket is 0666 and allowed-users is *, so
+# ben needs no group. docker: on at boot here (Ben 2026-11-05); bootstrap.sh's lean profile keeps it off on desktops.
+grep -q '^experimental-features' /mnt/etc/nix/nix.conf || echo 'experimental-features = nix-command flakes' >> /mnt/etc/nix/nix.conf
+units=(systemd-networkd systemd-resolved systemd-timesyncd sshd earlyoom tailscaled pacman-init nix-daemon.socket docker)
 for u in cloud-init-main cloud-init-local cloud-init-network cloud-init cloud-config cloud-final; do
   [[ -e /mnt/usr/lib/systemd/system/$u.service ]] && units+=("$u")
 done
@@ -169,6 +172,17 @@ u "curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | 
 # pkglist-cloud), ghcup's ghc + cabal (stack from pacman), node $NODE_MAJOR via nvm (bootstrap.sh's pin: .zshrc puts only that major on PATH) + the npm globals in pkglist-npm.txt.
 cp "$in/pkglist-npm.txt" /mnt/var/tmp/
 u "rustup default stable >/dev/null"
+# AUR (Ben 2026-11-05): yay and pam_rssh, each built as ben from exactly its pkglist-aur.txt pin, as bootstrap.sh
+# aur_build_pinned does; their deps are already in the image (go, git, rustup's cargo, openssl, pam).
+# pam_rssh is installed but NOT wired into /etc/pam.d/sudo: bootstrap trusts only touch-required YubiKey keys from the
+# secrets repo, which this image does not have, so sudo stays password-only until that is decided.
+for n in yay pam_rssh; do
+  pin=$(awk -v n=$n '$1 == n {print $2}' "$in/pkglist-aur.txt"); [[ -n $pin ]]
+  u "git clone -q https://aur.archlinux.org/$n.git /var/tmp/aur/$n && cd /var/tmp/aur/$n && git checkout -q $pin && makepkg --noconfirm >/dev/null"
+  f=$(u "cd /var/tmp/aur/$n && makepkg --packagelist" | grep "/$n-[0-9]")
+  c pacman -U --noconfirm "$f"
+done
+rm -rf /mnt/var/tmp/aur /mnt/home/ben/go /mnt/home/ben/.cache/go-build /mnt/home/ben/.cargo/registry /mnt/home/ben/.cargo/git
 u "curl --proto '=https' --tlsv1.2 -sSf https://get-ghcup.haskell.org | BOOTSTRAP_HASKELL_NONINTERACTIVE=1 BOOTSTRAP_HASKELL_INSTALL_NO_STACK=1 sh >/dev/null"
 u "source ~/.nvm/nvm.sh && nvm install $NODE_MAJOR >/dev/null && grep -vE '^\s*(#|$)' /var/tmp/pkglist-npm.txt | awk '{print \$1}' | xargs -r npm install -g --silent"
 rm /mnt/var/tmp/pkglist-npm.txt

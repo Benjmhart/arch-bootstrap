@@ -9,7 +9,7 @@
 # This script logs in on the serial console, runs build-in-guest, and powers off.
 # The guest has user-mode NAT (pacstrap needs a mirror), nothing else of this host.
 #
-# Inputs, none secret: build-in-guest, pkglist-headless.txt, this host's mirrorlist,
+# Inputs, none secret: build-in-guest, pkglist-{headless,cloud,npm,aur}.txt, this host's mirrorlist,
 # a clean clone of this repo's HEAD (never the gitignored bootstrap.conf), the herdr
 # pin read out of bootstrap.sh, and a bare clone of this host's dotfiles (DOTFILES_DIR,
 # default ~/.dot: committed state only, origin set to DOTFILES_REMOTE from bootstrap.conf).
@@ -36,7 +36,7 @@ trap '[[ -n $pid ]] && kill "$pid" 2>/dev/null; rm -rf "$tmp"' EXIT
 
 # ---- the input disk
 mkdir "$tmp/in"
-cp "$here/build-in-guest" "$repo/pkglist-headless.txt" "$repo/pkglist-cloud.txt" "$repo/pkglist-npm.txt" /etc/pacman.d/mirrorlist "$tmp/in/"
+cp "$here/build-in-guest" "$repo/pkglist-headless.txt" "$repo/pkglist-cloud.txt" "$repo/pkglist-npm.txt" "$repo/pkglist-aur.txt" /etc/pacman.d/mirrorlist "$tmp/in/"
 git clone -q --no-local "$repo" "$tmp/arch-bootstrap"
 git -C "$tmp/arch-bootstrap" remote set-url origin https://github.com/Benjmhart/arch-bootstrap
 tar -C "$tmp" -cf "$tmp/in/arch-bootstrap.tar" arch-bootstrap
