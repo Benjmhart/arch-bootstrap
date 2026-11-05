@@ -47,9 +47,11 @@ tar -C "$tmp/dot" -cf "$tmp/in/dotfiles.tar" .dot
 herdr_ver=$(sed -n 's/^ *local ver=\([0-9.]*\) arch sum asset$/\1/p' "$repo/bootstrap.sh")
 herdr_sum=$(sed -n 's/^ *x86_64) .*sum=\([0-9a-f]\{64\}\) ;;$/\1/p' "$repo/bootstrap.sh")
 [[ -n $herdr_ver && -n $herdr_sum ]] || { echo "could not read the herdr pin from bootstrap.sh"; exit 1; }
+node_major=$(sed -n 's/^NODE_MAJOR="${NODE_MAJOR:-\([0-9]*\)}"$/\1/p' "$repo/bootstrap.sh")   # .zshrc puts only this major on PATH
+[[ -n $node_major ]] || { echo "could not read NODE_MAJOR from bootstrap.sh"; exit 1; }
 commit=$(git -C "$repo" log -1 --format=%h)
 [[ -z $(git -C "$repo" status --porcelain) ]] || commit+="+uncommitted"
-printf '%s\n' "BUILD_DEBUG=${BUILD_DEBUG:-}" "HERDR_VER=$herdr_ver" "HERDR_SUM=$herdr_sum" \
+printf '%s\n' "BUILD_DEBUG=${BUILD_DEBUG:-}" "HERDR_VER=$herdr_ver" "HERDR_SUM=$herdr_sum" "NODE_MAJOR=$node_major" \
   "BOOTSTRAP_COMMIT=$commit" > "$tmp/in/build.env"
 tar -cf "$tmp/in.tar" -C "$tmp/in" .
 

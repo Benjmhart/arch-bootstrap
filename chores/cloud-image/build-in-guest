@@ -18,7 +18,7 @@
 set -Eeuo pipefail
 disk=${1:?usage: build-in-guest DISK}
 in=$(dirname "$(readlink -f "$0")")
-. "$in/build.env"      # HERDR_VER HERDR_SUM BOOTSTRAP_COMMIT
+. "$in/build.env"      # HERDR_VER HERDR_SUM NODE_MAJOR BOOTSTRAP_COMMIT
 step() { printf '\n==== %s\n' "$*"; }
 trap 'echo "build-in-guest FAILED at line $LINENO: $BASH_COMMAND"' ERR
 
@@ -166,11 +166,11 @@ u "curl -fsSL https://claude.ai/install.sh | bash"
 # PROFILE=/dev/null: its installer would otherwise append to the dotfiles' .zshrc.
 u "curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | PROFILE=/dev/null bash" >/dev/null
 # Languages (beast-arch 85, Ben 2026-11-04): what bootstrap.sh stage 25 gives a desktop -- rust stable (rustup is in
-# pkglist-cloud), ghcup's ghc + cabal (stack from pacman), node via nvm + the npm globals in pkglist-npm.txt.
+# pkglist-cloud), ghcup's ghc + cabal (stack from pacman), node $NODE_MAJOR via nvm (bootstrap.sh's pin: .zshrc puts only that major on PATH) + the npm globals in pkglist-npm.txt.
 cp "$in/pkglist-npm.txt" /mnt/var/tmp/
 u "rustup default stable >/dev/null"
 u "curl --proto '=https' --tlsv1.2 -sSf https://get-ghcup.haskell.org | BOOTSTRAP_HASKELL_NONINTERACTIVE=1 BOOTSTRAP_HASKELL_INSTALL_NO_STACK=1 sh >/dev/null"
-u "source ~/.nvm/nvm.sh && nvm install --lts >/dev/null && grep -vE '^\s*(#|$)' /var/tmp/pkglist-npm.txt | awk '{print \$1}' | xargs -r npm install -g --silent"
+u "source ~/.nvm/nvm.sh && nvm install $NODE_MAJOR >/dev/null && grep -vE '^\s*(#|$)' /var/tmp/pkglist-npm.txt | awk '{print \$1}' | xargs -r npm install -g --silent"
 rm /mnt/var/tmp/pkglist-npm.txt
 # oh-my-zsh + the plugins .zshrc names: bootstrap.sh install_oh_my_zsh does the same
 # (clone, never upstream's install.sh, which would replace the dotfiles' .zshrc).
