@@ -147,11 +147,14 @@ grep -q '^experimental-features' /mnt/etc/nix/nix.conf || echo 'experimental-fea
 # Arch's package creates no /nix/store, and every client command as ben then fails with 'opening file "/nix/store": No
 # such file or directory' (Hetzner, 2026-11-05). Same owner and mode as beast-arch's.
 c install -d -m 1775 -o root -g nixbld /nix/store
-units=(systemd-networkd systemd-resolved systemd-timesyncd sshd earlyoom tailscaled pacman-init nix-daemon.socket docker)
+# tailscaled is installed but OFF (Ben 2026-11-05: the boxes are inbound-only, "they should not have ssh capabilities to
+# any of the physical devices"): a box never joins the tailnet unless its user-data turns it on (user-data.example).
+units=(systemd-networkd systemd-resolved systemd-timesyncd sshd earlyoom pacman-init nix-daemon.socket docker)
 for u in cloud-init-main cloud-init-local cloud-init-network cloud-init cloud-config cloud-final; do
   [[ -e /mnt/usr/lib/systemd/system/$u.service ]] && units+=("$u")
 done
 c systemctl enable "${units[@]}"
+if c systemctl is-enabled --quiet tailscaled; then echo "tailscaled is enabled in the image"; exit 1; fi
 
 step "user ben"
 c useradd -m -G wheel,docker -s /usr/bin/zsh ben
