@@ -176,7 +176,7 @@ create() {
 
   echo "server $name ($sid, $type $loc) at $ip from snapshot $snap; waiting for its ssh host keys..."
   # The host keys as seen now, pinned from here on (cloud-init makes them before sshd starts; checked again below).
-  hk=""; for _ in $(seq 60); do hk=$(ssh-keyscan -T 5 "$ip" 2>/dev/null | awk 'NF == 3 {print "hostkey", $2, $3}' | sort -u || true); [[ -n $hk ]] && break; sleep 5; done
+  hk=""; for _ in $(seq 60); do hk=$(ssh-keyscan -T 5 "$ip" 2>/dev/null | awk '$1 !~ /^#/ && NF == 3 {print "hostkey", $2, $3}' | sort -u || true); [[ -n $hk ]] && break; sleep 5; done
   [[ -n $hk ]] || die "no ssh host key from $ip in 5 min; server $name ($sid) and volume $vol stay: cloud-box delete $name"
   out=$rec/$name; [[ $(uname -n) == micro ]] && out=$(mktemp)
   mkdir -p "${out%/*}"
@@ -191,7 +191,7 @@ create() {
   ssh_config "$([[ $out == "$rec/$name" ]] || echo "$out")"
   for _ in $(seq 60); do ssh -o BatchMode=yes -o ConnectTimeout=5 -o ForwardAgent=no "$name" true 2>/dev/null && break; sleep 5; done
   ssh -o BatchMode=yes -o ForwardAgent=no "$name" 'cloud-init status --wait >/dev/null; findmnt -no SOURCE,TARGET /nix; findmnt -no SOURCE,TARGET ~/projects' || echo "WARN: ssh $name did not answer yet"
-  [[ $(ssh-keyscan -T 5 "$ip" 2>/dev/null | awk 'NF == 3 {print "hostkey", $2, $3}' | sort -u || true) == "$hk" ]] \
+  [[ $(ssh-keyscan -T 5 "$ip" 2>/dev/null | awk '$1 !~ /^#/ && NF == 3 {print "hostkey", $2, $3}' | sort -u || true) == "$hk" ]] \
     || echo "WARN: $name's host keys changed after create: the pinned ones are wrong; cloud-box delete $name and create again"
   cost || true
   echo "created: server $name ($sid)$( (( created )) && echo ", volume $vol ($vid)")"
