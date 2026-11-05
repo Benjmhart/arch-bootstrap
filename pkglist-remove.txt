@@ -1,6 +1,8 @@
 # Packages taken off every machine by stage 10 (pacman -Rns), one per line.
 # A name here must not also be in another pkglist, or each run installs then removes it.
 gemini-cli
+# antigravity-cli (Google's Antigravity CLI, AUR): unused (Ben 2026-11-05, station-maintenance beast-arch 85).
+antigravity-cli
 # Jellyfin and its cast-target shim, media-center only (2026-10-15): castbox replaced them.
 jellyfin-server
 jellyfin-web

@@ -8,7 +8,6 @@
 # `# only: host[,host]` at a line's end installs it on those machines alone (bootstrap.sh stage 20).
 # ORDER MATTERS: a package depending on another AUR package comes after it (e.g. a lib before the app that needs it).
 # First pins 2026-10-17: the newest version then installed anywhere in the fleet (carbon unreachable).
-antigravity-cli                      f0ea156dce19364e2ae2720464e83d591fda0122
 bemoji                               90ed093966261043a7b0045b8fc0c8f339013e61
 claude-desktop                       ba9899e60c97ddb359d178805eede9e9bfd02151
 dracula-gtk-theme                    3f4c6f263e23a97a63e5be911474541053946456
