@@ -4,17 +4,23 @@
 # (sk) keys may log in, and all they can run is the passphrase prompt: touch the key when it blinks. Works from micro,
 # carbon and beast-arch (tag:unlock's grant). Waits up to 3 minutes for the boot node, so it can be started before the
 # reboot. The initramfs has its own host key, kept as "<host>-initramfs" in known_hosts: trusted on first use.
+# A cloud box (tools/cloud-box; station-maintenance beast-arch 85) is not on the tailnet: its initramfs sshd answers on
+# the box's public address (secrets cloud-box/<host>), and its host key is PINNED from that record
+# (~/.ssh/known_hosts.cloud-box, alias cloud-box-<host>-initramfs), never trusted on first use.
+# For tools/cloud-box create (the box's first boot, before its record exists): UNLOCK_ADDR, UNLOCK_KNOWN_HOSTS,
+# UNLOCK_DISK (the passphrase, typed for you), UNLOCK_KEY (one more key, for a test box only).
 set -euo pipefail
 host=${1:?usage: unlock <host>}
+cbrec=${SECRETS_DIR:-$HOME/secrets}/cloud-box/$host
 keys=()
-for k in "$HOME"/.ssh/id_ed25519_sk_peer_* "$HOME"/.ssh/id_ed25519_sk_unlock_*; do
+for k in "$HOME"/.ssh/id_ed25519_sk_peer_* "$HOME"/.ssh/id_ed25519_sk_unlock_* ${UNLOCK_KEY:-}; do
   [[ -f $k && $k != *.pub ]] && keys+=(-i "$k")
 done
 (( ${#keys[@]} )) || { echo "no YubiKey ssh key here (~/.ssh/id_ed25519_sk_unlock_*): tools/unlock-key makes one"; exit 1; }
 # Touch unlock (tools/unlock-touch-enroll; Ben 2026-11-01): a plugged YubiKey with a credential for <host> derives the
 # disk secret (one touch), and it is typed into the passphrase prompt for you. Without one: type the passphrase.
-disk=""
-if command -v fido2-assert >/dev/null && command -v ykman >/dev/null; then
+disk=${UNLOCK_DISK:-}; unset UNLOCK_DISK
+if [[ -z $disk ]] && command -v fido2-assert >/dev/null && command -v ykman >/dev/null; then
   for s in $(ykman list --serials 2>/dev/null); do
     f=${SECRETS_DIR:-$HOME/secrets}/unlock-touch/$host-$s; [[ -f $f ]] || continue
     read -r rp cred salt <"$f"
@@ -40,12 +46,26 @@ def read(fd):
             os.write(fd, key + b"\r"); state["sent"] = True
     return data
 sys.exit(os.waitstatus_to_exitcode(pty.spawn(sys.argv[1:], read)))'
+run=(); if [[ -n $disk ]]; then export UNLOCK_DISK=$disk; run=(python3 -c "$inject"); fi   # env, not argv: ps shows argv
+if [[ -n ${UNLOCK_ADDR:-} || -f $cbrec ]]; then
+  addr=${UNLOCK_ADDR:-$(awk '$1 == "ipv4" {print $2; exit}' "$cbrec")}
+  echo "waiting for $host's initramfs at $addr ..."
+  for _ in $(seq 90); do
+    if timeout 3 bash -c "</dev/tcp/$addr/22" 2>/dev/null; then
+      echo "connecting to $host's initramfs ($addr): touch your YubiKey when it blinks"
+      exec "${run[@]}" ssh -F /dev/null -t "${keys[@]}" -o IdentitiesOnly=yes -o IdentityAgent=none -o ConnectTimeout=10 \
+        -o HostKeyAlias="cloud-box-$host-initramfs" -o StrictHostKeyChecking=yes \
+        -o UserKnownHostsFile="${UNLOCK_KNOWN_HOSTS:-$HOME/.ssh/known_hosts.cloud-box}" "root@$addr"
+    fi
+    sleep 2
+  done
+  echo "$host ($addr) never answered on :22"; exit 1
+fi
 echo "waiting for $host-boot on the tailnet ..."
 for _ in $(seq 90); do
   addr=$(tailscale ip -4 "$host-boot" 2>/dev/null || true)
   if [[ -n $addr ]] && timeout 3 bash -c "</dev/tcp/$addr/22" 2>/dev/null; then
     echo "connecting to $host-boot ($addr): touch your YubiKey when it blinks"
-    run=(); if [[ -n $disk ]]; then export UNLOCK_DISK=$disk; run=(python3 -c "$inject"); fi   # env, not argv: ps shows argv
     exec "${run[@]}" ssh -F /dev/null -t "${keys[@]}" -o IdentitiesOnly=yes -o IdentityAgent=none \
       -o ConnectTimeout=10 -o HostKeyAlias="$host-initramfs" -o StrictHostKeyChecking=accept-new \
       -o UserKnownHostsFile="$HOME/.ssh/known_hosts" "root@$addr"

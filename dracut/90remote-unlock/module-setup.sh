@@ -9,9 +9,12 @@
 #   wpa_supplicant.conf   only on a machine whose network is Wi-Fi
 # All of it sits in the image on the unencrypted /boot: someone with the disk can read the Wi-Fi psk, run the boot node
 # elsewhere (it can only be connected to) and present the host key. The disk itself still needs the passphrase.
+# Without tailscaled.state (a cloud box, tools/cloud-box; Ben 2026-11-05: boxes are inbound-only, off the tailnet) the
+# initramfs has no tailscale at all and sshd answers on the box's public address. sshd_config here, if present,
+# replaces the module's own (tools/cloud-box writes one only for a test box's plain key, CLOUD_BOX_EXTRA_LOGIN_KEY).
 
 check() {
-    require_binaries ip sshd tailscaled systemd-tty-ask-password-agent || return 1
+    require_binaries ip sshd systemd-tty-ask-password-agent || return 1
     return 255   # only when asked for (add_dracutmodules)
 }
 
@@ -21,7 +24,8 @@ depends() {
 
 install() {
     local c=${REMOTE_UNLOCK_DIR:-/etc/remote-unlock}   # the override is for building a test image as a user
-    local f; for f in tailscaled.state authorized_keys ssh_host_ed25519_key; do
+    local ts=; [[ -e $c/tailscaled.state ]] && ts=1
+    local f; for f in authorized_keys ssh_host_ed25519_key; do
         [[ -r $c/$f ]] || { dfatal "remote-unlock: $c/$f missing"; return 1; }
     done
     # Every network driver this machine uses (hostonly would keep only the disk's), plus what WPA2 needs.
@@ -33,20 +37,23 @@ install() {
     done
     hostonly='' instmods cfg80211 mac80211 ccm gcm ctr cmac
     inst_multiple -o /usr/lib/firmware/regulatory.db /usr/lib/firmware/regulatory.db.p7s
-    inst_multiple ip sleep seq ls cat kill rm true sshd tailscaled systemd-tty-ask-password-agent
+    inst_multiple ip sleep seq ls cat kill rm true sshd systemd-tty-ask-password-agent
     inst_multiple -o /usr/lib/ssh/sshd-session /usr/lib/ssh/sshd-auth wpa_supplicant
-    # Go reads the CA bundle here for TLS to the control server (a symlink into /etc/ca-certificates on Arch).
-    inst_multiple /etc/ssl/certs/ca-certificates.crt "$(readlink -f /etc/ssl/certs/ca-certificates.crt)"
-    printf 'nameserver 1.1.1.1\nnameserver 9.9.9.9\n' > "$initdir/etc/resolv.conf"   # no resolved in here
-
-    /usr/bin/install -D -m 600 "$c/tailscaled.state" "$initdir/etc/remote-unlock/tailscaled.state"
+    if [[ $ts ]]; then
+        inst_multiple tailscaled
+        # Go reads the CA bundle here for TLS to the control server (a symlink into /etc/ca-certificates on Arch).
+        inst_multiple /etc/ssl/certs/ca-certificates.crt "$(readlink -f /etc/ssl/certs/ca-certificates.crt)"
+        printf 'nameserver 1.1.1.1\nnameserver 9.9.9.9\n' > "$initdir/etc/resolv.conf"   # no resolved in here
+        /usr/bin/install -D -m 600 "$c/tailscaled.state" "$initdir/etc/remote-unlock/tailscaled.state"
+    fi
     if [[ -r $c/wpa_supplicant.conf ]]; then
         /usr/bin/install -D -m 600 "$c/wpa_supplicant.conf" "$initdir/etc/remote-unlock/wpa_supplicant.conf"
     fi
     /usr/bin/install -D -m 600 "$c/ssh_host_ed25519_key" "$initdir/etc/ssh/ssh_host_ed25519_key"
     /usr/bin/install -D -m 700 -d "$initdir/root/.ssh"
     /usr/bin/install -m 600 "$c/authorized_keys" "$initdir/root/.ssh/authorized_keys"
-    inst_simple "$moddir/sshd_config" /etc/ssh/sshd_config
+    if [[ -r $c/sshd_config ]]; then inst_simple "$c/sshd_config" /etc/ssh/sshd_config
+    else inst_simple "$moddir/sshd_config" /etc/ssh/sshd_config; fi
     inst_script "$moddir/remote-unlock-wifi" /usr/bin/remote-unlock-wifi
     inst_script "$moddir/unlock-prompt" /usr/bin/unlock-prompt
     local u; for u in remote-unlock-wifi remote-unlock-tailscale remote-unlock-sshd remote-unlock-netclean; do
@@ -59,7 +66,8 @@ install() {
     grep -q '^nobody:' "$initdir/etc/group" 2>/dev/null || grep '^nobody:' /etc/group >> "$initdir/etc/group"
     mkdir -p -m 0755 "$initdir/usr/share/empty.sshd" "$initdir/var/empty" "$initdir/var/log"
 
-    $SYSTEMCTL -q --root "$initdir" enable remote-unlock-tailscale.service remote-unlock-sshd.service remote-unlock-netclean.service
+    $SYSTEMCTL -q --root "$initdir" enable remote-unlock-sshd.service remote-unlock-netclean.service
+    [[ $ts ]] && $SYSTEMCTL -q --root "$initdir" enable remote-unlock-tailscale.service
     if [[ -r $c/wpa_supplicant.conf ]]; then
         $SYSTEMCTL -q --root "$initdir" enable remote-unlock-wifi.service
     fi

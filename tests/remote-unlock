@@ -14,10 +14,12 @@ printf 'network={\n\tssid="Test"\n\tpsk=0000\n}\n' > "$t/conf/wpa_supplicant.con
 echo '{}' > "$t/conf/tailscaled.state"
 ssh-keygen -q -t ed25519 -N '' -f "$t/conf/ssh_host_ed25519_key"
 echo "restrict,pty,command=\"/usr/bin/unlock-prompt\" $(cut -d' ' -f1-2 "$t/conf/ssh_host_ed25519_key.pub")" > "$t/conf/authorized_keys"
+# The running kernel's modules are gone after an upgrade without a reboot (beast-arch, 2026-11-05): use an installed one.
+kver=$(uname -r); [[ -d /usr/lib/modules/$kver ]] || kver=$(ls /usr/lib/modules | sort -V | tail -n1)
 pass=0 fail=0
 ok()  { if eval "$2"; then echo "  ok   $1"; pass=$((pass + 1)); else echo "  FAIL $1"; fail=$((fail + 1)); fi; }
 REMOTE_UNLOCK_DIR=$t/conf dracutbasedir=$t/base dracut --no-hostonly --conf /dev/null --confdir "$t/confdir" --tmpdir "$t" \
-  --force --no-compress -m "systemd systemd-cryptsetup remote-unlock" "$t/img" "$(uname -r)" >"$t/build.log" 2>&1
+  --force --no-compress -m "systemd systemd-cryptsetup remote-unlock" "$t/img" "$kver" >"$t/build.log" 2>&1
 ok "image builds" '[[ -s $t/img ]]' || { tail -20 "$t/build.log"; exit 1; }
 (cd "$t/root" && lsinitrd --unpack "$t/img" >/dev/null 2>&1)
 r=$t/root
@@ -45,4 +47,15 @@ out=$(unshare -r -n -m --propagation private bash -c "mount --rbind /dev '$r/dev
     --statedir=/run/remote-unlock --socket=/run/remote-unlock/tailscaled.sock --port=0 & p=\$!; sleep 3
   kill -0 \$p 2>/dev/null && echo UP; kill \$p 2>/dev/null; wait" 2>&1)
 ok "the image's own tailscaled starts and stays up" '[[ $out == *UP* ]]' || echo "$out" | tail -5 | sed 's/^/       /'
+
+# A cloud box (tools/cloud-box): no tailscaled.state, so no tailscale in the image at all; sshd_config from the inputs
+# replaces the module's (a test box's plain key).
+rm "$t/conf/tailscaled.state" "$t/conf/wpa_supplicant.conf"; printf '# override\nPermitRootLogin forced-commands-only\n' > "$t/conf/sshd_config"
+REMOTE_UNLOCK_DIR=$t/conf dracutbasedir=$t/base dracut --no-hostonly --conf /dev/null --confdir "$t/confdir" --tmpdir "$t" \
+  --force --no-compress -m "systemd systemd-cryptsetup remote-unlock" "$t/img2" "$kver" >"$t/build2.log" 2>&1
+ok "no tailscale state: image builds" '[[ -s $t/img2 ]]' || tail -20 "$t/build2.log"
+r2=$t/root2; mkdir "$r2"; (cd "$r2" && lsinitrd --unpack "$t/img2" >/dev/null 2>&1)
+ok "no tailscale state: no tailscaled, no state, tailscale unit not enabled" "[[ ! -e $r2/usr/bin/tailscaled && ! -e $r2/etc/remote-unlock/tailscaled.state && ! -e $r2/etc/systemd/system/sysinit.target.wants/remote-unlock-tailscale.service ]]"
+ok "no tailscale state: sshd, unlock-prompt, networkd, keys; sshd enabled" "[[ -e $r2/usr/bin/sshd && -x $r2/usr/bin/unlock-prompt && -e $r2/usr/lib/systemd/systemd-networkd && -e $r2/root/.ssh/authorized_keys && -L $r2/etc/systemd/system/sysinit.target.wants/remote-unlock-sshd.service ]]"
+ok "sshd_config from the inputs replaces the module's" "[[ \$(head -1 $r2/etc/ssh/sshd_config) == '# override' ]]"
 echo "$pass passed, $fail failed"; (( fail == 0 ))

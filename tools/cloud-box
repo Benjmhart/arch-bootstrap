@@ -2,7 +2,8 @@
 # cloud-box -- a dev box on Hetzner Cloud from the kept arch-cloud image (station-maintenance beast-arch 85).
 #
 #   cloud-box create NAME [VOLUME]   server NAME from the newest snapshot labelled purpose=arch-cloud, plus the Volume
-#                                    VOLUME (default: NAME), re-attached if it exists, else created (ext4)
+#                                    VOLUME (default: NAME), re-attached if it exists, else created; both encrypted
+#   cloud-box unlock NAME            after a reboot: type NAME's disk passphrase at its initramfs (tools/unlock)
 #   cloud-box delete NAME            the server only; its volume and the data on it stay (and stay billed)
 #   cloud-box delete-volume VOLUME   the volume and everything on it, for good
 #   cloud-box list
@@ -23,7 +24,22 @@
 # YubiKeys (bootstrap.sh setup_yubikey: ssh/fleet/micro-peer-* + ssh/unlock/*; never micro-yubikey-nt-*, never a plain
 # key), sk- lines only: login_keys(). sudo gets them in /etc/sudo-agent-keys.in; the image keeps only sk- lines for
 # pam_rssh. authorized_keys carries no options, so sshd demands the touch flag on every login.
-# CLOUD_BOX_EXTRA_LOGIN_KEY=FILE.pub (tests only): one more login key for this box alone, and create checks with it.
+# CLOUD_BOX_EXTRA_LOGIN_KEY=FILE.pub (tests only): one more login key for this box alone (ssh AND its initramfs unlock),
+# and create checks with it.
+#
+# Disk encryption (Ben 2026-11-05: "go ahead with disk encryption"; "fallback to the existing drive encryption and sudo
+# passwords"). The snapshot is plain; create encrypts each box in Hetzner's rescue system before its first boot:
+# `cryptsetup reencrypt --encrypt` of the root partition (LUKS2, a NEW volume key per box, so boxes from one snapshot
+# share no key) and a fresh LUKS2 volume, or, re-attached, the volume's own LUKS with a new keyfile slot. Root is
+# unlocked at every boot; the volume then opens by itself (/etc/cryptsetup-keys.d/data.key on the encrypted root,
+# volume key slot 1; slot 0 is the passphrase, the way back in without the root). The passphrase is asked for at create
+# (stdin when it is not a terminal: tests), sent to the rescue system over ssh, and kept nowhere. To unlock:
+#   cloud-box unlock NAME   ssh to the initramfs's own sshd on the box's public address (no tailnet; dracut
+#                           90remote-unlock): YubiKey sk keys only, forced command = the passphrase prompt; host key
+#                           made here at create and PINNED (record `initramfs-hostkey`, alias NAME-initramfs).
+#   touch instead of typing: tools/unlock-touch-enroll NAME (beast-arch or carbon, one YubiKey plugged in; once per key).
+#   Hetzner web console:    the passphrase prompt is on its screen (console=tty0 last), typed there.
+# Only a volume labelled disk=luks2 (made by this tool since 2026-11-06) is re-attached: a plain one is refused.
 # Record: create writes secrets cloud-box/NAME (name, ipv4, server, volume, the box's ssh host keys as seen at create)
 # and commits + pushes it; delete removes it. Only that path is committed, never the vault. micro never commits to
 # secrets: there the record is printed, to be committed from beast-arch or carbon.
@@ -36,7 +52,7 @@
 set -euo pipefail
 S=${SECRETS_DIR:-$HOME/secrets} rec=${SECRETS_DIR:-$HOME/secrets}/cloud-box
 type=${HZ_TYPE:-cx23} loc=${HZ_LOC:-nbg1} gb=${CLOUD_BOX_VOLUME_GB:-100}
-cfg=$HOME/.ssh/config kh=$HOME/.ssh/known_hosts.cloud-box
+cfg=$HOME/.ssh/config kh=$HOME/.ssh/known_hosts.cloud-box here=$(dirname "$(readlink -f "$0")")
 # THE login (and sudo) key set of every box: touch-required YubiKey sk keys only. Fails if there are none.
 login_keys() {
   local f out=""
@@ -88,7 +104,7 @@ field() { awk -v k="$1" '$1 == k {print $2; exit}' "$2"; }
 # ~/.ssh/config: every `# >>> cloud-box` block out, one per record in (at the end); $kh: exactly the records' host keys.
 # Extra arguments are record files counted for this run only (micro's, before it is in secrets).
 ssh_config() {
-  local dry=0 f n ip k blocks="" keys="" names=() old cur rest want ids=""
+  local dry=0 f n ip k ik blocks="" keys="" names=() old cur rest want ids=""
   for f in "$HOME"/.ssh/id_ed25519_sk_peer_* "$HOME"/.ssh/id_ed25519_sk_unlock_*; do
     [[ -f $f && $f != *.pub ]] && ids+="    IdentityFile ~/.ssh/${f##*/}"$'\n'; done
   [[ ${1:-} == --dry-run ]] && { dry=1; shift; }
@@ -99,7 +115,9 @@ ssh_config() {
     if [[ ! $n =~ ^[a-z][a-z0-9-]{0,40}$ || ! $ip =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ || -z $k ]]; then
       echo "cloud-box: skipped $f: needs name, ipv4 and at least one hostkey" >&2; continue; fi
     [[ " ${names[*]} " == *" $n "* ]] && continue
-    names+=("$n") keys+=$k$'\n'
+    # The initramfs's own sshd (disk unlock), same address, its own pinned key: Host NAME-initramfs.
+    ik=$(awk -v a="cloud-box-$n-initramfs" '$1 == "initramfs-hostkey" && $2 == "ssh-ed25519" && $3 ~ /^[A-Za-z0-9+\/=]+$/ {print a, $2, $3; exit}' "$f")
+    names+=("$n") keys+=$k$'\n'; [[ -n $ik ]] && keys+=$ik$'\n'
     blocks+="# >>> cloud-box $n (arch-bootstrap tools/cloud-box, from secrets cloud-box/$n)
 Host $n
     HostName $ip
@@ -112,6 +130,16 @@ ${ids:-    # no YubiKey handle here (~/.ssh/id_ed25519_sk_*): tools/unlock-key m
 "
     # shellcheck disable=SC2016
     [[ -f $HOME/.config/systemd/user/ssh-sudo-agent.service ]] && blocks+='    ForwardAgent ${XDG_RUNTIME_DIR}/ssh-sudo-agent.sock'$'\n'
+    [[ -n $ik ]] && blocks+="Host $n-initramfs
+    HostName $ip
+    User root
+    HostKeyAlias cloud-box-$n-initramfs
+    UserKnownHostsFile $kh
+    StrictHostKeyChecking yes
+${ids}    IdentitiesOnly yes
+    ForwardAgent no
+    RequestTTY yes
+"
     blocks+="# <<< cloud-box $n"$'\n'
   done
   [[ $(grep -c '^# >>> cloud-box ' "$cfg" 2>/dev/null) == "$(grep -c '^# <<< cloud-box ' "$cfg" 2>/dev/null)" ]] \
@@ -144,8 +172,80 @@ cost() {   # monthly gross EUR, from the API
     | "cost: server \($t) \($l) \($s*100|round/100) EUR/month (billed hourly while it exists, running or not); volume \($gb) GB \($v*$gb*100|round/100) EUR/month until deleted (\($p.currency), gross)"'
 }
 
+# Runs as root in Hetzner's rescue system (Debian, RAM only), from create, before the box's first boot. Inputs in
+# /root/cb (0700): pass (the disk passphrase, no newline), volpass (the volume's), ssh_host_ed25519_key, authorized_keys,
+# sshd_config (test boxes only). $1 = the volume's device, $2 = new|reattach. Exit 3: the volume passphrase is wrong.
+# The volume goes first: when it cannot be opened, nothing has been changed yet.
+# shellcheck disable=SC2016
+rescue_sh='set -euo pipefail
+in=/root/cb vol=$1 mode=$2 m=/mnt/cb
+trap "echo rescue: FAILED at line \$LINENO" ERR
+for c in cryptsetup sfdisk partx resize2fs e2fsck blkid chroot; do command -v $c >/dev/null || { echo "rescue: no $c"; exit 1; }; done
+echo "rescue: $(cryptsetup --version)"
+root=$(blkid -L root) boot=$(blkid -L boot)
+disk=/dev/$(lsblk -no PKNAME "$root") part=$(cat "/sys/class/block/${root#/dev/}/partition")
+[ "$(blkid -o value -s TYPE "$root")" = ext4 ] || { echo "rescue: $root is not the plain ext4 root of the image"; exit 1; }
+for _ in $(seq 30); do [ -e "$vol" ] && break; sleep 1; done
+key=$in/data.key; head -c 64 /dev/urandom > "$key"
+if [ "$mode" = new ]; then
+  cryptsetup luksFormat -q --type luks2 --label cloud-box-data --key-file "$in/pass" "$vol"
+  cryptsetup luksAddKey -q --key-file "$in/pass" -S 1 "$vol" "$key"
+  cryptsetup open --key-file "$key" "$vol" cbdata; mkfs.ext4 -q -L data /dev/mapper/cbdata; cryptsetup close cbdata
+  echo "rescue: volume encrypted (LUKS2; slot 0 passphrase, slot 1 this box)"
+else
+  [ "$(blkid -o value -s TYPE "$vol")" = crypto_LUKS ] || { echo "rescue: the volume is not LUKS"; exit 1; }
+  s=$(cryptsetup open --test-passphrase -v --key-file "$in/volpass" "$vol" 2>&1 | sed -n "s/^Key slot \([0-9]*\) unlocked.*/\1/p" || true)
+  [ -n "$s" ] || { echo "rescue: that passphrase does not open the volume"; exit 3; }
+  [ "$s" != 1 ] || { echo "rescue: the passphrase is in slot 1, where the box keyfile goes; not touching it"; exit 1; }
+  # Slot 1 held the old box keyfile, which went with that box root disk.
+  cryptsetup luksKillSlot -q --key-file "$in/volpass" "$vol" 1 2>/dev/null || true
+  cryptsetup luksAddKey -q --key-file "$in/volpass" -S 1 "$vol" "$key"
+  echo "rescue: volume re-attached (its passphrase opened slot $s; slot 1 is now this box)"
+fi
+echo "rescue: encrypting $root ($(( $(blockdev --getsize64 "$root") >> 20 )) MiB) in place"
+e2fsck -fp "$root" || [ $? -le 1 ]
+resize2fs "$root" "$(( $(blockdev --getsize64 "$root") / 1024 - 32768 ))K"
+cryptsetup reencrypt -q --encrypt --type luks2 --label cloud-box-root --reduce-device-size 32M --key-file "$in/pass" "$root"
+# The image is 24 GiB; the disk is bigger. Grown here, not by cloud-init (user-data turns growpart off).
+sfdisk -q --relocate gpt-bak-std "$disk"; echo ", +" | sfdisk -q --no-reread -N "$part" "$disk"; partx -u "$disk"
+cryptsetup open --key-file "$in/pass" "$root" root; resize2fs /dev/mapper/root
+luuid=$(cryptsetup luksUUID "$root") vuuid=$(cryptsetup luksUUID "$vol")
+mkdir -p $m; mount /dev/mapper/root $m; mount "$boot" $m/boot
+install -d -m 700 $m/etc/cryptsetup-keys.d $m/etc/remote-unlock
+install -m 600 "$key" $m/etc/cryptsetup-keys.d/data.key
+touch $m/etc/crypttab; sed -i "/^data /d" $m/etc/crypttab; echo "data UUID=$vuuid /etc/cryptsetup-keys.d/data.key luks,discard,nofail" >> $m/etc/crypttab
+for f in ssh_host_ed25519_key authorized_keys sshd_config; do [ ! -e "$in/$f" ] || install -m 600 "$in/$f" "$m/etc/remote-unlock/$f"; done
+echo "add_dracutmodules+=\" remote-unlock \"" > $m/etc/dracut.conf.d/remote-unlock.conf
+# tty0 LAST: /dev/console, where systemd asks for the passphrase, is then the screen of the Hetzner web console.
+sed -i -e "s|^GRUB_CMDLINE_LINUX=.*|GRUB_CMDLINE_LINUX=\"rd.luks.name=$luuid=root rd.luks.options=discard\"|" \
+  -e "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"console=ttyS0,115200 console=tty0\"|" $m/etc/default/grub
+for d in dev proc sys run; do mount --rbind /$d $m/$d; mount --make-rslave $m/$d; done
+kver=$(ls $m/usr/lib/modules | sort -V | tail -n1)
+chroot $m dracut -q --force /boot/initramfs-linux.img --kver "$kver"
+chroot $m grub-mkconfig -o /boot/grub/grub.cfg 2>&1 | grep -iE "error|warn" || true
+grep -q "rd.luks.name=$luuid=root" $m/boot/grub/grub.cfg
+l=$(chroot $m lsinitrd /boot/initramfs-linux.img)
+{ grep -q "usr/bin/unlock-prompt$" <<<"$l" && grep -q "root/.ssh/authorized_keys$" <<<"$l" && ! grep -q "usr/bin/tailscaled$" <<<"$l"; } \
+  || { echo "rescue: the new initramfs lacks the unlock sshd (or has tailscale)"; exit 1; }
+echo "rescue: initramfs $(du -h $m/boot/initramfs-linux.img | cut -f1) with the unlock sshd, no tailscale; grub.cfg unlocks $luuid"
+umount -R $m; cryptsetup close root; rm -rf "$in"; sync
+echo "rescue: done"'
+
+ask_pass() {   # PROMPT [confirm]: the passphrase on stdout; from the terminal, or one line of stdin if that is no terminal (tests)
+  local a b
+  if [[ -t 0 ]]; then
+    IFS= read -rsp "$1: " a; echo >&2
+    if [[ ${2:-} == confirm ]]; then IFS= read -rsp "again: " b; echo >&2; [[ $a == "$b" ]] || die "the two passphrases differ"; fi
+  else IFS= read -r a || true; fi
+  printf '%s' "$a"
+}
+
+ct="" rkid=""
+create_cleanup() { [[ -n $ct ]] && rm -rf "$ct"; [[ -n $rkid ]] && api DELETE "ssh_keys/$rkid" >/dev/null; return 0; }
+
 create() {
-  local name=$1 vol=${2:-$1} snap v vid created=0 login sudo chk hash ud r sid ip dev hk out
+  local name=$1 vol=${2:-$1} snap v vid created=0 mode=new login sudo chk hash ud r sid ip dev hk ik out pass volpass rc p
+  local extra=${CLOUD_BOX_EXTRA_LOGIN_KEY:-} R
   name_ok "$name"; name_ok "$vol"
   [[ -z $(server_json "$name") ]] || die "a server named $name exists"
   if grep -qx "Host $name" "$cfg" 2>/dev/null && ! grep -q "^# >>> cloud-box $name " "$cfg"; then die "~/.ssh/config already has 'Host $name' -- pick another name"; fi
@@ -153,15 +253,16 @@ create() {
     git -C "$S" pull -q --ff-only || die "could not fast-forward $S (where the box's record goes); nothing created"
     [[ ! -e $rec/$name ]] || die "secrets has a record cloud-box/$name already: cloud-box delete $name first"
   fi
-  snap=$(api GET 'images?type=snapshot&label_selector=purpose%3Darch-cloud&sort=created:desc' | jq -r '.images[0].id // empty')
+  # CLOUD_BOX_SNAPSHOT (tests): a snapshot id to use instead of the newest purpose=arch-cloud one.
+  snap=${CLOUD_BOX_SNAPSHOT:-$(api GET 'images?type=snapshot&label_selector=purpose%3Darch-cloud&sort=created:desc' | jq -r '.images[0].id // empty')}
   [[ -n $snap ]] || die "no snapshot labelled purpose=arch-cloud"
 
   sudo=$(login_keys) || die "no YubiKey keys to log in with; nothing created"
   login=$sudo chk=(ssh -o BatchMode=yes -o ConnectTimeout=10 -o ForwardAgent=no)
-  echo "login and sudo: $(grep -c . <<<"$sudo") YubiKey sk keys (touch required)"
-  if [[ -n ${CLOUD_BOX_EXTRA_LOGIN_KEY:-} ]]; then
-    login+=$'\n'$(head -1 "$CLOUD_BOX_EXTRA_LOGIN_KEY") chk+=(-i "${CLOUD_BOX_EXTRA_LOGIN_KEY%.pub}")
-    echo "TEST: $CLOUD_BOX_EXTRA_LOGIN_KEY may log in to $name too (CLOUD_BOX_EXTRA_LOGIN_KEY)"
+  echo "login, sudo and disk unlock: $(grep -c . <<<"$sudo") YubiKey sk keys (touch required)"
+  if [[ -n $extra ]]; then
+    login+=$'\n'$(head -1 "$extra") chk+=(-i "${extra%.pub}")
+    echo "TEST: $extra may log in to $name and unlock its disk too (CLOUD_BOX_EXTRA_LOGIN_KEY)"
   fi
   hash=${CLOUD_BOX_PASSWORD_HASH:-}
   [[ -n $hash ]] || { echo "ben's sudo password on $name:"; hash=$(openssl passwd -6); }
@@ -170,37 +271,88 @@ create() {
   v=$(volume_json "$vol")
   if [[ -n $v ]]; then
     ours <<<"$v" || die "volume $vol exists but is not labelled purpose=cloud-box -- not touching it"
+    [[ $(jq -r .labels.disk <<<"$v") == luks2 ]] \
+      || die "volume $vol is not encrypted (no label disk=luks2: made before 2026-11-06), and an encrypted box does not take a plain volume. Copy its data off and delete it (cloud-box delete-volume $vol), or give another VOLUME"
     [[ $(jq -r .location.name <<<"$v") == "$loc" ]] || die "volume $vol is in $(jq -r .location.name <<<"$v"), not $loc (HZ_LOC)"
     [[ $(jq -r .server <<<"$v") == null ]] || die "volume $vol is attached to server $(jq -r .server <<<"$v")"
-    vid=$(jq -r .id <<<"$v"); echo "re-attaching volume $vol ($vid, $(jq -r .size <<<"$v") GB)"
+    mode=reattach
+  fi
+  # The passphrases, before anything is made. Kept in memory and, for the rescue system, in a 0700 dir on tmpfs.
+  pass=$(ask_pass "disk passphrase for $name (typed at each boot, here or in the web console)" confirm)
+  (( ${#pass} >= 8 )) || die "the disk passphrase must have 8 characters or more; nothing created"
+  volpass=$pass
+  if [[ $mode == reattach ]]; then p=$(ask_pass "passphrase of the volume $vol (Enter: the same)"); [[ -z $p ]] || volpass=$p; fi
+
+  if [[ $mode == reattach ]]; then
+    vid=$(jq -r .id <<<"$v"); echo "re-attaching encrypted volume $vol ($vid, $(jq -r .size <<<"$v") GB)"
   else
-    r=$(api POST volumes -d "$(jq -n --arg n "$vol" --arg l "$loc" --argjson s "$gb" '{name:$n,size:$s,location:$l,format:"ext4",labels:{purpose:"cloud-box"}}')")
+    r=$(api POST volumes -d "$(jq -n --arg n "$vol" --arg l "$loc" --argjson s "$gb" '{name:$n,size:$s,location:$l,labels:{purpose:"cloud-box",disk:"luks2"}}')")
     vid=$(jq -r '.volume.id // empty' <<<"$r"); [[ -n $vid ]] || die "volume create: $(jq -c .error <<<"$r")"
-    wait_action "$(jq -r .action.id <<<"$r")"; created=1; echo "created volume $vol ($vid, $gb GB, ext4)"
+    wait_action "$(jq -r .action.id <<<"$r")"; created=1; echo "created volume $vol ($vid, $gb GB; encrypted in the rescue system)"
   fi
   dev=$(api GET "volumes/$vid" | jq -r .volume.linux_device)
 
-  ud="#cloud-config"$'\n'$(jq -n --arg h "$name" --arg login "$login" --arg pw "$hash" --arg sudo "$sudo" --arg sh "$volume_sh" --arg dev "$dev" '{
+  trap create_cleanup EXIT
+  ct=$(umask 077; mktemp -d -p "${XDG_RUNTIME_DIR:-/tmp}"); mkdir -m 700 "$ct/in"
+  printf '%s' "$pass" > "$ct/in/pass"; printf '%s' "$volpass" > "$ct/in/volpass"
+  # The initramfs host key is made HERE, so the client pins it before the box ever boots (no trust on first use).
+  ssh-keygen -q -t ed25519 -N '' -C "$name-initramfs" -f "$ct/in/ssh_host_ed25519_key"
+  ik=$(cut -d' ' -f1-2 "$ct/in/ssh_host_ed25519_key.pub"); rm "$ct/in/ssh_host_ed25519_key.pub"
+  # As bootstrap.sh setup_remote_unlock: touch required (no no-touch-required option), the prompt is all they can run.
+  sed 's|^|restrict,pty,command="/usr/bin/unlock-prompt" |' <<<"$(cut -d' ' -f1-2 <<<"$login")" > "$ct/in/authorized_keys"
+  if [[ -n $extra ]]; then   # a test box: its initramfs also takes the plain test key (sshd takes sk keys only otherwise)
+    sed 's/^PubkeyAcceptedAlgorithms .*/&,ssh-ed25519/' "$here/../dracut/90remote-unlock/sshd_config" > "$ct/in/sshd_config"
+  fi
+  ssh-keygen -q -t ed25519 -N '' -C "cloud-box-rescue-$name" -f "$ct/rk"
+  rkid=$(api POST ssh_keys -d "$(jq -n --arg n "cloud-box-rescue-$name" --arg k "$(cat "$ct/rk.pub")" '{name:$n,public_key:$k,labels:{purpose:"cloud-box"}}')" | jq -r '.ssh_key.id // empty')
+  [[ -n $rkid ]] || die "could not add the temporary rescue ssh key"
+
+  ud="#cloud-config"$'\n'$(jq -n --arg h "$name" --arg login "$login" --arg pw "$hash" --arg sudo "$sudo" --arg sh "$volume_sh" '{
     hostname: $h,
     ssh_authorized_keys: ($login | split("\n") | map(select(length > 0))),
     chpasswd: {expire: false, users: [{name: "ben", type: "hash", password: $pw}]},
     write_files: [{path: "/etc/sudo-agent-keys.in", permissions: "0644", owner: "root:root", content: $sudo}],
-    bootcmd: [["sh", "-c", $sh, "cloud-box", $dev]]}')
+    growpart: {mode: "off"}, resize_rootfs: false,
+    bootcmd: [["sh", "-c", $sh, "cloud-box", "/dev/mapper/data"]]}')
   r=$(api POST servers -d "$(jq -n --arg n "$name" --arg t "$type" --arg l "$loc" --argjson i "$snap" --arg u "$ud" --argjson v "$vid" \
-    '{name:$n,server_type:$t,location:$l,image:$i,user_data:$u,volumes:[$v],automount:false,labels:{purpose:"cloud-box"}}')")
+    '{name:$n,server_type:$t,location:$l,image:$i,user_data:$u,volumes:[$v],automount:false,start_after_create:false,labels:{purpose:"cloud-box"}}')")
   sid=$(jq -r '.server.id // empty' <<<"$r")
   [[ -n $sid ]] || { (( created )) && echo "the new volume $vol stays: cloud-box delete-volume $vol"; die "server create: $(jq -c .error <<<"$r")"; }
   wait_action "$(jq -r .action.id <<<"$r")"
   ip=$(api GET "servers/$sid" | jq -r .server.public_net.ipv4.ip)
+  echo "server $name ($sid, $type $loc) at $ip from snapshot $snap; encrypting it in the rescue system..."
+  wait_action "$(api POST "servers/$sid/actions/enable_rescue" -d "{\"type\":\"linux64\",\"ssh_keys\":[$rkid]}" | jq -r .action.id)"
+  wait_action "$(api POST "servers/$sid/actions/poweron" | jq -r .action.id)"
+  # The rescue system's host key is new on every boot and published nowhere: not checked (it sees the passphrase once).
+  R=(ssh -i "$ct/rk" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -o BatchMode=yes -o LogLevel=ERROR "root@$ip")
+  for _ in $(seq 60); do "${R[@]}" true </dev/null 2>/dev/null && break; sleep 5; done
+  api DELETE "ssh_keys/$rkid" >/dev/null; rkid=""
+  tar -C "$ct/in" -c . | "${R[@]}" 'umask 077; rm -rf /root/cb; mkdir /root/cb; tar -x -C /root/cb' \
+    || die "could not reach $name's rescue system; server $name ($sid) stays: cloud-box delete $name"
+  rm -rf "$ct/in"
+  rc=0; "${R[@]}" bash -s -- "$dev" "$mode" <<<"$rescue_sh" || rc=$?
+  if (( rc )); then
+    (( rc == 3 )) && echo "the passphrase given for the volume $vol does not open it"
+    die "encrypting $name failed (rescue rc $rc); server $name ($sid) stays in the rescue system: cloud-box delete $name"
+  fi
+  # Nothing is mounted in the rescue system now: a power cycle is safe, and boots the disk (rescue is one boot only).
+  wait_action "$(api POST "servers/$sid/actions/poweroff" | jq -r .action.id)"
+  wait_action "$(api POST "servers/$sid/actions/poweron" | jq -r .action.id)"
+  printf 'cloud-box-%s-initramfs %s\n' "$name" "$ik" > "$ct/kh"
+  echo "first boot of $name: unlocking its disk (the passphrase is typed for you)"
+  UNLOCK_ADDR=$ip UNLOCK_KNOWN_HOSTS=$ct/kh UNLOCK_DISK=$pass UNLOCK_KEY=${extra%.pub} "$here/unlock" "$name" \
+    || echo "WARN: the unlock session ended with an error; checking whether $name came up anyway"
+  unset pass volpass
 
-  echo "server $name ($sid, $type $loc) at $ip from snapshot $snap; waiting for its ssh host keys..."
+  echo "waiting for $name's own ssh host keys..."
   # The host keys as seen now, pinned from here on (cloud-init makes them before sshd starts; checked again below).
-  hk=""; for _ in $(seq 60); do hk=$(ssh-keyscan -T 5 "$ip" 2>/dev/null | awk '$1 !~ /^#/ && NF == 3 {print "hostkey", $2, $3}' | sort -u || true); [[ -n $hk ]] && break; sleep 5; done
-  [[ -n $hk ]] || die "no ssh host key from $ip in 5 min; server $name ($sid) and volume $vol stay: cloud-box delete $name"
+  # The initramfs's key is not one of them: it may still answer for a moment after the unlock.
+  hk=""; for _ in $(seq 60); do hk=$(ssh-keyscan -T 5 "$ip" 2>/dev/null | awk '$1 !~ /^#/ && NF == 3 {print "hostkey", $2, $3}' | sort -u | grep -vxF "hostkey $ik" || true); [[ -n $hk ]] && break; sleep 5; done
+  [[ -n $hk ]] || die "no ssh host key from $ip in 5 min (still at its disk prompt? cloud-box unlock needs its record); server $name ($sid) and volume $vol stay: cloud-box delete $name"
   out=$rec/$name; [[ $(uname -n) == micro ]] && out=$(mktemp)
   mkdir -p "${out%/*}"
   printf '%s\n' "# cloud-box record (arch-bootstrap tools/cloud-box). bootstrap.sh stage services writes ~/.ssh/config from it." \
-    "name $name" "ipv4 $ip" "server $sid" "volume $vol" "created $(date -u +%FT%TZ) on $(uname -n)" "$hk" > "$out"
+    "name $name" "ipv4 $ip" "server $sid" "volume $vol" "created $(date -u +%FT%TZ) on $(uname -n)" "$hk" "initramfs-hostkey $ik" > "$out"
   if [[ $(uname -n) == micro ]]; then
     echo "micro never commits to secrets: commit this as secrets cloud-box/$name from beast-arch or carbon (until then only this machine knows the box, and the next fpush here drops its block):"
     sed 's/^/    /' "$out"
@@ -210,13 +362,15 @@ create() {
   ssh_config "$([[ $out == "$rec/$name" ]] || echo "$out")"
   # sshd answered the keyscan, so cloud-init has put the keys in: one login, one touch (a few tries in case it is slow).
   echo "checking $name over ssh: touch your YubiKey when it blinks"
-  for _ in 1 2 3; do "${chk[@]}" "$name" 'cloud-init status --wait >/dev/null; findmnt -no SOURCE,TARGET /nix; findmnt -no SOURCE,TARGET ~/projects' && break
+  for _ in 1 2 3; do "${chk[@]}" "$name" 'cloud-init status --wait >/dev/null; findmnt -no SOURCE,TARGET /; findmnt -no SOURCE,TARGET /nix; findmnt -no SOURCE,TARGET ~/projects' </dev/null && break
     echo "WARN: ssh $name failed (no YubiKey plugged in, or no touch?)"; sleep 5; done
   [[ $(ssh-keyscan -T 5 "$ip" 2>/dev/null | awk '$1 !~ /^#/ && NF == 3 {print "hostkey", $2, $3}' | sort -u || true) == "$hk" ]] \
     || echo "WARN: $name's host keys changed after create: the pinned ones are wrong; cloud-box delete $name and create again"
   cost || true
-  echo "created: server $name ($sid)$( (( created )) && echo ", volume $vol ($vid)")"
+  echo "created: server $name ($sid)$( (( created )) && echo ", volume $vol ($vid)"), root and volume encrypted (LUKS2)"
   echo "use:     ssh $name"
+  echo "reboot:  cloud-box unlock $name    (or type the passphrase in the Hetzner web console)"
+  echo "touch:   tools/unlock-touch-enroll $name   (beast-arch or carbon, one YubiKey plugged in; once per YubiKey)"
   echo "delete:  cloud-box delete $name          (server only; volume $vol and its data stay, billed)"
   echo "         cloud-box delete-volume $vol    (the data, for good)"
 }
@@ -227,7 +381,14 @@ delete() {
   ours <<<"$s" || die "server $name is not labelled purpose=cloud-box -- not touching it"
   # Shut down first: a delete is a power cut, and writes still in the page cache never reach the volume. Deleting
   # right after writing left a 0-byte file in ~/projects and 0-byte nix store files the nix db called valid (2026-11-05).
-  local id st; id=$(jq -r .id <<<"$s")
+  local id st ik ip; id=$(jq -r .id <<<"$s") ip=$(jq -r .public_net.ipv4.ip <<<"$s")
+  # Waiting at its disk prompt (its initramfs answers ssh, with the key pinned at create): nothing is mounted, and the
+  # initramfs does not act on the ACPI shutdown, so a power-off is safe and the only way.
+  ik=$(awk '$1 == "initramfs-hostkey" {print $2, $3; exit}' "$rec/$name" 2>/dev/null || true)
+  if [[ -n $ik && $(jq -r .status <<<"$s") == running && $(ssh-keyscan -T 5 -t ed25519 "$ip" 2>/dev/null | awk '$1 !~ /^#/ {print $2, $3}') == "$ik" ]]; then
+    echo "$name waits at its disk prompt (nothing mounted): powering it off"
+    wait_action "$(api POST "servers/$id/actions/poweroff" | jq -r .action.id)"; s=$(api GET "servers/$id" | jq -c .server)
+  fi
   if [[ $(jq -r .status <<<"$s") != off ]]; then
     echo "shutting down $name..."; api POST "servers/$id/actions/shutdown" >/dev/null
     for _ in $(seq 60); do st=$(api GET "servers/$id" | jq -r .server.status); [[ $st == off ]] && break; sleep 3; done
@@ -261,10 +422,11 @@ list() {
 
 case ${1:-} in
   create) create "${2:?usage: cloud-box create NAME [VOLUME]}" "${3:-}" ;;
+  unlock) exec "$here/unlock" "${2:?usage: cloud-box unlock NAME}" ;;
   delete) delete "${2:?usage: cloud-box delete NAME}" ;;
   delete-volume) delete_volume "${2:?usage: cloud-box delete-volume VOLUME}" ;;
   list) list ;;
   ssh-config) shift; ssh_config "$@" ;;
   login-keys) login_keys ;;
-  *) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

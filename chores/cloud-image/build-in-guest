@@ -5,11 +5,13 @@
 #
 # Builds a headless Arch on DISK that boots on BIOS and UEFI, on any KVM/Xen/Nitro
 # cloud, and takes its identity from cloud-init at first boot:
-#   GPT: 1 MiB BIOS-boot | 256 MiB ESP (/efi) | ext4 / (last, so growpart can grow it)
+#   GPT: 1 MiB BIOS-boot | 256 MiB ESP (/efi) | 1 GiB ext4 /boot | ext4 / (last, so growpart can grow it). /boot is
+#   its own partition so tools/cloud-box can encrypt / and GRUB still reads the kernel (beast-arch 85, 2026-11-06).
 #   GRUB for i386-pc AND x86_64-efi --removable (EFI/BOOT/BOOTX64.EFI: no NVRAM entry
 #   needed, which an uploaded image never has); console on tty0 and ttyS0.
-#   Initramfs WITHOUT autodetect: built in a virtio VM, autodetect would keep only
-#   virtio and the image would not find its root on AWS Nitro (NVMe) or Xen.
+#   Initramfs by dracut (the fleet's tool; its pacman hook rebuilds it on kernel updates), NOT host-only: built in a
+#   virtio VM, a host-only image would keep only virtio and not find its root on AWS Nitro (NVMe) or Xen. The
+#   remote-unlock module is installed but off until tools/cloud-box encrypts a box.
 #   User `ben` (locked password until user-data sets one; zsh; wheel; sudo asks for it) with the dotfiles checked out, herdr and
 #   claude in ~/.local/bin, arch-bootstrap in ~/projects. cloud-init's default_user is
 #   ben, so the provider's SSH key lands in ~ben/.ssh/authorized_keys.
@@ -33,17 +35,20 @@ sfdisk -q --wipe always "$disk" <<EOF
 label: gpt
 size=1MiB, type=21686148-6449-6E6F-744E-656564454649
 size=256MiB, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B
+size=1GiB, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4
 type=4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709
 EOF
 udevadm settle
 mkfs.fat -F32 -n EFI "${disk}2" >/dev/null
-mkfs.ext4 -q -L root "${disk}3"
-mount "${disk}3" /mnt
+mkfs.ext4 -q -L boot "${disk}3"
+mkfs.ext4 -q -L root "${disk}4"
+mount "${disk}4" /mnt
+mount --mkdir "${disk}3" /mnt/boot
 mount --mkdir "${disk}2" /mnt/efi
 
 step "pacstrap"
 mapfile -t pkgs < <(grep -hv '^\s*#' "$in/pkglist-headless.txt" "$in/pkglist-cloud.txt" | awk 'NF {print $1}')
-pacstrap -K /mnt base linux grub efibootmgr sudo cloud-init cloud-guest-utils "${pkgs[@]}"
+pacstrap -K /mnt base linux dracut grub efibootmgr sudo cloud-init cloud-guest-utils "${pkgs[@]}"
 genfstab -U /mnt >> /mnt/etc/fstab
 rm -rf /mnt/var/cache/pacman/pkg/*                      # ~600 MiB of downloads, before the languages go on
 df -h /mnt | tail -1
@@ -54,10 +59,17 @@ ln -sf /usr/share/zoneinfo/UTC /mnt/etc/localtime
 sed -i 's/^#en_US.UTF-8/en_US.UTF-8/' /mnt/etc/locale.gen; c locale-gen >/dev/null
 echo LANG=en_US.UTF-8 > /mnt/etc/locale.conf
 
-sed -i 's/^HOOKS=(\(.*\)autodetect \(.*\))/HOOKS=(\1\2)/' /mnt/etc/mkinitcpio.conf
-sed -i "s/^PRESETS=.*/PRESETS=('default')/" /mnt/etc/mkinitcpio.d/linux.preset
-rm -f /mnt/boot/initramfs-linux-fallback.img
-c mkinitcpio -P
+if c pacman -Q mkinitcpio >/dev/null 2>&1; then echo "mkinitcpio is installed: its hook would overwrite dracut's image"; exit 1; fi
+printf '%s\n' '# Written by arch-bootstrap chores/cloud-image: any cloud, not just the build VM; LUKS ready (tools/cloud-box).' \
+  'hostonly="no"' 'compress="zstd"' 'add_dracutmodules+=" crypt "' > /mnt/etc/dracut.conf.d/cloud.conf
+# The fleet's remote-unlock module, from this commit (tools/cloud-box turns it on per box, with that box's keys).
+mkdir -p /mnt/usr/lib/dracut/modules.d
+tar -xf "$in/arch-bootstrap.tar" --no-same-owner -C /mnt/usr/lib/dracut/modules.d --strip-components=2 arch-bootstrap/dracut/90remote-unlock
+kver=$(ls /mnt/usr/lib/modules | sort -V | tail -n1)
+install -m 644 "/mnt/usr/lib/modules/$kver/vmlinuz" /mnt/boot/vmlinuz-linux
+c dracut -q --force /boot/initramfs-linux.img --kver "$kver"
+l=$(c lsinitrd /boot/initramfs-linux.img); grep -q 'systemd-cryptsetup$' <<<"$l"
+echo "initramfs: dracut, $(du -h /mnt/boot/initramfs-linux.img | cut -f1), with systemd-cryptsetup"
 
 sed -i -e 's/^GRUB_TIMEOUT=.*/GRUB_TIMEOUT=1/' \
   -e 's/^GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT="console=tty0 console=ttyS0,115200"/' \
