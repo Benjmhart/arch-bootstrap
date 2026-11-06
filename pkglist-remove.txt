@@ -1,4 +1,5 @@
-# Packages taken off every machine by stage 10 (pacman -Rns), one per line.
+# Packages taken off every machine by stage 10 (pacman -Rns), one per line; "# only: host[,host]" limits a line to those
+# machines, as in the other lists.
 # A name here must not also be in another pkglist, or each run installs then removes it.
 gemini-cli
 # antigravity-cli (Google's Antigravity CLI, AUR): unused (Ben 2026-11-05, station-maintenance beast-arch 85).
@@ -9,3 +10,7 @@ jellyfin-web
 jellyfin-mpv-shim
 mpv-shim-default-shaders
 python-pystray
+# Off micro only (Ben 2026-11-06, station-maintenance micro 17: its 32G root); pkglist-aur.txt has them "# not: micro".
+zoom          # only: micro
+lightworks    # only: micro
+rambox-pro-bin   # only: micro

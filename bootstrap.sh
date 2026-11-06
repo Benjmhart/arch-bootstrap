@@ -1133,12 +1133,15 @@ ${pkgs:+IgnorePkg = $pkgs}"
 }
 
 # host_pkgs FILE...: the package names in package lists, minus lines ending "# only: host[,host]" that do
-# not name this machine (steam and the Stream Deck: beast-arch alone).
+# not name this machine (steam and the Stream Deck: beast-arch alone), and lines ending "# not: host[,host]" that do
+# (zoom, lightworks, rambox: not on micro, Ben 2026-11-06).
 host_pkgs() {
   awk -v h="$(uname -n)" '!/^[[:space:]]*(#|$)/ {
       if (match($0, /# *only: *[^#]*/)) { n = split(substr($0, RSTART, RLENGTH), w, /[:, \t]+/); ok = 0
         for (i = 2; i <= n; i++) if (w[i] == h) ok = 1
         if (!ok) next }
+      if (match($0, /# *not: *[^#]*/)) { n = split(substr($0, RSTART, RLENGTH), w, /[:, \t]+/)
+        for (i = 2; i <= n; i++) if (w[i] == h) next }
       print $1 }' "$@"
 }
 
@@ -1168,6 +1171,31 @@ ensure_root_space() {
   return 1
 }
 
+# pacman_cache_on_home: where / is small (install.sh gives a disk under 320 GiB a 32 GiB root: micro, media-center) and
+# /home is its own filesystem, pacman's package cache lives on /home. On micro it held 4.8G of the 32G root (Ben
+# 2026-11-06, station-maintenance micro 17). paccache reads CacheDir through pacman-conf, so its weekly trim follows.
+ROOT_SMALL_GB=${ROOT_SMALL_GB:-40}
+pacman_cache_on_home() {
+  local f=/etc/pacman.d/fleet-cache.conf dir=/home/pacman-cache old=/var/cache/pacman/pkg size
+  size=$(df --output=size -BG / | tail -1 | tr -dc 0-9)
+  if (( size >= ROOT_SMALL_GB )) || ! mountpoint -q /home; then ok "pacman cache stays on / (${size}G root)"; return 0; fi
+  (( DRY_RUN )) || run sudo install -d -m 755 "$dir" || return 1
+  if put_etc_file "$f" "# Managed by arch-bootstrap (pacman_cache_on_home): / is under ${ROOT_SMALL_GB}G, so the package cache is on /home.
+CacheDir = $dir/" "pacman cache on /home"; then :; fi
+  if ! grep -qxF "Include = $f" /etc/pacman.conf; then
+    run sudo sed -i "/^\[options\]/a Include = $f" /etc/pacman.conf || return 1
+    did "pacman.conf includes $f"
+  fi
+  (( DRY_RUN )) && return 0
+  # What is still in the old place: packages move over; download-* are leftovers of interrupted downloads.
+  if sudo find "$old" -mindepth 1 -maxdepth 1 \( -type f -o -name 'download-*' \) -print -quit | grep -q .; then
+    run sudo find "$old" -mindepth 1 -maxdepth 1 -type f -exec mv -t "$dir" {} + || return 1
+    run sudo find "$old" -mindepth 1 -maxdepth 1 -type d -name 'download-*' -exec rm -rf {} + || true
+    did "moved the old cache from $old to $dir"
+  fi
+  return 0
+}
+
 stage_packages() {
   stage_banner "10 packages -- user-space only"
 
@@ -1175,6 +1203,7 @@ stage_packages() {
   # before the drop-in existed (beast-arch, carbon) kept the 5-minute timeout. An espanso build
   # outlived it and its install hit a password prompt nobody saw (2026-10-11).
   sudo_timeout_dropin
+  pacman_cache_on_home
   ensure_root_space
 
   info "installing from pkglist-userspace.txt -- no kernel, microcode, GPU or firmware"
@@ -1244,7 +1273,7 @@ stage_packages() {
   # names reach pacman, so a re-run is a no-op.
   local -a gone=()
   [[ -f $SCRIPT_DIR/pkglist-remove.txt ]] && mapfile -t gone < <(
-    grep -vE '^[[:space:]]*(#|$)' "$SCRIPT_DIR/pkglist-remove.txt" | xargs -r pacman -Qq 2>/dev/null || true)
+    host_pkgs "$SCRIPT_DIR/pkglist-remove.txt" | xargs -r pacman -Qq 2>/dev/null || true)
   if (( ${#gone[@]} )); then
     # Stop their system units first, or a removed server keeps running until the next boot
     # behind a dangling enable symlink (jellyfin, 2026-10-15).
