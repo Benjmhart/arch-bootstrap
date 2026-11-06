@@ -273,6 +273,14 @@ if [[ -d $DOTDIR ]]; then
     if "$herdr" server reload-config >/dev/null; then echo "ok    herdr config reloaded"
     else echo "note  herdr: reload-config failed; run \`herdr server reload-config\`"; fi
   fi
+  # xmobar never rereads ~/.xmobarrc; an xmonad restart replaces its bars (dynamicSBs). Windows and layouts survive.
+  # As bootstrap's xmonad_restart_running, on xmonad's own display (station-maintenance micro 18, 2026-11-06).
+  if xpid=$(pgrep -u "$USER" -o -x xmonad-x86_64-l) \
+     && ! git --git-dir="$DOTDIR" --work-tree="$HOME" diff --quiet "$dot_was" "$dot" -- ':/.xmobarrc'; then
+    if xenv=$(tr '\0' '\n' < "/proc/$xpid/environ" | grep -E '^(DISPLAY|XAUTHORITY)=') \
+       && env $xenv xmonad --restart; then echo "ok    xmobar config changed: xmonad restarted, bars reloaded"
+    else echo "note  xmobar config changed but xmonad was not restarted: press mod-q"; fi
+  fi
 fi
 move secrets "${FLEET_SEC_BRANCH:-master}" "$sec" 1 git -C "$SECRETS"
 # git writes a changed file with the umask (644), so the vault turned world-readable on beast-arch when 19a3c2e was

@@ -64,7 +64,14 @@ if [[ " \$* " == *" -n "* ]]; then [[ -e "$t/ticket" ]]; exit; fi
 exit 0
 EOF
 printf '#!/bin/bash\n[[ -e "%s/locked" ]] && printf "When Type Source Valid\\n%%s TTY /dev/pts/0 V\\n" "$(date "+%%F %%T")" "$(date "+%%F %%T")" "$(date "+%%F %%T")"\nexit 0\n' "$t" > "$t/bin/faillock"   # stub: the real one reads THIS machine's lockouts
-printf '#!/bin/bash\n[[ "$*" == "-x keepassxc" && -e "%s/kpx.${FLEET_HOST:-x}" ]] || [[ "$*" == "-x herdr" && -e "%s/herdr.on" ]]\n' "$t" "$t" > "$t/bin/pgrep"
+cat > "$t/bin/pgrep" <<STUB
+#!/bin/bash
+[[ "\$*" == "-x keepassxc" && -e "$t/kpx.\${FLEET_HOST:-x}" ]] && exit 0
+[[ "\$*" == "-x herdr" && -e "$t/herdr.on" ]] && exit 0
+[[ "\$*" == "-u "*" -o -x xmonad-x86_64-l" && -e "$t/xmonad.pid" ]] && { cat "$t/xmonad.pid"; exit 0; }
+exit 1
+STUB
+printf '#!/bin/sh\necho "xmonad: $* DISPLAY=$DISPLAY" >> "$HOME/xmonad.calls"\n' > "$t/bin/xmonad"   # stub: restarts nothing
 printf '#!/bin/sh\necho "herdr: $*" >> "$HOME/herdr.calls"\n' > "$t/bin/herdr"   # stub: a running herdr server
 chmod +x "$t/bin/"*; export PATH="$t/bin:$PATH"
 
@@ -123,6 +130,13 @@ check "herdr config changed, server running: reloaded"      'grep -qx "herdr: se
 rm -f "$H/herdr.calls"; echo pw-ok | fa self apply "$ab2" "$dot4" "$sec2" keys >/dev/null 2>&1
 check "...herdr config unchanged: no reload"                '[[ ! -e $H/herdr.calls ]]'
 rm "$t/herdr.on"
+dot5=$(commit "$t/dot-seed" .xmobarrc bar2 "xmobar"); dot6=$(commit "$t/dot-seed" .zshrc rc6 "dot six")
+DISPLAY=:99 sleep 60 & echo $! > "$t/xmonad.pid"   # a "running xmonad" whose environment holds its display
+out=$(echo pw-ok | fa self apply "$ab2" "$dot5" "$sec2" keys 2>&1)
+check "xmobarrc changed, xmonad running: restarted on its display" 'grep -qx "xmonad: --restart DISPLAY=:99" "$H/xmonad.calls" && grep -q "xmonad restarted, bars reloaded" <<<"$out"'
+rm -f "$H/xmonad.calls"; echo pw-ok | fa self apply "$ab2" "$dot6" "$sec2" keys >/dev/null 2>&1
+check "...xmobarrc unchanged: no restart"                   '[[ ! -e $H/xmonad.calls ]]'
+kill "$(cat "$t/xmonad.pid")"; rm "$t/xmonad.pid"
 
 # ================= fleet-apply secrets-push (h1 is the vault host)
 sp() { fa "$1" secrets-push 2>&1; }
