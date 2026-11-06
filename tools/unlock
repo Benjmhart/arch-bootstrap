@@ -64,7 +64,10 @@ fi
 echo "waiting for $host-boot on the tailnet ..."
 for _ in $(seq 90); do
   addr=$(tailscale ip -4 "$host-boot" 2>/dev/null || true)
-  if [[ -n $addr ]] && timeout 3 bash -c "</dev/tcp/$addr/22" 2>/dev/null; then
+  # tailscale ping first: a TCP probe to a boot node that is still offline is held and retried by tailscale, and the held
+  # probes all landed at once when media-center's came up (2026-11-06), tripping its sshd's MaxStartups and penalty.
+  if [[ -n $addr ]] && tailscale ping -c 1 --timeout 2s "$host-boot" >/dev/null 2>&1 \
+     && timeout 3 bash -c "</dev/tcp/$addr/22" 2>/dev/null; then
     echo "connecting to $host-boot ($addr): touch your YubiKey when it blinks"
     exec "${run[@]}" ssh -F /dev/null -t "${keys[@]}" -o IdentitiesOnly=yes -o IdentityAgent=none \
       -o ConnectTimeout=10 -o HostKeyAlias="$host-initramfs" -o StrictHostKeyChecking=accept-new \

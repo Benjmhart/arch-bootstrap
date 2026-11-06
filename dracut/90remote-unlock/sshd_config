@@ -8,3 +8,9 @@ UsePAM no
 X11Forwarding no
 AllowTcpForwarding no
 PermitTunnel no
+# Over the tailnet, tailscaled runs here with --tun=userspace-networking, so EVERY client arrives from 127.0.0.1. On
+# media-center (2026-11-06, station-maintenance media-center 7) a burst of ~20 connections as the boot node came up hit
+# MaxStartups and then sshd's per-source penalty for 127.0.0.1, which shut out the real unlock login; it timed out before
+# authentication. Loopback is exempt, so a cloud box's public address keeps the penalty against scanners.
+PerSourcePenaltyExemptList 127.0.0.1,::1
+MaxStartups 50:30:100
