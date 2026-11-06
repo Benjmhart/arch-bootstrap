@@ -65,6 +65,11 @@ install() {
     grep -q '^nobody:' "$initdir/etc/passwd" 2>/dev/null || grep '^nobody:' /etc/passwd >> "$initdir/etc/passwd"
     grep -q '^nobody:' "$initdir/etc/group" 2>/dev/null || grep '^nobody:' /etc/group >> "$initdir/etc/group"
     mkdir -p -m 0755 "$initdir/usr/share/empty.sshd" "$initdir/var/empty" "$initdir/var/log"
+    # sshd (UsePAM no) refuses a locked account, and systemd-sysusers (78systemd-sysusers, before this module) writes root
+    # as "!unprovisioned": "User root not allowed because account is locked" (a cloud box's first unlock, 2026-11-06).
+    # "*": no password works, and the key's forced command is still all root can run.
+    if grep -q '^root:' "$initdir/etc/shadow" 2>/dev/null; then sed -i 's/^root:[^:]*:/root:*:/' "$initdir/etc/shadow"
+    else echo 'root:*:::::::' >> "$initdir/etc/shadow"; chmod 600 "$initdir/etc/shadow"; fi
 
     $SYSTEMCTL -q --root "$initdir" enable remote-unlock-sshd.service remote-unlock-netclean.service
     [[ $ts ]] && $SYSTEMCTL -q --root "$initdir" enable remote-unlock-tailscale.service

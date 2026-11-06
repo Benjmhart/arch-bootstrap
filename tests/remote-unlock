@@ -57,5 +57,6 @@ ok "no tailscale state: image builds" '[[ -s $t/img2 ]]' || tail -20 "$t/build2.
 r2=$t/root2; mkdir "$r2"; (cd "$r2" && lsinitrd --unpack "$t/img2" >/dev/null 2>&1)
 ok "no tailscale state: no tailscaled, no state, tailscale unit not enabled" "[[ ! -e $r2/usr/bin/tailscaled && ! -e $r2/etc/remote-unlock/tailscaled.state && ! -e $r2/etc/systemd/system/sysinit.target.wants/remote-unlock-tailscale.service ]]"
 ok "no tailscale state: sshd, unlock-prompt, networkd, keys; sshd enabled" "[[ -e $r2/usr/bin/sshd && -x $r2/usr/bin/unlock-prompt && -e $r2/usr/lib/systemd/systemd-networkd && -e $r2/root/.ssh/authorized_keys && -L $r2/etc/systemd/system/sysinit.target.wants/remote-unlock-sshd.service ]]"
+ok "root is not locked in the image (sshd refuses a locked account)" "[[ \$(grep '^root:' $r2/etc/shadow | cut -d: -f2) == '*' ]]"
 ok "sshd_config from the inputs replaces the module's" "[[ \$(head -1 $r2/etc/ssh/sshd_config) == '# override' ]]"
 echo "$pass passed, $fail failed"; (( fail == 0 ))

@@ -228,7 +228,9 @@ l=$(chroot $m lsinitrd /boot/initramfs-linux.img)
 { grep -q "usr/bin/unlock-prompt$" <<<"$l" && grep -q "root/.ssh/authorized_keys$" <<<"$l" && ! grep -q "usr/bin/tailscaled$" <<<"$l"; } \
   || { echo "rescue: the new initramfs lacks the unlock sshd (or has tailscale)"; exit 1; }
 echo "rescue: initramfs $(du -h $m/boot/initramfs-linux.img | cut -f1) with the unlock sshd, no tailscale; grub.cfg unlocks $luuid"
-umount -R $m; cryptsetup close root; rm -rf "$in"; sync
+umount -R $m; rm -rf "$in"; sync; udevadm settle 2>/dev/null || true
+# Closing can race with udev ("Device root is still in use", 2026-11-06); it is unmounted and synced either way.
+cryptsetup close root 2>/dev/null || { sleep 3; cryptsetup close root; } || echo "rescue: root stays open (unmounted, synced)"
 echo "rescue: done"'
 
 ask_pass() {   # PROMPT [confirm]: the passphrase on stdout; from the terminal, or one line of stdin if that is no terminal (tests)
