@@ -18,7 +18,7 @@
 set -Eeuo pipefail
 disk=${1:?usage: build-in-guest DISK}
 in=$(dirname "$(readlink -f "$0")")
-. "$in/build.env"      # HERDR_VER HERDR_SUM NODE_MAJOR BOOTSTRAP_COMMIT
+. "$in/build.env"      # HERDR_VER HERDR_SUM NODE_MAJOR BOOTSTRAP_COMMIT DOT_EXCLUDE
 step() { printf '\n==== %s\n' "$*"; }
 trap 'echo "build-in-guest FAILED at line $LINENO: $BASH_COMMAND"' ERR
 
@@ -161,8 +161,13 @@ c useradd -m -G wheel,docker -s /usr/bin/zsh ben
 c passwd -l ben >/dev/null
 u() { arch-chroot -u ben /mnt env HOME=/home/ben bash -c "$1"; }
 cp "$in/dotfiles.tar" /mnt/var/tmp/          # the host's ~/.dot: the repo is private, the image has no key
-u "tar -xf /var/tmp/dotfiles.tar -C ~ \
-   && git --git-dir ~/.dot --work-tree ~ checkout -f \
+# Paths in DOT_EXCLUDE stay out of the working tree (sparse checkout); make-cloud-image already left their file
+# contents out of the object store (Ben 2026-11-06: "don't put espanso on ssh boxes"; AutoKey is installed nowhere and its
+# old phrases held personal data: gone from the dotfiles since 8be4929, kept out here anyway).
+u "tar -xf /var/tmp/dotfiles.tar -C ~ && mkdir -p ~/.dot/info \
+   && git --git-dir ~/.dot config core.sparseCheckout true \
+   && printf '%s\n' '/*' $(printf "'!/%s' " $DOT_EXCLUDE) > ~/.dot/info/sparse-checkout \
+   && GIT_NO_LAZY_FETCH=1 git --git-dir ~/.dot --work-tree ~ checkout -f \
    && git --git-dir ~/.dot config status.showUntrackedFiles no \
    && git --git-dir ~/.dot config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'"
 rm /mnt/var/tmp/dotfiles.tar
@@ -172,6 +177,15 @@ u "mkdir -p ~/projects ~/.local/bin && tar -xf /var/tmp/arch-bootstrap.tar -C ~/
 n=$(u "git --git-dir ~/.dot rev-list --count --all")/$(u "git -C ~/projects/arch-bootstrap rev-list --count --all")
 [[ $n == 1/1 ]] || { echo "dotfiles/arch-bootstrap commits in the image: $n, want 1/1"; exit 1; }
 echo "dotfiles and arch-bootstrap: 1 commit each"
+for p in $DOT_EXCLUDE; do
+  [[ ! -e /mnt/home/ben/$p ]] || { echo "dotfiles: $p is in the image"; exit 1; }
+  n=$(u "git --git-dir ~/.dot ls-tree -r --format='%(objectname)' HEAD -- $p | GIT_NO_LAZY_FETCH=1 git --git-dir ~/.dot cat-file --batch-check | grep -vc ' missing\$'" || true)
+  [[ $n == 0 ]] || { echo "dotfiles: $n file(s) of $p still in the object store"; exit 1; }
+  echo "dotfiles: $p not checked out, its $(u "git --git-dir ~/.dot ls-tree -r HEAD -- $p | wc -l") file(s) not in the object store"
+done
+u "GIT_NO_LAZY_FETCH=1 git --git-dir ~/.dot --work-tree ~ status --porcelain" | grep -q . && { echo "dotfiles: the checkout is not clean"; exit 1; }
+for n in espanso autokey autokey-gtk autokey-qt; do c pacman -Q $n >/dev/null 2>&1 && { echo "$n is installed in the image"; exit 1; }; done
+echo "espanso and autokey: not installed"
 u "curl -fsSL https://github.com/herdrdev/herdr/releases/download/v$HERDR_VER/herdr-linux-x86_64 -o ~/.local/bin/herdr \
    && echo '$HERDR_SUM  /home/ben/.local/bin/herdr' | sha256sum -c --quiet && chmod +x ~/.local/bin/herdr"
 u "curl -fsSL https://claude.ai/install.sh | bash"

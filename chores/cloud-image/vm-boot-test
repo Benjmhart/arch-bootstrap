@@ -60,6 +60,7 @@ for (( t = 0; t < limit; t += 5 )); do
       nix --version; nix eval --expr 1+1; print -n \"bun \"; bun --version; yay --version; pacman -Q pam_rssh
       systemctl is-active docker nix-daemon.socket
       print commits: dotfiles \$(git --git-dir ~/.dot rev-list --count --all), arch-bootstrap \$(git -C ~/projects/arch-bootstrap rev-list --count --all)
+      [[ ! -e ~/.config/espanso && ! -e ~/.config/autokey ]]; (( \$(pacman -Qq espanso autokey 2>/dev/null | wc -l) == 0 )); print espanso, autokey: neither checked out nor installed
       ! sudo -n true 2>/dev/null && print sudo: asks for a password
       print '"$pw"' | sudo -S -p \"\" true && print sudo: ok with the user-data password
       print '"$pw"' | sudo -S -p \"\" pacman-key --list-keys >/dev/null 2>&1 && print pacman keyring: initialised on this boot

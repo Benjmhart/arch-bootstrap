@@ -50,6 +50,27 @@ git -C "$tmp/dot/.dot" remote set-url origin "$DOTFILES_REMOTE"
 if ! git -C "$tmp/dot/.dot" symbolic-ref -q HEAD >/dev/null; then
   git -C "$tmp/dot/.dot" update-ref refs/heads/master HEAD; git -C "$tmp/dot/.dot" symbolic-ref HEAD refs/heads/master; fi
 git -C "$tmp/dot/.dot" config branch.master.remote origin; git -C "$tmp/dot/.dot" config branch.master.merge refs/heads/master
+# Not on ssh boxes (Ben 2026-11-06: "don't put espanso on ssh boxes"; AutoKey is installed nowhere and its leftover
+# phrases hold personal data): build-in-guest leaves these out of the checkout (sparse), and here their file contents
+# leave the object store. The commit is still the real one (so the box can pull); its trees still NAME the files, but
+# their blobs are gone, so the clone is a partial one ("promisor": git would fetch them from origin only if asked).
+# Blobs also used by a path outside these stay.
+dot_exclude=".config/espanso .config/autokey .config/systemd/user/espanso-wayland.service"   # directories or files
+d=$tmp/dot/.dot
+read -ra ex <<<"$dot_exclude"
+drop=$(comm -23 <(git -C "$d" ls-tree -r --format='%(objecttype) %(objectname)' HEAD -- "${ex[@]}" | awk '$1 == "blob" {print $2}' | sort -u) \
+  <(git -C "$d" ls-tree -r --format='%(objecttype) %(objectname) %(path)' HEAD | awk -v ex="$dot_exclude" '
+      BEGIN { n = split(ex, e, " ") } $1 == "blob" { for (i = 1; i <= n; i++) if ($3 == e[i] || index($3, e[i] "/") == 1) next; print $2 }' | sort -u))
+if [[ -n $drop ]]; then
+  git -C "$d" rev-list --objects --no-object-names HEAD | grep -vxF -f <(printf '%s\n' "$drop") > "$tmp/keep"
+  git -C "$d" pack-objects -q "$tmp/pack" < "$tmp/keep" >/dev/null
+  rm -rf "$d"/objects/pack/* "$d"/objects/[0-9a-f][0-9a-f]; mv "$tmp"/pack-*.pack "$tmp"/pack-*.idx "$d/objects/pack/"
+  for f in "$d"/objects/pack/pack-*.pack; do : > "${f%.pack}.promisor"; done   # its trees' missing blobs are promised, not corrupt
+  git -C "$d" config core.repositoryformatversion 1; git -C "$d" config extensions.partialClone origin
+  git -C "$d" config remote.origin.promisor true; git -C "$d" config remote.origin.partialclonefilter blob:none
+  ! GIT_NO_LAZY_FETCH=1 git -C "$d" cat-file -e "$(head -n1 <<<"$drop")" 2>/dev/null || { echo "dotfiles: blobs not dropped"; exit 1; }
+fi
+echo "dotfiles: $(grep -c . <<<"$drop") file(s) of $dot_exclude left out of the image's object store"
 tar -C "$tmp/dot" -cf "$tmp/in/dotfiles.tar" .dot
 herdr_ver=$(sed -n 's/^ *local ver=\([0-9.]*\) arch sum asset$/\1/p' "$repo/bootstrap.sh")
 herdr_sum=$(sed -n 's/^ *x86_64) .*sum=\([0-9a-f]\{64\}\) ;;$/\1/p' "$repo/bootstrap.sh")
@@ -59,7 +80,7 @@ node_major=$(sed -n 's/^NODE_MAJOR="${NODE_MAJOR:-\([0-9]*\)}"$/\1/p' "$repo/boo
 commit=$(git -C "$repo" log -1 --format=%h)
 [[ -z $(git -C "$repo" status --porcelain) ]] || commit+="+uncommitted"
 printf '%s\n' "BUILD_DEBUG=${BUILD_DEBUG:-}" "HERDR_VER=$herdr_ver" "HERDR_SUM=$herdr_sum" "NODE_MAJOR=$node_major" \
-  "BOOTSTRAP_COMMIT=$commit" > "$tmp/in/build.env"
+  "BOOTSTRAP_COMMIT=$commit" "DOT_EXCLUDE='$dot_exclude'" > "$tmp/in/build.env"
 tar -cf "$tmp/in.tar" -C "$tmp/in" .
 
 # ---- the guest
