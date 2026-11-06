@@ -21,6 +21,9 @@ lightworks                           c8738dd8d57e25cda3adb1f9caf1f5dec5715497
 nvidia-580xx-utils                   0b45a07013d6cc1d19dbf61c110f9b97d6fc429b   # only: surfboard
 nvidia-580xx-dkms                    0b45a07013d6cc1d19dbf61c110f9b97d6fc429b nvidia-580xx-utils   # only: surfboard
 lib32-nvidia-580xx-utils             489271acfd01c91bc07201300e6b63f3d2a8e2ba   # only: surfboard
+# catt for CastIron's Chromecast backend (station-maintenance media-center 7): /usr/bin/catt, readable by its service user
+# (media-system's catt is in a venv under ~ben, mode 700). Its dependencies are all in the repos.
+catt                                 832f34616aba26531d35938d182e7c02f9654f68   # only: media-center
 localsend-bin                        f35ec0d6bd56c3c9fc4611f91972c31c38210654
 otf-hasklig                          4284295c6f73dcf3ffd60e00662159eb9a1f0a11
 pacmixer                             138b40fef079b75acc8a812811e2a7fde99cab3b

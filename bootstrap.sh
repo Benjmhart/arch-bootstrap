@@ -135,6 +135,13 @@ CLAUDE_MEM_HOSTS="${CLAUDE_MEM_HOSTS:-beast-arch}"
 CLAUDE_MEM_REPOS="${CLAUDE_MEM_REPOS:-station-maintenance mlabs-marketing personal-comms tax-prep orchestrator}"
 CLAUDE_MEM_COMMIT="${CLAUDE_MEM_COMMIT:-02584c4ac9d92fea45adf5c61e22c546b5738621}"   # v15.9.0, reviewed 2026-11-02
 
+# CastIron, Ben's media server (station-maintenance media-center 7; Ben 2026-11-06), run as a system service beside
+# media-system's castbox, which it does not touch: step 1 "Run alongside" of castiron's docs/runbooks/prototype-cutover.md.
+# Built from this commit (cloned with the host's castiron deploy key) and moved only by a reviewed commit here. The
+# import, device designation and the cut-over are Ben's runbook steps, never this script's (setup_castiron).
+CASTIRON_HOSTS="${CASTIRON_HOSTS:-media-center}"
+CASTIRON_COMMIT="${CASTIRON_COMMIT:-c0fdb46b73bea66832b9bc206be3a9909c17fe8f}"   # staging "9.5: Parity Sign-off", 2026-11-05, CI green
+
 # /tmp: RAM or disk. systemd's static tmp.mount makes /tmp a tmpfs at size=50% of
 # RAM, which is an UNBOUNDED claim on memory that no quota limits -- on a 32 GiB
 # box that is a 16 GiB ceiling one runaway `dd` can reach. Setting this to `true`
@@ -4377,6 +4384,8 @@ setup_firewall() {
     warn "kernel $(uname -r) is running but its modules are gone (upgraded, not rebooted) -- reboot, then --only services for the firewall"; return 0; }
   local tcp=$FIREWALL_LAN_TCP udp=$FIREWALL_LAN_UDP extra=""
   profile_on media-center && tcp+=" 8010 8011"
+  # CastIron's API and /stream/* (the Chromecasts fetch from it); the tailnet is open already (media-center 7).
+  castiron_here && tcp+=" 8420"
   # LocalSend (beast-arch 96; Ben 2026-10-18: "open port 53317 to the home network"): discovery (UDP multicast) and
   # transfers (TCP) both arrive on 53317. Not on a no-inbound host (micro): it sends only.
   no_inbound || { tcp+=" 53317"; udp+=" 53317"; }
@@ -4614,6 +4623,109 @@ setup_media_drives() {
   run sudo systemctl daemon-reload
   run sudo systemctl start "${units[@]}"
   ok "media drives on automount: ${units[*]}"
+}
+
+# CastIron (CASTIRON_HOSTS / CASTIRON_COMMIT above; station-maintenance media-center 7).
+castiron_here() { [[ " $CASTIRON_HOSTS " == *" $(uname -n) "* ]]; }
+
+# Where it listens, space-separated: the IPv4 addresses of the physical NICs (those with /sys/class/net/<if>/device,
+# so not tailscale0, docker0, a VPN or a bridge) and then the tailnet's. Fails without both: hardware check H14
+# allows the LAN and tailnet addresses only, so castiron's own "auto" (every private address) is never used.
+castiron_listen() {
+  local d ts; local -a a=()
+  for d in /sys/class/net/*/device; do
+    [[ -e $d ]] || continue
+    d=${d%/device}
+    a+=($(ip -4 -o addr show dev "${d##*/}" scope global | awk '{ sub("/.*", "", $4); print $4 }'))
+  done
+  ts=$(tailscale ip -4 2>/dev/null | head -n1) || true
+  (( ${#a[@]} )) && [[ -n $ts ]] || return 1
+  echo "${a[*]} $ts"
+}
+
+# Build CASTIRON_COMMIT as the login user (rust at the version the repo's mise.toml pins, through rustup), install
+# /usr/local/bin/castiron (where packaging/systemd/castiron.service expects it), a `castiron` system user, the repo's
+# unit plus a drop-in, and /etc/castiron/castiron.toml; enable it. Restarted only when the binary, config or unit
+# changed. Roots, collections and devices are NOT in the config: castiron keeps them in its database, designated
+# through its API by Ben (runbook step 1); nothing here designates, imports or plays (the runbook forbids plays
+# before the import). catt comes from the AUR (pkglist-aur.txt, media-center only); deno is not installed: only a
+# deno plugin needs it and none is enabled.
+setup_castiron() {
+  castiron_here || return 0
+  local src=$HOME/.local/share/castiron-src pin=$CASTIRON_COMMIT bin=/usr/local/bin/castiron changed=0 listen rust b
+  if ! listen=$(castiron_listen); then
+    warn "castiron: needs a LAN and a tailnet IPv4 address, has neither or one -- not set up (tailscale up?)"; return 0
+  fi
+  if (( DRY_RUN )) && [[ $(git -C "$src" rev-parse HEAD 2>/dev/null) != "$pin" ]]; then
+    info "(dry run) would clone/fetch castiron into $src, build ${pin:0:7} and install it at $bin"
+    did "castiron ${pin:0:7} built and installed"
+  elif (( ! DRY_RUN )); then
+    [[ -d $src/.git ]] || run git clone -q git@github-castiron:Benjmhart/castiron.git "$src" \
+      || { warn "castiron: clone failed (deploy key, Host github-castiron in ~/.ssh/config) -- not set up"; return 0; }
+    if [[ $(git -C "$src" rev-parse HEAD) != "$pin" ]]; then
+      { run git -C "$src" fetch -q origin && run git -C "$src" checkout -q --detach "$pin"; } \
+        || { warn "castiron: cannot check out ${pin:0:7} -- not set up"; return 0; }
+    fi
+    rust=$(sed -n 's/^rust = { version = "\([0-9.]*\)".*/\1/p' "$src/mise.toml")
+    [[ -n $rust ]] || { warn "castiron: no rust version in mise.toml at ${pin:0:7} -- not built"; return 0; }
+    # cargo rebuilds only what changed, so an unmoved pin costs a second here.
+    { rustup toolchain list | grep -q "^$rust-" || run rustup toolchain install "$rust" --profile minimal; } \
+      && ( cd "$src" && run rustup run "$rust" cargo build -q --release --locked -p castiron ) \
+      || { warn "castiron: build of ${pin:0:7} failed -- service left as it was"; return 0; }
+  fi
+  if [[ -x $src/target/release/castiron && $(git -C "$src" rev-parse HEAD 2>/dev/null) == "$pin" ]] \
+     && ! cmp -s "$src/target/release/castiron" "$bin"; then
+    run sudo install -m 755 "$src/target/release/castiron" "$bin" && did "castiron ${pin:0:7} installed at $bin" && changed=1
+  fi
+
+  put_etc_file /etc/sysusers.d/castiron.conf 'u castiron - "CastIron media server" /var/lib/castiron' "castiron system user" || true
+  getent passwd castiron >/dev/null || { run sudo systemd-sysusers /etc/sysusers.d/castiron.conf && did "castiron system user created"; }
+
+  if git -C "$src" cat-file -e "$pin:packaging/systemd/castiron.service" 2>/dev/null; then
+    put_etc_file /etc/systemd/system/castiron.service "$(git -C "$src" show "$pin:packaging/systemd/castiron.service")" \
+      "castiron unit (from ${pin:0:7})" && changed=1
+  else
+    info "(dry run) would install castiron's unit from ${pin:0:7} at /etc/systemd/system/castiron.service"
+  fi
+  # The tailnet address appears seconds after tailscaled starts (see harden_sshd), so wait for every listen address
+  # rather than fail to bind at boot. The data dir holds the token hashes and everyone's history: not world-readable.
+  put_etc_file /etc/systemd/system/castiron.service.d/10-arch-bootstrap.conf \
+"# Written by arch-bootstrap (setup_castiron; station-maintenance media-center 7). Edit bootstrap.sh, not this file.
+[Unit]
+After=tailscaled.service
+Wants=tailscaled.service
+
+[Service]
+StateDirectoryMode=0750
+ExecStartPre=/usr/bin/timeout 60 /bin/sh -c 'for a in $listen; do until ip -o addr show | grep -qF \" \$\$a/\"; do sleep 1; done; done'" \
+    "castiron: boot ordering after the tailnet" && changed=1
+
+  local cfg="# Written by arch-bootstrap (setup_castiron; station-maintenance media-center 7). Edit bootstrap.sh, not this file.
+# Roots, collections, devices and profiles are not configured here: castiron keeps them in its database (its API).
+[server]
+# LAN and tailnet only (castiron hardware check H14); not loopback, so the CLI here needs --server http://${listen%% *}:8420
+listen = [$(printf '"%s", ' $listen | sed 's/, $//')]
+port = 8420
+
+[paths]
+data_dir = \"/var/lib/castiron\"
+
+[binaries]"
+  for b in ffmpeg ffprobe catt mpv ssh; do
+    [[ -x /usr/bin/$b ]] || warn "castiron: /usr/bin/$b is missing (ffmpeg/ffprobe: the service will not start; others: that backend fails)"
+    cfg+=$'\n'"$b = \"/usr/bin/$b\""
+  done
+  put_etc_file /etc/castiron/castiron.toml "$cfg" "castiron config (listen: $listen)" && changed=1
+
+  if (( changed )); then run sudo systemctl daemon-reload; fi
+  if ! systemctl is-enabled --quiet castiron 2>/dev/null; then
+    run sudo systemctl enable --now castiron && did "castiron enabled and started"
+  elif (( changed )) || ! systemctl is-active --quiet castiron; then
+    run sudo systemctl restart castiron && did "castiron restarted"
+  else
+    ok "castiron ${pin:0:7} running (listen: $listen)"
+  fi
+  return 0
 }
 
 configure_earlyoom() {
@@ -5215,6 +5327,7 @@ stage_services() {
   set_wireless_regdom
   setup_encrypted_swap
   setup_media_drives
+  setup_castiron
   configure_earlyoom
   setup_clamav_onaccess
 
@@ -5524,6 +5637,13 @@ stage_verify() {
     check "media drive $mn unlocked (/dev/mapper/media-$mn)" "[ -e /dev/mapper/media-$mn ]"
     check "media drive $mn: LUKS backup in secrets" "[ -s '$SECRETS_DIR/luks/$(uname -n).tar.gz.age' ]"
   done
+  if castiron_here; then   # media-center 7: the service, the API on the LAN, and H14 (nothing on 8420 but these)
+    local ca; ca=$(castiron_listen) || true
+    check "castiron service active"                       "systemctl is-active --quiet castiron"
+    check "castiron answers GET /api/v1/status on ${ca%% *}" "curl -fsS -m 5 http://${ca%% *}:8420/api/v1/status"
+    check "castiron listens on exactly: ${ca:-?} (H14)" \
+      "[ -n '$ca' ] && [ \"\$(ss -Htln 'sport = :8420' | awk '{ sub(/:8420\$/, \"\", \$4); print \$4 }' | sort | xargs)\" = \"\$(printf '%s\n' $ca | sort | xargs)\" ]"
+  fi
   check "bfq rule for rotational disks"  "[ -f /etc/udev/rules.d/60-ioscheduler.rules ]"
   if host_pkgs "$SCRIPT_DIR/pkglist-aur.txt" | grep -qx nvidia-580xx-dkms; then   # surfboard (stage 20)
     check "nvidia: 580xx legacy driver, not the repo nvidia-utils" \
