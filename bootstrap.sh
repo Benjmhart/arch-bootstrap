@@ -4906,8 +4906,8 @@ ACTION=="add|change", SUBSYSTEM=="usb|hidraw", ATTRS{idVendor}=="3297", TAG+="ua
 #    password, when sudo reads a pipe (sudo -S: fleet push, scripts) or runs under ssh, where
 #    the key is at the other end; otherwise it would wait out a touch nobody can give.
 #  - screen lock (i3lock) by touch: Enter, then touch; the password when no key is plugged in.
-#  - tty login by touch (beast-arch 133, Ben 2026-11-01: touch OR password). A touch login leaves gnome-keyring
-#    locked (it unlocks from the typed password), so the first app that needs it asks once.
+#  - tty login: the password only since 2026-11-07 (touch OR password from 11-01, beast-arch 133). A touch login
+#    left gnome-keyring locked, since it unlocks from the typed password.
 #  - sudo over ssh by a touch at the CLIENT (beast-arch 133): micro, beast-arch and carbon run a second ssh-agent
 #    holding only their YubiKey sk keys and forward it to the peers (ssh_tailnet_peers); the remote shell links it to
 #    ~/.ssh/sudo-agent.sock (dotfiles .zshenv) and pam_rssh asks it to sign. Accepted keys = the remote-unlock set,
@@ -4953,8 +4953,15 @@ exit 1' "sudo: password-only under ssh or sudo -S"; then
       "auth\t\t[success=3 default=ignore]\tpam_exec.so quiet seteuid $guard pipe" \
       "auth\t\tsufficient\tpam_rssh.so auth_key_file=/etc/sudo-agent-keys ssh_agent_addr=/home/\${user}/.ssh/sudo-agent.sock cue [cue_prompt=Touch the YubiKey at your machine]"
   fi
-  # tty login (Ben, 2026-11-01): touch or password, after pam_nologin.
-  [[ -f /etc/pam.d/login ]] && PAM_AT='^auth[[:space:]]+include' pam_prepend /etc/pam.d/login "tty login: YubiKey touch, password fallback" "auth\t\tsufficient\t$u2f"
+  # tty login: the password only (Ben, 2026-11-07, "lets require the password at login then"). A touch login left the
+  # GNOME keyring locked, since pam_gnome_keyring unlocks it with the login password. Touch or password from
+  # 2026-11-01 to 11-07; its line is taken out here.
+  local login_u2f; login_u2f="$(printf '%b' "auth\t\tsufficient\t$u2f")"
+  if [[ -f /etc/pam.d/login ]] && grep -qxF "$login_u2f" /etc/pam.d/login; then
+    local ltmp; ltmp=$(mktemp); grep -vxF "$login_u2f" /etc/pam.d/login > "$ltmp"
+    run sudo install -m 644 "$ltmp" /etc/pam.d/login && did "tty login: password only, YubiKey line removed (/etc/pam.d/login)"
+    rm -f "$ltmp"
+  fi
   # xsecurelock, every machine (Ben 2026-11-04, after the micro trial; beast-arch 132, micro 16): its own PAM service, the same touch-or-password
   # stack (Arch builds it for system-auth, which has no YubiKey). ~/.local/bin/lock uses it wherever it is installed.
   if [[ -x /usr/bin/xsecurelock ]]; then
@@ -5823,7 +5830,7 @@ stage_verify() {
   check "YubiKey OTP udev rule"          "[ -f /etc/udev/rules.d/70-yubikey-uaccess.rules ]"
   check "ZSA keyboard udev rule"         "[ -f /etc/udev/rules.d/70-zsa-uaccess.rules ]"
   if [[ -s $SECRETS_DIR/yubikey/u2f_mappings ]]; then check "sudo: YubiKey touch (pam_u2f)" "grep -q pam_u2f /etc/pam.d/sudo"; fi
-  if [[ -s $SECRETS_DIR/yubikey/u2f_mappings ]]; then check "tty login: YubiKey touch (pam_u2f)" "grep -q pam_u2f /etc/pam.d/login"; fi
+  check "tty login: password only (no pam_u2f, so the keyring unlocks)" "! grep -q pam_u2f /etc/pam.d/login"
   check "sudo over ssh: client YubiKey (pam_rssh)" "grep -q pam_rssh /etc/pam.d/sudo"
   if [[ -x /usr/bin/xsecurelock ]]; then check "xsecurelock: YubiKey touch (pam_u2f)" "grep -q pam_u2f /etc/pam.d/xsecurelock"; fi
   if awk -v h="$(uname -n)" '$1 == h { f=1 } END { exit !f }' "$SECRETS_DIR/wake/hosts" 2>/dev/null; then
