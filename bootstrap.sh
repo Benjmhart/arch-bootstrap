@@ -3649,21 +3649,22 @@ keepassxc_seed_config() {
   did "keepassxc.ini seeded from keepassxc.defaults.ini"
 }
 
-# Dracula cursors (station-maintenance beast-arch 44): the theme's own release, pinned by checksum, into
-# ~/.local/share/icons (on libXcursor's default path, so X and Wayland both find it). No Arch package exists
-# except an unpinned -git AUR build. GTK comes from dracula-gtk-theme (AUR, the same release); the dotfiles
-# select both (environment.d/90-dracula.conf, gtk-3.0/4.0, .icons/default).
-install_dracula_cursors() {
-  local dir="$HOME/.local/share/icons/Dracula-cursors" tmp
-  local url=https://github.com/dracula/gtk/releases/download/v4.0.0/Dracula-cursors.tar.xz
-  local sum=81780e218fdda616016aedf42e731c86ed16290b9753a21616642023821b85f5
-  [[ -f $dir/index.theme ]] && { ok "Dracula cursors already installed"; return 0; }
-  (( DRY_RUN )) && { info "(dry run) would install Dracula cursors to $dir"; return 0; }
+# Cursor theme: Bibata Modern Ice, the theme's own release pinned by checksum, into ~/.local/share/icons (on
+# libXcursor's default path, so X and Wayland both find it). White and size 32, chosen for visibility (Ben 2026-11-07:
+# "easy to lose the mouse on carbon"; the dark Dracula-cursors it replaces vanished on the dark desktop). The AUR's
+# bibata-cursor-theme-bin is the same release, built; this needs no makepkg and no sudo. The dotfiles select it
+# (environment.d/90-dracula.conf, gtk-3.0/4.0, .icons/default, sway). Dracula-cursors stays where it was installed.
+install_cursor_theme() {
+  local dir="$HOME/.local/share/icons/Bibata-Modern-Ice" tmp
+  local url=https://github.com/ful1e5/Bibata_Cursor/releases/download/v2.0.7/Bibata-Modern-Ice.tar.xz
+  local sum=a68cae60c4dc706350e194ebc91c5fe48bc7bc9d59e119555834a2a7ee5078ef
+  [[ -f $dir/index.theme ]] && { ok "cursor theme Bibata-Modern-Ice already installed"; return 0; }
+  (( DRY_RUN )) && { info "(dry run) would install Bibata-Modern-Ice to $dir"; return 0; }
   tmp=$(mktemp)
   if curl -fsSL -o "$tmp" "$url" && echo "$sum  $tmp" | sha256sum -c --quiet; then
-    mkdir -p "${dir%/*}" && tar -xJf "$tmp" -C "${dir%/*}" && did "Dracula cursors installed ($dir)"
+    mkdir -p "${dir%/*}" && tar -xJf "$tmp" -C "${dir%/*}" && did "cursor theme installed ($dir)"
   else
-    warn "Dracula cursors: download or checksum failed -- cursor stays the default"
+    warn "Bibata cursors: download or checksum failed -- cursor stays the default"
   fi
   rm -f "$tmp"
 }
@@ -5329,7 +5330,7 @@ stage_services() {
   install_rclone_conf
   espanso_skip_wizard
   keepassxc_seed_config
-  install_dracula_cursors
+  install_cursor_theme
   manage_tmp_storage
   user_tmp_cleanup
   install_system_dropins
