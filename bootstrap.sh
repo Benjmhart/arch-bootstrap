@@ -3649,12 +3649,11 @@ keepassxc_seed_config() {
   did "keepassxc.ini seeded from keepassxc.defaults.ini"
 }
 
-# Cursor theme: Bibata Modern Dracula, purple (#bd93f9) and green (#50fa7b) builds of Bibata Modern Amber (Ben
-# 2026-11-07: high visibility, Dracula colours, "randomize between them every hour"). The Amber release, pinned by
-# checksum, is recoloured by tools/cursor-recolor into ~/.local/share/icons (libXcursor's default path; X and Wayland
-# both find it). Bibata-Modern-Dracula is a link to one of the two; ~/.local/bin/cursor-rotate (dotfiles) re-points it
-# hourly. The dotfiles select that name at size 40 (environment.d/90-dracula.conf, gtk-3.0/4.0, .icons/default, sway).
-# Dracula-cursors and Bibata-Modern-Ice stay wherever they were installed earlier.
+# Cursor theme: Bibata-Modern-Dracula-Purple, Bibata Modern Amber's shapes in Dracula purple #bd93f9 (Ben 2026-11-07:
+# high visibility, Dracula colours; an hourly purple/green rotation at 40 was tried the same day and dropped for purple
+# only at 32). The Amber release, pinned by checksum, is recoloured by tools/cursor-recolor into ~/.local/share/icons
+# (libXcursor's default path; X and Wayland both find it). The dotfiles select it (environment.d/90-dracula.conf,
+# gtk-3.0/4.0, .icons/default, sway). Earlier themes (Dracula-cursors, Bibata-Modern-Ice, -Green) stay where installed.
 # Wallpapers move with fpush (Ben 2026-11-07: the Dracula space set, wallpapers/space): fast-forward a clean checkout
 # on its branch, nothing else. stage_secrets only ever cloned it, so a machine kept whatever it first got. Images and
 # their credits only (grade.py in it is never run), hence no review step of its own. Local changes: left alone.
@@ -3696,29 +3695,24 @@ install_icon_theme() {
 }
 
 install_cursor_theme() {
-  local icons="$HOME/.local/share/icons" tmp src c
+  local icons="$HOME/.local/share/icons" tmp
   local url=https://github.com/ful1e5/Bibata_Cursor/releases/download/v2.0.7/Bibata-Modern-Amber.tar.xz
   local sum=58b7ac00ed3cb45acb6b917cb9807a553873f1cca5c91348c4abaebe638e5884
-  if [[ -f $icons/Bibata-Modern-Dracula-Purple/index.theme && -f $icons/Bibata-Modern-Dracula-Green/index.theme ]]; then
-    ok "cursor themes Bibata-Modern-Dracula-Purple/-Green already installed"
-  elif (( DRY_RUN )); then info "(dry run) would build Bibata-Modern-Dracula-Purple/-Green in $icons"
+  if [[ -f $icons/Bibata-Modern-Dracula-Purple/index.theme ]]; then
+    ok "cursor theme Bibata-Modern-Dracula-Purple already installed"
+  elif (( DRY_RUN )); then info "(dry run) would build Bibata-Modern-Dracula-Purple in $icons"
   else
     tmp=$(mktemp -d)
     if curl -fsSL -o "$tmp/amber.tar.xz" "$url" && echo "$sum  $tmp/amber.tar.xz" | sha256sum -c --quiet \
        && tar -xJf "$tmp/amber.tar.xz" -C "$tmp"; then
-      src=$tmp/Bibata-Modern-Amber; mkdir -p "$icons"
-      for c in Purple:bd93f9 Green:50fa7b; do
-        python3 -I "$SCRIPT_DIR/tools/cursor-recolor" "$src" "$icons/Bibata-Modern-Dracula-${c%%:*}" \
-          "Bibata-Modern-Dracula-${c%%:*}" "#${c#*:}" >/dev/null && did "cursor theme Bibata-Modern-Dracula-${c%%:*} built"
-      done
+      mkdir -p "$icons"
+      python3 -I "$SCRIPT_DIR/tools/cursor-recolor" "$tmp/Bibata-Modern-Amber" "$icons/Bibata-Modern-Dracula-Purple" \
+        Bibata-Modern-Dracula-Purple "#bd93f9" >/dev/null && did "cursor theme Bibata-Modern-Dracula-Purple built"
     else
       warn "Bibata Amber: download or checksum failed -- cursor stays the default"
     fi
     rm -rf "$tmp"
   fi
-  # The name everything selects; cursor-rotate moves it. A real directory there would be a hand-made theme: left alone.
-  [[ -e $icons/Bibata-Modern-Dracula || -L $icons/Bibata-Modern-Dracula ]] \
-    || { [[ -d $icons/Bibata-Modern-Dracula-Purple ]] && ln -s Bibata-Modern-Dracula-Purple "$icons/Bibata-Modern-Dracula"; }
 }
 
 # Chores: regular jobs as systemd user timers (chores/, beast-arch task 69). chore-run
