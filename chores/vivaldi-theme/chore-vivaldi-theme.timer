@@ -1,0 +1,10 @@
+[Unit]
+Description=Every 10 minutes and at login: Vivaldi's Dracula theme once Vivaldi is closed (arch-bootstrap chores/vivaldi-theme)
+
+[Timer]
+OnStartupSec=5s
+OnCalendar=*:0/10
+Unit=chore@vivaldi-theme.service
+
+[Install]
+WantedBy=timers.target

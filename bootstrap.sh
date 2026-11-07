@@ -3745,7 +3745,7 @@ install_chores() {
     run systemctl --user disable --now chore-backup.timer
     did "chore backup off here: micro backs this machine up over its tunnel"
   fi
-  for c in low-disk virus-scan repo-hygiene clipboard-wipe $extra $CHORES; do
+  for c in low-disk virus-scan repo-hygiene clipboard-wipe vivaldi-theme $extra $CHORES; do
     [[ -f $d/$c/chore-$c.timer ]] || { warn "CHORES names '$c', but there is no chores/$c/chore-$c.timer"; continue; }
     if systemctl --user is-enabled --quiet "chore-$c.timer" 2>/dev/null; then
       ok "chore $c scheduled"
@@ -4794,12 +4794,23 @@ data_dir = \"/var/lib/castiron\"
   put_etc_file /etc/castiron/castiron.toml "$cfg" "castiron config (listen: $listen)" && changed=1
 
   if (( changed )); then run sudo systemctl daemon-reload; fi
+  local started=0
   if ! systemctl is-enabled --quiet castiron 2>/dev/null; then
-    run sudo systemctl enable --now castiron && did "castiron enabled and started"
+    run sudo systemctl enable --now castiron && did "castiron enabled and started"; started=1
   elif (( changed )) || ! systemctl is-active --quiet castiron; then
-    run sudo systemctl restart castiron && did "castiron restarted"
+    run sudo systemctl restart castiron && did "castiron restarted"; started=1
   else
     ok "castiron ${pin:0:7} running (listen: $listen)"
+  fi
+  # Type=exec: "active" at once, but castiron sweeps every root before it listens (15 s on media-center, 2026-11-07). The
+  # 16:14 fpush's verify ran inside that window and failed both API checks on a healthy server. Wait for the API here.
+  if (( started && ! DRY_RUN )); then
+    local a=${listen%% *} t0=$SECONDS
+    if timeout 120 bash -c "until curl -fsS -m 2 http://$a:8420/api/v1/status >/dev/null 2>&1; do sleep 1; done"; then
+      ok "castiron answering on $a:8420 after $(( SECONDS - t0 ))s"
+    else
+      warn "castiron did not answer on $a:8420 within 120 s -- see: journalctl -u castiron"
+    fi
   fi
   return 0
 }
@@ -5482,8 +5493,7 @@ stage_services() {
     python3 -I "$SCRIPT_DIR/tools/vivaldi-theme" || vtrc=$?
     case $vtrc in
       0) ok "Vivaldi theme: Dracula" ;;
-      3) warn "Vivaldi is open, so its Dracula theme was not set"
-         todo "close Vivaldi, then:  $SCRIPT_DIR/tools/vivaldi-theme   (or wait for the next fpush)" ;;
+      3) info "Vivaldi is open: chore vivaldi-theme sets its Dracula theme once it is closed (every 10 min, and at login)" ;;
       *) warn "vivaldi-theme failed (exit $vtrc)" ;;
     esac
   fi
