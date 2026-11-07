@@ -5135,6 +5135,43 @@ add_dracutmodules+=" remote-unlock "' "dracut: remote-unlock" && REMOTE_UNLOCK_C
 # copied to /boot/grub/themes/dracula and named in GRUB_THEME, which grub-mkconfig's header then loads (gfxterm).
 # setup_boot regenerates and checks the menu right after this. A theme GRUB cannot load costs only the looks: it
 # falls back to the plain menu. Called from setup_boot only, so /boot is known to be this machine's GRUB.
+# Plymouth's stock spinner theme with Dracula colours (Ben 2026-11-07); its images are read from spinner's directory.
+PLYMOUTH_DRACULA='# Written by arch-bootstrap (setup_boot): plymouth spinner, Dracula colours.
+[Plymouth Theme]
+Name=Dracula
+Description=Spinner in Dracula colours (arch-bootstrap)
+ModuleName=two-step
+
+[two-step]
+Font=Fira Code 12
+TitleFont=Fira Code 24
+MonospaceFont=Fira Code 12
+ImageDir=/usr/share/plymouth/themes/spinner
+DialogHorizontalAlignment=.5
+DialogVerticalAlignment=.382
+TitleHorizontalAlignment=.5
+TitleVerticalAlignment=.382
+HorizontalAlignment=.5
+VerticalAlignment=.7
+WatermarkHorizontalAlignment=.5
+WatermarkVerticalAlignment=.96
+Transition=none
+TransitionDuration=0.0
+BackgroundStartColor=0x282a36
+BackgroundEndColor=0x282a36
+ProgressBarBackgroundColor=0x44475a
+ProgressBarForegroundColor=0xbd93f9
+MessageBelowAnimation=true
+
+[boot-up]
+UseEndAnimation=false
+
+[shutdown]
+UseEndAnimation=false
+
+[reboot]
+UseEndAnimation=false'
+
 install_grub_theme() {
   local url=https://github.com/dracula/grub/archive/0e721d99dbf0d5d6c4fd489b88248365b7a60d12.tar.gz
   local sum=1dc94774d7e0fb149ca7123fbcf99f2a5baa94e7a7cbe26734091167ea120180
@@ -5183,6 +5220,13 @@ ALL_kver="/boot/vmlinuz-linux"
 PRESETS=('"'"'fallback'"'"')
 fallback_image="/boot/initramfs-linux-fallback.img"
 fallback_options="-S autodetect"' "mkinitcpio: fallback image only" && rebuild=1
+  # Plymouth (Ben 2026-11-07): a Dracula boot screen; the PIN and passphrase prompts show on it instead of bare tty1
+  # text. Plymouth's own spinner images in Dracula colours, so nothing is downloaded. dracut's plymouth module takes
+  # the theme into the image whenever plymouth is installed; the dracut GRUB entries add `splash`.
+  if [[ -x /usr/bin/plymouthd ]]; then
+    put_etc_file /usr/share/plymouth/themes/dracula/dracula.plymouth "$PLYMOUTH_DRACULA" "plymouth: Dracula theme" && rebuild=1
+    put_etc_file /etc/plymouth/plymouthd.conf $'# Written by arch-bootstrap (setup_boot).\n[Daemon]\nTheme=dracula' "plymouth: theme" && rebuild=1
+  fi
   if (( DRY_RUN )); then info "(dry run) would build the images and regenerate $cfg if needed"; return 0; fi
   setup_remote_unlock; if (( REMOTE_UNLOCK_CHANGED )); then rebuild=1; fi
 
@@ -5198,6 +5242,9 @@ fallback_options="-S autodetect"' "mkinitcpio: fallback image only" && rebuild=1
       || { warn "building the boot images failed -- the old menu stays"; return 1; }
     dracut_ok || { warn "$img has no FIDO2 token module or systemd-cryptsetup -- the old menu stays"; return 1; }
     did "boot images: dracut $img, mkinitcpio fallback ($kver)"
+    if [[ -x /usr/bin/plymouthd ]] && ! grep -q 'usr/bin/plymouthd$' <<<"$(sudo lsinitrd "$img" 2>/dev/null)"; then
+      warn "plymouth is installed but not in $img -- prompts stay on the text console"
+    fi
   else
     ok "boot images in place (dracut with FIDO2, mkinitcpio fallback)"
   fi
@@ -5340,10 +5387,10 @@ EOF
 
 if [ "$keys" -gt 0 ]; then
   entry "Arch Linux" "Plug in your YubiKey (PIN, then touch), or wait 3 s for the passphrase prompt" \
-    "$common $rd rd.luks.options=$luks_uuid=fido2-device=auto,token-timeout=3s $tail" initramfs-linux.img
-  entry "Arch Linux (passphrase)" "Passphrase unlock (no YubiKey)" "$common $rd $tail" initramfs-linux.img
+    "$common $rd rd.luks.options=$luks_uuid=fido2-device=auto,token-timeout=3s $tail splash" initramfs-linux.img
+  entry "Arch Linux (passphrase)" "Passphrase unlock (no YubiKey)" "$common $rd $tail splash" initramfs-linux.img
 else
-  entry "Arch Linux" "Passphrase unlock (no YubiKey enrolled here)" "$common $rd $tail" initramfs-linux.img
+  entry "Arch Linux" "Passphrase unlock (no YubiKey enrolled here)" "$common $rd $tail splash" initramfs-linux.img
 fi
 if [ -f /boot/initramfs-linux-fallback.img ]; then
   entry "Arch Linux (fallback)" "Fallback image (mkinitcpio), passphrase unlock" \
