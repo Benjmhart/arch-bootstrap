@@ -4969,8 +4969,9 @@ while [ "$p" -gt 1 ]; do
   p=$(sed "s/.*) //" "/proc/$p/stat" | cut -d" " -f2)
 done
 home=$(getent passwd "$PAM_USER" | cut -d: -f6)
-# A sudo-from pin counts for 10 minutes after it was set (Ben, 2026-11-07); after that, as if there were none.
-pin=$(find "$home/.ssh/sudo-agent.pin" -mmin -10 -exec cat {} \; 2>/dev/null)
+# A sudo-from pin counts for 10 minutes after it was set, and lives in /run/user (tmpfs), so a reboot clears it (Ben,
+# 2026-11-07); after that, as if there were none.
+pin=$(find "/run/user/$(id -u "$PAM_USER")/sudo-agent.pin" -mmin -10 -exec cat {} \; 2>/dev/null)
 if [ "$1" = agent ]; then
   [ "$pin" = here ] && exit 0
   [ -n "$pin" ] || [ $ssh = 1 ] || exit 0
