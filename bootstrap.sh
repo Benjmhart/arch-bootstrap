@@ -5182,15 +5182,23 @@ UseEndAnimation=false'
 install_grub_theme() {
   local url=https://github.com/dracula/grub/archive/0e721d99dbf0d5d6c4fd489b88248365b7a60d12.tar.gz
   local sum=1dc94774d7e0fb149ca7123fbcf99f2a5baa94e7a7cbe26734091167ea120180
-  local dst=/boot/grub/themes/dracula line='GRUB_THEME="/boot/grub/themes/dracula/theme.txt"' tmp
-  tmp=$(mktemp -d)
+  local dst=/boot/grub/themes/dracula line='GRUB_THEME="/boot/grub/themes/dracula/theme.txt"' tmp src
+  local ttf=/usr/share/fonts/TTF/FiraCode-Regular.ttf px=28
+  tmp=$(mktemp -d); src=$tmp/grub-0e721d99dbf0d5d6c4fd489b88248365b7a60d12/dracula
   if curl -fsSL -o "$tmp/g.tar.gz" "$url" && echo "$sum  $tmp/g.tar.gz" | sha256sum -c --quiet \
-     && tar -xzf "$tmp/g.tar.gz" -C "$tmp" && [[ -f $tmp/grub-0e721d99dbf0d5d6c4fd489b88248365b7a60d12/dracula/theme.txt ]]; then
-    if sudo diff -rq "$tmp/grub-0e721d99dbf0d5d6c4fd489b88248365b7a60d12/dracula" "$dst" >/dev/null 2>&1; then
+     && tar -xzf "$tmp/g.tar.gz" -C "$tmp" && [[ -f $src/theme.txt ]]; then
+    # Bigger text (Ben 2026-11-07, "can we increase the GRUB fontsize?"): the theme's Unifont 16 becomes Fira Code at
+    # $px px, built here by grub-mkfont (deterministic, so the compare below still settles), and the menu is widened to
+    # fit. 00_header loads every .pf2 in the theme directory. Without the TTF the stock theme goes in unchanged.
+    if [[ -f $ttf ]] && grub-mkfont -s "$px" -o "$src/fira-code-$px.pf2" "$ttf"; then
+      sed -i -e "s/\"Unifont Regular 16\"/\"Fira Code Regular $px\"/" \
+        -e 's/left = 50%-240/left = 50%-360/' -e 's/width = 480/width = 720/' -e 's/item_height = 32/item_height = 48/' \
+        -e "s/  id = \"__timeout__\"/  id = \"__timeout__\"\n  font = \"Fira Code Regular $px\"/" "$src/theme.txt"
+    fi
+    if sudo diff -rq "$src" "$dst" >/dev/null 2>&1; then
       ok "GRUB theme in place ($dst)"
     else
-      run sudo mkdir -p "${dst%/*}" && run sudo cp -rT "$tmp/grub-0e721d99dbf0d5d6c4fd489b88248365b7a60d12/dracula" "$dst" \
-        && did "GRUB theme installed ($dst)"
+      run sudo mkdir -p "${dst%/*}" && run sudo cp -rT "$src" "$dst" && did "GRUB theme installed ($dst)"
     fi
   else
     warn "Dracula GRUB theme: download or checksum failed -- menu stays plain"
