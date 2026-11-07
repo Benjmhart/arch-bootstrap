@@ -224,6 +224,11 @@ PKG_EXCLUDE_FILE="${PKG_EXCLUDE_FILE:-}"
 # packages in pkglist-profile-<name>.txt (and any SYSTEM_UNITS they bring). Set it
 # per host in bootstrap.conf, e.g.  case "$(uname -n)" in tv) PROFILES="media-center" ;; esac
 PROFILES="${PROFILES:-}"
+# Machines whose boot image has plymouth (a splash for the unlock prompts), by hostname, or "all". carbon's first plymouth
+# boot (2026-11-07) showed a spinner and no prompt, then emergency mode, so it goes back one machine at a time: carbon
+# first, where Ben tests it (station-maintenance carbon 12). Elsewhere 90-no-plymouth.conf keeps it out.
+PLYMOUTH_HOSTS="${PLYMOUTH_HOSTS:-carbon}"
+plymouth_on() { [[ -x /usr/bin/plymouthd ]] && [[ $PLYMOUTH_HOSTS == all || " $PLYMOUTH_HOSTS " == *" $(uname -n) "* ]]; }
 
 BOOTSTRAP_CONFIG="${BOOTSTRAP_CONFIG:-$SCRIPT_DIR/bootstrap.conf}"
 
@@ -5245,9 +5250,6 @@ setup_boot() {
 hostonly="yes"
 hostonly_cmdline="no"
 add_dracutmodules+=" systemd systemd-cryptsetup fido2 "
-# Plymouth is NOT in the image (2026-11-07): the first boot on carbon with it showed a spinner and no unlock prompt at all;
-# it sat in the initramfs. Off until it is made to work on one machine (station-maintenance carbon task).
-omit_dracutmodules+=" plymouth "
 early_microcode="no"
 compress="zstd"' "dracut: systemd initramfs with FIDO2 unlock" && rebuild=1
   put_etc_file /etc/mkinitcpio.d/linux.preset \
@@ -5263,6 +5265,14 @@ fallback_options="-S autodetect"' "mkinitcpio: fallback image only" && rebuild=1
   if [[ -x /usr/bin/plymouthd ]]; then
     put_etc_file /usr/share/plymouth/themes/dracula/dracula.plymouth "$PLYMOUTH_DRACULA" "plymouth: Dracula theme" && rebuild=1
     put_etc_file /etc/plymouth/plymouthd.conf $'# Written by arch-bootstrap (setup_boot).\n[Daemon]\nTheme=dracula' "plymouth: theme" && rebuild=1
+  fi
+  # Off unless this machine is in PLYMOUTH_HOSTS. The same file tells 10_arch not to add `splash`.
+  local noply=/etc/dracut.conf.d/90-no-plymouth.conf
+  if plymouth_on; then
+    if [[ -e $noply ]]; then run sudo rm -f "$noply" && did "plymouth on here (PLYMOUTH_HOSTS)" && rebuild=1; fi
+  else
+    put_etc_file "$noply" '# Written by arch-bootstrap (setup_boot): this machine is not in PLYMOUTH_HOSTS (station-maintenance carbon 12).
+omit_dracutmodules+=" plymouth "' "plymouth out of the boot image" && rebuild=1
   fi
   if (( DRY_RUN )); then info "(dry run) would build the images and regenerate $cfg if needed"; return 0; fi
   setup_remote_unlock; if (( REMOTE_UNLOCK_CHANGED )); then rebuild=1; fi
@@ -5402,6 +5412,8 @@ if [ "$root_fs" = btrfs ]; then sv=$(findmnt -no FSROOT /); [ "$sv" = / ] || roo
 common="root=UUID=$root_uuid rw rootfstype=$root_fs$rootflags zswap.enabled=0"
 rd="rd.luks.name=$luks_uuid=root systemd.setenv=SYSTEMD_CRYPTSETUP_USE_TOKEN_MODULE=0"
 tail=${GRUB_CMDLINE_LINUX_DEFAULT-loglevel=3 quiet}
+# splash only where plymouth is in the image (arch-bootstrap writes 90-no-plymouth.conf where it is not)
+if [ -x /usr/bin/plymouthd ] && [ ! -e /etc/dracut.conf.d/90-no-plymouth.conf ]; then tail="$tail splash"; fi
 
 entry() { # title, message, kernel options, image
   cat <<EOF

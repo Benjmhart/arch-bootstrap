@@ -37,7 +37,8 @@ install() {
     done
     hostonly='' instmods cfg80211 mac80211 ccm gcm ctr cmac
     inst_multiple -o /usr/lib/firmware/regulatory.db /usr/lib/firmware/regulatory.db.p7s
-    inst_multiple ip sleep seq ls cat kill rm true sshd systemd-tty-ask-password-agent
+    inst_multiple ip sleep seq ls cat kill rm true sshd systemd-tty-ask-password-agent wc sed head systemctl
+    inst_multiple -o journalctl   # unlock-prompt's status lines (carbon 12)
     inst_multiple -o /usr/lib/ssh/sshd-session /usr/lib/ssh/sshd-auth wpa_supplicant
     if [[ $ts ]]; then
         inst_multiple tailscaled

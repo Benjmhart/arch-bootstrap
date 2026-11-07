@@ -1,9 +1,21 @@
 #!/bin/sh
 # The only thing micro's key can run here (authorized_keys forced command): wait for the disk's passphrase prompt
-# (systemd-cryptsetup asks after the 20 s FIDO2 wait) and answer it on this terminal.
+# (systemd-cryptsetup asks once the FIDO2 token wait, token-timeout, has passed) and answer it on this terminal.
+# First it says what the unlock is doing, so a boot that shows nothing on its screen can be read from here (carbon's
+# plymouth boot, 2026-11-07: a spinner, no prompt, then emergency mode; station-maintenance carbon 12).
+status() {
+    echo "== disk unlock: $(systemctl --no-pager --plain --no-legend list-units 'systemd-cryptsetup@*' 2>/dev/null | head -3)"
+    command -v journalctl >/dev/null && journalctl -b --no-pager -o cat -n 8 -u 'systemd-cryptsetup@*' 2>/dev/null | sed 's/^/   /'
+    if command -v plymouth >/dev/null && plymouth --ping 2>/dev/null; then echo "== plymouth: running (the prompt is drawn on its screen)"; fi
+    echo "== pending prompts: $(ls /run/systemd/ask-password/ask.* 2>/dev/null | wc -l)"
+}
+status
 for i in $(seq 120); do
     ls /run/systemd/ask-password/ask.* >/dev/null 2>&1 && exec systemd-tty-ask-password-agent --query
     [ "$i" = 1 ] && echo "waiting for the passphrase prompt (up to 60 s)..."
     sleep 0.5
 done
-echo "no passphrase prompt: the disk is already unlocked, or the boot went past the initramfs"; exit 1
+echo "no passphrase prompt after 60 s: the disk is already unlocked, the boot went past the initramfs, or the unlock is"
+echo "stuck before asking (a YubiKey that is present but not answering?):"
+status
+exit 1
