@@ -9,11 +9,11 @@
 # ORDER MATTERS: a package depending on another AUR package comes after it (e.g. a lib before the app that needs it).
 # First pins 2026-10-17: the newest version then installed anywhere in the fleet (carbon unreachable).
 bemoji                               90ed093966261043a7b0045b8fc0c8f339013e61
-claude-desktop                       ba9899e60c97ddb359d178805eede9e9bfd02151
+claude-desktop                       469c733381ffecf88413fba593ca28b6168f5e32
 dracula-gtk-theme                    3f4c6f263e23a97a63e5be911474541053946456
 espanso-x11                          f66257bbb59116dea6d002ab486be930c06c6d19 espanso
-google-chrome                        8dcfe3c374513f1e58b704ba36db8dee3ad2d2b6
-handy-bin                            2f19d9a38b8585de2715a657e891c89a66013e3d
+google-chrome                        a3cd9ff99d3a9adf2682a80d07102769e46ef8a1
+handy-bin                            c4c46783a5572b91b9da71eac8be538cc7491d09
 i3lock-color                         886bdde4481265bef7461ff3f40a992250354ed8
 lightworks                           c8738dd8d57e25cda3adb1f9caf1f5dec5715497   # not: micro
 # surfboard's Quadro M600M (Maxwell): the 580xx legacy driver, utils before the DKMS module and lib32 (both depend
@@ -34,7 +34,7 @@ streamdeck-ui                        fd887de11f6eaa3265e2fdc7645712136b3fc640   
 ventoy-bin                           b185aeda22473076cc0cb7d330bc8bc0b43c8a0e
 xdg-desktop-portal-termfilechooser   7b759fbd09fd94dad25005891061a2a267d0c4f6
 yay                                  a856562dc26bb1ea060e167983cd22ca6bcac9ec
-zoom                                 9cf1e9686715d0677db2eb4106c2d59aee6d7ca0   # not: micro
+zoom                                 b5fd0c07c9c69c95928445d69d9d616b1039a3f6   # not: micro
 # ZSA Keymapp (station-maintenance beast-arch 108, Ben 2026-11-01): live Moonlander layer overlay. zsa-udev first
 # (keymapp depends on it; its rules use group plugdev, so setup_zsa adds a uaccess rule for the seat user instead).
 zsa-udev                             513a62cd8768773ed7ba0b7c3cf0a4ddadd7d3f7   # only: beast-arch
