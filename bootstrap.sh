@@ -3655,6 +3655,22 @@ keepassxc_seed_config() {
 # both find it). Bibata-Modern-Dracula is a link to one of the two; ~/.local/bin/cursor-rotate (dotfiles) re-points it
 # hourly. The dotfiles select that name at size 40 (environment.d/90-dracula.conf, gtk-3.0/4.0, .icons/default, sway).
 # Dracula-cursors and Bibata-Modern-Ice stay wherever they were installed earlier.
+# Wallpapers move with fpush (Ben 2026-11-07: the Dracula space set, wallpapers/space): fast-forward a clean checkout
+# on its branch, nothing else. stage_secrets only ever cloned it, so a machine kept whatever it first got. Images and
+# their credits only (grade.py in it is never run), hence no review step of its own. Local changes: left alone.
+update_wallpapers() {
+  local w=$WALLPAPERS_DIR before
+  [[ -d $w/.git ]] || return 0
+  if [[ -n $(git -C "$w" status --porcelain 2>/dev/null) ]] || ! git -C "$w" symbolic-ref -q HEAD >/dev/null; then
+    warn "wallpapers: local changes or detached -- not updated"; return 0
+  fi
+  (( DRY_RUN )) && { info "(dry run) would fast-forward $w"; return 0; }
+  before=$(git -C "$w" rev-parse --short HEAD)
+  if git -C "$w" pull -q --ff-only 2>/dev/null; then
+    [[ $(git -C "$w" rev-parse --short HEAD) == "$before" ]] && ok "wallpapers at $before" || did "wallpapers $before -> $(git -C "$w" rev-parse --short HEAD)"
+  else warn "wallpapers: fast-forward failed (offline, or diverged) -- left at $before"; fi
+}
+
 install_cursor_theme() {
   local icons="$HOME/.local/share/icons" tmp src c
   local url=https://github.com/ful1e5/Bibata_Cursor/releases/download/v2.0.7/Bibata-Modern-Amber.tar.xz
@@ -5343,6 +5359,7 @@ stage_services() {
   espanso_skip_wizard
   keepassxc_seed_config
   install_cursor_theme
+  update_wallpapers
   manage_tmp_storage
   user_tmp_cleanup
   install_system_dropins
