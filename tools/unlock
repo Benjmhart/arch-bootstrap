@@ -64,9 +64,12 @@ fi
 echo "waiting for $host-boot on the tailnet ..."
 for _ in $(seq 90); do
   addr=$(tailscale ip -4 "$host-boot" 2>/dev/null || true)
-  # tailscale ping first: a TCP probe to a boot node that is still offline is held and retried by tailscale, and the held
-  # probes all landed at once when media-center's came up (2026-11-06), tripping its sshd's MaxStartups and penalty.
-  if [[ -n $addr ]] && tailscale ping -c 1 --timeout 2s "$host-boot" >/dev/null 2>&1 \
+  # Online in tailscale's own status first: a TCP probe to a boot node that is still offline is held and retried by
+  # tailscale, and the held probes all landed at once when media-center's came up (2026-11-06), tripping its sshd's
+  # MaxStartups and penalty. Not `tailscale ping`, which it was until 2026-11-07: carbon-boot was online with :22 open
+  # while its disco pings timed out, and unlock waited forever (station-maintenance carbon 12).
+  if [[ -n $addr ]] && tailscale status --json 2>/dev/null \
+       | jq -e --arg h "$host-boot" '[.Peer[] | select(.HostName == $h and .Online)] | length > 0' >/dev/null \
      && timeout 3 bash -c "</dev/tcp/$addr/22" 2>/dev/null; then
     echo "connecting to $host-boot ($addr): touch your YubiKey when it blinks"
     exec "${run[@]}" ssh -F /dev/null -t "${keys[@]}" -o IdentitiesOnly=yes -o IdentityAgent=none \
