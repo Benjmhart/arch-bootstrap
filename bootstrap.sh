@@ -5137,6 +5137,36 @@ add_dracutmodules+=" remote-unlock "' "dracut: remote-unlock" && REMOTE_UNLOCK_C
   ok "remote-unlock: node $(uname -n)-boot, $(grep -c . <<<"$keys") YubiKey key(s)${wifi:+, Wi-Fi}"
 }
 
+# Dracula GRUB theme (github.com/dracula/grub at a pinned commit, checksum-checked; Ben 2026-11-07, Dracula ricing):
+# copied to /boot/grub/themes/dracula and named in GRUB_THEME, which grub-mkconfig's header then loads (gfxterm).
+# setup_boot regenerates and checks the menu right after this. A theme GRUB cannot load costs only the looks: it
+# falls back to the plain menu. Called from setup_boot only, so /boot is known to be this machine's GRUB.
+install_grub_theme() {
+  local url=https://github.com/dracula/grub/archive/0e721d99dbf0d5d6c4fd489b88248365b7a60d12.tar.gz
+  local sum=1dc94774d7e0fb149ca7123fbcf99f2a5baa94e7a7cbe26734091167ea120180
+  local dst=/boot/grub/themes/dracula line='GRUB_THEME="/boot/grub/themes/dracula/theme.txt"' tmp
+  tmp=$(mktemp -d)
+  if curl -fsSL -o "$tmp/g.tar.gz" "$url" && echo "$sum  $tmp/g.tar.gz" | sha256sum -c --quiet \
+     && tar -xzf "$tmp/g.tar.gz" -C "$tmp" && [[ -f $tmp/grub-0e721d99dbf0d5d6c4fd489b88248365b7a60d12/dracula/theme.txt ]]; then
+    if sudo diff -rq "$tmp/grub-0e721d99dbf0d5d6c4fd489b88248365b7a60d12/dracula" "$dst" >/dev/null 2>&1; then
+      ok "GRUB theme in place ($dst)"
+    else
+      run sudo mkdir -p "${dst%/*}" && run sudo cp -rT "$tmp/grub-0e721d99dbf0d5d6c4fd489b88248365b7a60d12/dracula" "$dst" \
+        && did "GRUB theme installed ($dst)"
+    fi
+  else
+    warn "Dracula GRUB theme: download or checksum failed -- menu stays plain"
+  fi
+  rm -rf -- "$tmp"
+  sudo test -f "$dst/theme.txt" || return 0
+  if grep -qx "$line" /etc/default/grub; then ok "GRUB_THEME set"
+  elif grep -q '^#\?GRUB_THEME=' /etc/default/grub; then
+    run sudo sed -i "s|^#\?GRUB_THEME=.*|$line|" /etc/default/grub && did "GRUB_THEME set"
+  else
+    printf '%s\n' "$line" | run sudo tee -a /etc/default/grub >/dev/null && did "GRUB_THEME set"
+  fi
+}
+
 setup_boot() {
   if [[ $(findmnt -nvo SOURCE /) != /dev/mapper/root ]]; then info "/ is not LUKS /dev/mapper/root -- boot setup skipped"; return 0; fi
   local rebuild=0 f cfg=/boot/grub/grub.cfg img=/boot/initramfs-linux.img
@@ -5235,6 +5265,7 @@ EOF" "GRUB: the Windows entries" || true
     fi
     rm -f "$rwtmp"
   fi
+  install_grub_theme
   for f in 10_linux 15_uki 20_linux_xen 31_efi_bootnext; do
     [[ -x /etc/grub.d/$f ]] && { run sudo chmod 644 "/etc/grub.d/$f"; did "GRUB: $f switched off"; }
   done
