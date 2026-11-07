@@ -5292,12 +5292,14 @@ EOF" "GRUB: the Windows entries" || true
 GRUB_10_ARCH='#!/bin/sh
 # Written by arch-bootstrap (station-maintenance beast-arch 95); edit setup_boot there, not this file.
 # The Arch entries, read fresh at every grub-mkconfig:
-#   Arch Linux               dracut: the YubiKey (PIN + touch), or the passphrase after 20 s without it
+#   Arch Linux               dracut: the YubiKey (PIN + touch), or the passphrase after 3 s without it
 #   Arch Linux (passphrase)  dracut, no key step (only once a key is enrolled; tools/luks-fido2)
 #   Arch Linux (fallback)    mkinitcpio image, busybox `encrypt`, passphrase
 # SYSTEMD_CRYPTSETUP_USE_TOKEN_MODULE=0: systemd-cryptsetup'"'"'s own FIDO2 code waits for the key
 # (token-timeout) before it asks for the PIN. The libcryptsetup token module asks for the PIN first and
 # waits forever, so a boot without the key never reached the passphrase (carbon, 2026-10-16 18:40).
+# token-timeout=3s, was 20s (Ben 2026-11-07: "i really hate the 20 second timer"). 0 would mean wait forever.
+# A plugged-in key is enumerated before systemd-cryptsetup starts (carbon 1.57 s vs 2.1 s, beast-arch 1.37 s vs 1.64 s).
 set -e
 if mountpoint -q /boot; then p=; else p=/boot; fi
 boot_uuid=$(grub-probe --target=fs_uuid /boot)
@@ -5337,8 +5339,8 @@ EOF
 }
 
 if [ "$keys" -gt 0 ]; then
-  entry "Arch Linux" "Plug in your YubiKey (PIN, then touch), or wait 20 s for the passphrase prompt" \
-    "$common $rd rd.luks.options=$luks_uuid=fido2-device=auto,token-timeout=20s $tail" initramfs-linux.img
+  entry "Arch Linux" "Plug in your YubiKey (PIN, then touch), or wait 3 s for the passphrase prompt" \
+    "$common $rd rd.luks.options=$luks_uuid=fido2-device=auto,token-timeout=3s $tail" initramfs-linux.img
   entry "Arch Linux (passphrase)" "Passphrase unlock (no YubiKey)" "$common $rd $tail" initramfs-linux.img
 else
   entry "Arch Linux" "Passphrase unlock (no YubiKey enrolled here)" "$common $rd $tail" initramfs-linux.img

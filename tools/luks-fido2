@@ -4,7 +4,7 @@
 #   1. /home: if crypttab opens it with a passphrase ("none"), add a keyfile on / (asks the /home passphrase
 #      once), test it, and point crypttab at it -- otherwise a key-unlocked boot stops at a /home prompt.
 #   2. Enroll keys on /, one at a time: the LUKS passphrase, then the key's FIDO2 PIN and a touch. The
-#      passphrase stays; at boot it is the fallback after 20 s, and the "(passphrase)" GRUB entry.
+#      passphrase stays; at boot it is the fallback after 3 s, and the "(passphrase)" GRUB entry.
 #   3. Regenerate the GRUB menu (10_arch adds the key entries once a key is enrolled).
 # --touch-only: keys unlock with a touch and NO PIN, and the first enrollment removes every earlier key slot (the
 #   PIN ones; the passphrase stays). For a machine whose unlock prompt cannot be seen: surfboard at the TV, where it
@@ -67,5 +67,5 @@ new=$(mktemp)
 { grub-mkconfig 2>/dev/null >"$new" && grub-script-check "$new"; } || fail "grub-mkconfig/grub-script-check failed; grub.cfg untouched"
 echo "menu:"; grep -E "^menuentry " "$new" | cut -d"'" -f2 | sed 's/^/  /'
 do_ install -m 600 "$new" /boot/grub/grub.cfg; rm -f "$new"
-echo "keys enrolled for /: $(tokens). Test: reboot without a key (20 s, then the passphrase), then with one ($( [[ $pin == yes ]] && echo "PIN, ")touch)."
+echo "keys enrolled for /: $(tokens). Test: reboot without a key (3 s, then the passphrase), then with one ($( [[ $pin == yes ]] && echo "PIN, ")touch)."
 echo "== done $(date -Is)"
