@@ -3671,6 +3671,30 @@ update_wallpapers() {
   else warn "wallpapers: fast-forward failed (offline, or diverged) -- left at $before"; fi
 }
 
+# Violet folders (Ben 2026-11-07, Dracula ricing): Papirus-Dark-Dracula in ~/.local/share/icons inherits Papirus-Dark and
+# only re-points the folder/home icons from their -blue to their -violet variants, the same symlink swap papirus-folders
+# makes, but per user: no sudo, and a Papirus package update cannot undo it. Rebuilt every run (cheap), so new Papirus
+# folder icons are picked up. The dotfiles select it (gtk-3.0/4.0, sway).
+install_icon_theme() {
+  local src=/usr/share/icons dst="$HOME/.local/share/icons/Papirus-Dark-Dracula" n=0 d f t v
+  [[ -f $src/Papirus-Dark/index.theme ]] || { warn "Papirus-Dark not installed -- no violet folders"; return 0; }
+  (( DRY_RUN )) && { info "(dry run) would build $dst"; return 0; }
+  mkdir -p "$dst"
+  sed -e 's/^Name=.*/Name=Papirus-Dark-Dracula/' -e 's/^Inherits=.*/Inherits=Papirus-Dark,Papirus,breeze-dark,hicolor/' \
+    "$src/Papirus-Dark/index.theme" >"$dst/index.theme"
+  for d in "$src"/Papirus/*/places; do
+    d=${d%/places}; d=${d##*/}
+    mkdir -p "$dst/$d/places"
+    for f in "$src/Papirus/$d/places"/*.svg; do
+      [[ -L $f ]] || continue
+      t=$(readlink "$f"); [[ $t == *-blue* ]] || continue
+      v=${t/-blue/-violet}; [[ -e $src/Papirus/$d/places/$v ]] || continue
+      ln -sfn "$src/Papirus/$d/places/$v" "$dst/$d/places/${f##*/}"; n=$((n + 1))
+    done
+  done
+  ok "icon theme Papirus-Dark-Dracula: $n folder icons violet"
+}
+
 install_cursor_theme() {
   local icons="$HOME/.local/share/icons" tmp src c
   local url=https://github.com/ful1e5/Bibata_Cursor/releases/download/v2.0.7/Bibata-Modern-Amber.tar.xz
@@ -5359,6 +5383,7 @@ stage_services() {
   espanso_skip_wizard
   keepassxc_seed_config
   install_cursor_theme
+  install_icon_theme
   update_wallpapers
   manage_tmp_storage
   user_tmp_cleanup
