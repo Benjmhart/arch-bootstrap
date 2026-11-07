@@ -228,16 +228,31 @@ guard=/usr/local/lib/arch-bootstrap/sudo-u2f-skip filter=/var/lib/cloud/scripts/
 mkdir -p "/mnt${guard%/*}" "/mnt${filter%/*}"
 cat > "/mnt$guard" <<'EOF'
 #!/bin/sh
-# Written by arch-bootstrap. pam_exec (seteuid) runs this from /etc/pam.d/sudo; exit 0 skips the
-# YubiKey for this sudo: stdin is not a terminal (sudo -S), or an ancestor is sshd. With "pipe", only the first.
-p=$PPID
+# Written by arch-bootstrap. pam_exec (seteuid, as root) runs this from /etc/pam.d/sudo; exit 0 skips the next module.
+#   pipe   stdin is not a terminal (sudo -S: the password is already on stdin): every YubiKey is skipped.
+#   agent  the forwarded client key (pam_rssh): only when this sudo runs under ssh, or `sudo-from <host>` pinned one.
+#          At the machine's own keyboard it is never used by default (2026-11-07: a forwarded session from micro
+#          silently took carbon's console sudo). Says whose key it wants.
+#   (none) the key plugged in here (pam_u2f): skipped under ssh, where nobody can touch it. Says so.
+h=$(uname -n) p=$PPID
 case $(readlink "/proc/$p/fd/0") in /dev/pts/*|/dev/tty*) ;; *) exit 0 ;; esac
 [ "$1" = pipe ] && exit 1
+ssh=0
 while [ "$p" -gt 1 ]; do
-  case $(cat "/proc/$p/comm") in sshd*) exit 0 ;; esac
+  case $(cat "/proc/$p/comm") in sshd*) ssh=1; break ;; esac
   p=$(sed "s/.*) //" "/proc/$p/stat" | cut -d" " -f2)
 done
-exit 1
+home=$(getent passwd "$PAM_USER" | cut -d: -f6)
+pin=$(cat "$home/.ssh/sudo-agent.pin" 2>/dev/null)
+if [ "$1" = agent ]; then
+  [ "$pin" = here ] && exit 0
+  [ -n "$pin" ] || [ $ssh = 1 ] || exit 0
+  from=$(SSH_AUTH_SOCK=$home/.ssh/sudo-agent.sock timeout 3 ssh-add -l 2>/dev/null | awk '$3 ~ /@/ {sub(/.*@/, "", $3); print $3; exit}')
+  if [ -z "$from" ]; then echo "sudo on $h: no forwarded YubiKey reachable${pin:+ (sudo-from $pin)}"; exit 0; fi
+  echo "sudo on $h: touch the YubiKey at $from${pin:+ (sudo-from)}"; exit 1
+fi
+[ $ssh = 1 ] && { echo "sudo on $h: over ssh, no key here -- password"; exit 0; }
+echo "sudo on $h: touch the YubiKey plugged into $h"; exit 1
 EOF
 cat > "/mnt$filter" <<'EOF'
 #!/bin/sh

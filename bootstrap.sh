@@ -4934,7 +4934,9 @@ ACTION=="add|change", SUBSYSTEM=="usb|hidraw", ATTRS{idVendor}=="3297", TAG+="ua
 #    left gnome-keyring locked, since it unlocks from the typed password.
 #  - sudo over ssh by a touch at the CLIENT (beast-arch 133): micro, beast-arch and carbon run a second ssh-agent
 #    holding only their YubiKey sk keys and forward it to the peers (ssh_tailnet_peers); the remote shell links it to
-#    ~/.ssh/sudo-agent.sock (dotfiles .zshenv) and pam_rssh asks it to sign. Accepted keys = the remote-unlock set,
+#    ~/.ssh/sudo-agent.sock (dotfiles .zshenv) and pam_rssh asks it to sign -- only when that sudo runs under ssh, or
+#    `sudo-from <host>` (.zshrc) pinned a client: at the machine's own keyboard the local key is asked (2026-11-07,
+#    fleet 3). Every sudo prints the machine whose key it wants. Accepted keys = the remote-unlock set,
 #    all touch-required: ssh/fleet/micro-peer-*.pub + ssh/unlock/*.pub. pam_rssh does NOT check the signature's
 #    user-presence flag (1.2.1, src/sign_verify.rs), so that set must never hold a no-touch-required (-nt) key.
 setup_yubikey() {
@@ -4949,34 +4951,63 @@ ACTION=="add|change", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1050", TAG+="uacces
   if [[ ! -s $map ]]; then info "no $map -- sudo stays password-only"; return 0; fi
   [[ -f /usr/lib/security/pam_u2f.so ]] || { warn "pam-u2f not installed -- sudo stays password-only"; return 0; }
   put_etc_file /etc/u2f_mappings "$(cat "$map")" "YubiKeys allowed for sudo" || true
-  if put_etc_file "$guard" '#!/bin/sh
-# Written by arch-bootstrap. pam_exec (seteuid) runs this from /etc/pam.d/sudo; exit 0 skips the
-# YubiKey for this sudo: stdin is not a terminal (sudo -S), or an ancestor is sshd. With "pipe", only the first.
-p=$PPID
+  local gtext; gtext=$(cat <<'GUARD'
+#!/bin/sh
+# Written by arch-bootstrap. pam_exec (seteuid, as root) runs this from /etc/pam.d/sudo; exit 0 skips the next module.
+#   pipe   stdin is not a terminal (sudo -S: the password is already on stdin): every YubiKey is skipped.
+#   agent  the forwarded client key (pam_rssh): only when this sudo runs under ssh, or `sudo-from <host>` pinned one.
+#          At the machine's own keyboard it is never used by default (2026-11-07: a forwarded session from micro
+#          silently took carbon's console sudo). Says whose key it wants.
+#   (none) the key plugged in here (pam_u2f): skipped under ssh, where nobody can touch it. Says so.
+h=$(uname -n) p=$PPID
 case $(readlink "/proc/$p/fd/0") in /dev/pts/*|/dev/tty*) ;; *) exit 0 ;; esac
 [ "$1" = pipe ] && exit 1
+ssh=0
 while [ "$p" -gt 1 ]; do
-  case $(cat "/proc/$p/comm") in sshd*) exit 0 ;; esac
+  case $(cat "/proc/$p/comm") in sshd*) ssh=1; break ;; esac
   p=$(sed "s/.*) //" "/proc/$p/stat" | cut -d" " -f2)
 done
-exit 1' "sudo: password-only under ssh or sudo -S"; then
+home=$(getent passwd "$PAM_USER" | cut -d: -f6)
+pin=$(cat "$home/.ssh/sudo-agent.pin" 2>/dev/null)
+if [ "$1" = agent ]; then
+  [ "$pin" = here ] && exit 0
+  [ -n "$pin" ] || [ $ssh = 1 ] || exit 0
+  from=$(SSH_AUTH_SOCK=$home/.ssh/sudo-agent.sock timeout 3 ssh-add -l 2>/dev/null | awk '$3 ~ /@/ {sub(/.*@/, "", $3); print $3; exit}')
+  if [ -z "$from" ]; then echo "sudo on $h: no forwarded YubiKey reachable${pin:+ (sudo-from $pin)}"; exit 0; fi
+  echo "sudo on $h: touch the YubiKey at $from${pin:+ (sudo-from)}"; exit 1
+fi
+[ $ssh = 1 ] && { echo "sudo on $h: over ssh, no key here -- password"; exit 0; }
+echo "sudo on $h: touch the YubiKey plugged into $h"; exit 1
+GUARD
+)
+  if put_etc_file "$guard" "$gtext" "sudo: which YubiKey to ask, and saying so"; then
     run sudo chmod 755 "$guard"
   fi
 
+  # /etc/pam.d/sudo: the YubiKey lines are this function's own. Every earlier form is dropped (they changed on 2026-11-07:
+  # the forwarded key only under ssh or after sudo-from, and each sudo names the machine it wants a touch at) and the
+  # current set goes in front of the first auth line, so a re-run converges instead of stacking. pam_exec "stdout" shows
+  # the guard's line; "quiet" keeps its exit 1 (= use the next module) from being reported as an error.
   local u2f="pam_u2f.so authfile=/etc/u2f_mappings origin=pam://fleet appid=pam://fleet cue nouserok"
-  pam_prepend "$pamfile" "sudo: YubiKey touch, password fallback" \
-    "auth\t\t[success=1 default=ignore]\tpam_exec.so quiet seteuid $guard" "auth\t\tsufficient\t$u2f"
-  # Ahead of that: the forwarded client key, skipped (with the local key) under sudo -S, where the password is
-  # already on stdin and a touch would leave it to be read by the command.
-  local f keys=""
+  local f keys="" stack=()
   for f in "$SECRETS_DIR"/ssh/fleet/micro-peer-*.pub "$SECRETS_DIR"/ssh/unlock/*.pub; do [[ -f $f ]] && keys+="$(cat "$f")"$'\n'; done
   if [[ ! -f /usr/lib/security/pam_rssh.so ]]; then warn "pam_rssh not installed -- sudo over ssh stays password-only"
   elif [[ -n $keys ]]; then
     put_etc_file /etc/sudo-agent-keys "${keys%$'\n'}" "YubiKey ssh keys accepted for sudo over ssh" || true
-    pam_prepend "$pamfile" "sudo over ssh: touch at the client's YubiKey" \
-      "auth\t\t[success=3 default=ignore]\tpam_exec.so quiet seteuid $guard pipe" \
-      "auth\t\tsufficient\tpam_rssh.so auth_key_file=/etc/sudo-agent-keys ssh_agent_addr=/home/\${user}/.ssh/sudo-agent.sock cue [cue_prompt=Touch the YubiKey at your machine]"
+    # sudo -S skips all four lines after it (the password is already on stdin); then the client's forwarded key.
+    stack+=("auth\t\t[success=4 default=ignore]\tpam_exec.so quiet seteuid $guard pipe"
+            "auth\t\t[success=1 default=ignore]\tpam_exec.so quiet stdout seteuid $guard agent"
+            "auth\t\tsufficient\tpam_rssh.so auth_key_file=/etc/sudo-agent-keys ssh_agent_addr=/home/\${user}/.ssh/sudo-agent.sock cue [cue_prompt=Touch it now]")
   fi
+  stack+=("auth\t\t[success=1 default=ignore]\tpam_exec.so quiet stdout seteuid $guard" "auth\t\tsufficient\t$u2f")
+  local ptmp; ptmp=$(mktemp)
+  awk -v add="$(printf '%b\n' "${stack[@]}")" '/sudo-u2f-skip|pam_rssh\.so|pam_u2f\.so authfile=\/etc\/u2f_mappings/ {next}
+    /^auth/ && !d {print add; d=1} {print}' "$pamfile" > "$ptmp"
+  if ! grep -qxF "$(printf '%b' "auth\t\tsufficient\t$u2f")" "$ptmp"; then warn "could not place the YubiKey lines in $pamfile -- left untouched"
+  elif cmp -s "$ptmp" "$pamfile"; then ok "sudo: YubiKey lines already in place ($pamfile)"
+  elif (( DRY_RUN )); then info "(dry run) would rewrite the YubiKey lines of $pamfile"
+  else run sudo install -m 644 "$ptmp" "$pamfile" && did "sudo: YubiKey lines ($pamfile)"; fi
+  rm -f "$ptmp"
   # tty login: the password only (Ben, 2026-11-07, "lets require the password at login then"). A touch login left the
   # GNOME keyring locked, since pam_gnome_keyring unlocks it with the login password. Touch or password from
   # 2026-11-01 to 11-07; its line is taken out here.
@@ -5870,6 +5901,7 @@ stage_verify() {
   if [[ -s $SECRETS_DIR/yubikey/u2f_mappings ]]; then check "sudo: YubiKey touch (pam_u2f)" "grep -q pam_u2f /etc/pam.d/sudo"; fi
   check "tty login: password only (no pam_u2f, so the keyring unlocks)" "! grep -q pam_u2f /etc/pam.d/login"
   check "sudo over ssh: client YubiKey (pam_rssh)" "grep -q pam_rssh /etc/pam.d/sudo"
+  check "sudo: names the machine it wants a touch at" "grep -q 'sudo-u2f-skip agent' /etc/pam.d/sudo"
   if [[ -x /usr/bin/xsecurelock ]]; then check "xsecurelock: YubiKey touch (pam_u2f)" "grep -q pam_u2f /etc/pam.d/xsecurelock"; fi
   if awk -v h="$(uname -n)" '$1 == h { f=1 } END { exit !f }' "$SECRETS_DIR/wake/hosts" 2>/dev/null; then
     check "Wi-Fi wake on magic packet (wake/hosts)" \
