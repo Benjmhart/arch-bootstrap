@@ -1,0 +1,73 @@
+#!/usr/bin/env python3
+"""cursor-recolor <src theme dir> <dst theme dir> <theme name> <#rrggbb>
+
+Recolour an Xcursor theme's orange fill to another colour (station-maintenance beast-arch 127, Ben 2026-11-07: Bibata
+Modern Amber's shapes in Dracula purple or green). Bibata publishes no Dracula colourways and its own builder needs
+node + a headless browser, so this rewrites the published Amber release's cursor files instead: every image size and
+animation frame, hotspots untouched. Pixels whose hue is the amber's (20-45 degrees) take the target hue, with
+saturation and brightness scaled by how far they were from white/black, so the white-outline blend stays smooth.
+White, black and the busy spinner's other colours are left alone. Symlinks (cursor aliases) are kept as links.
+Pure stdlib; reads and writes files only.
+"""
+import colorsys, os, shutil, struct, sys
+
+XCUR_IMAGE = 0xFFFD0002
+
+
+def recolor_file(data, th, ts, tv):
+    if data[:4] != b"Xcur":
+        return data
+    out = bytearray(data)
+    ntoc = struct.unpack_from("<I", data, 12)[0]
+    for i in range(ntoc):
+        typ, _, pos = struct.unpack_from("<III", data, 16 + 12 * i)
+        if typ != XCUR_IMAGE:
+            continue
+        w, h = struct.unpack_from("<II", data, pos + 16)
+        base = pos + 36
+        for j in range(w * h):
+            o = base + 4 * j
+            b, g, r, a = data[o:o + 4]
+            if not a:
+                continue
+            r, g, b = (min(255, c * 255 // a) for c in (r, g, b))  # Xcursor pixels are premultiplied
+            hh, s, v = colorsys.rgb_to_hsv(r / 255, g / 255, b / 255)
+            if s < 0.08 or not (20 / 360 <= hh <= 45 / 360):
+                continue
+            nr, ng, nb = colorsys.hsv_to_rgb(th, min(1.0, ts * s), min(1.0, tv * v))
+            out[o:o + 3] = bytes(round(c * 255 * a / 255) for c in (nb, ng, nr))
+    return bytes(out)
+
+
+def main():
+    if len(sys.argv) != 5:
+        sys.exit(__doc__)
+    src, dst, name, hexcol = sys.argv[1:]
+    hexcol = hexcol.lstrip("#")
+    th, ts, tv = colorsys.rgb_to_hsv(*(int(hexcol[k:k + 2], 16) / 255 for k in (0, 2, 4)))
+    if os.path.exists(dst):
+        shutil.rmtree(dst)
+    shutil.copytree(src, dst, symlinks=True)
+    n = 0
+    for f in os.listdir(os.path.join(dst, "cursors")):
+        p = os.path.join(dst, "cursors", f)
+        if os.path.islink(p) or not os.path.isfile(p):
+            continue
+        with open(p, "rb") as fh:
+            d = fh.read()
+        with open(p, "wb") as fh:
+            fh.write(recolor_file(d, th, ts, tv))
+        n += 1
+    for meta in ("index.theme", "cursor.theme"):
+        p = os.path.join(dst, meta)
+        if os.path.exists(p):
+            lines = open(p).read().splitlines()
+            lines = [f"Name={name}" if l.startswith("Name=") else
+                     f"Comment={name}: Bibata Modern Amber recoloured #{hexcol}" if l.startswith("Comment=") else l
+                     for l in lines]
+            open(p, "w").write("\n".join(lines) + "\n")
+    print(f"{name}: {n} cursor files recoloured to #{hexcol} in {dst}")
+
+
+if __name__ == "__main__":
+    main()

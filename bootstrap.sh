@@ -3649,24 +3649,36 @@ keepassxc_seed_config() {
   did "keepassxc.ini seeded from keepassxc.defaults.ini"
 }
 
-# Cursor theme: Bibata Modern Ice, the theme's own release pinned by checksum, into ~/.local/share/icons (on
-# libXcursor's default path, so X and Wayland both find it). White and size 32, chosen for visibility (Ben 2026-11-07:
-# "easy to lose the mouse on carbon"; the dark Dracula-cursors it replaces vanished on the dark desktop). The AUR's
-# bibata-cursor-theme-bin is the same release, built; this needs no makepkg and no sudo. The dotfiles select it
-# (environment.d/90-dracula.conf, gtk-3.0/4.0, .icons/default, sway). Dracula-cursors stays where it was installed.
+# Cursor theme: Bibata Modern Dracula, purple (#bd93f9) and green (#50fa7b) builds of Bibata Modern Amber (Ben
+# 2026-11-07: high visibility, Dracula colours, "randomize between them every hour"). The Amber release, pinned by
+# checksum, is recoloured by tools/cursor-recolor into ~/.local/share/icons (libXcursor's default path; X and Wayland
+# both find it). Bibata-Modern-Dracula is a link to one of the two; ~/.local/bin/cursor-rotate (dotfiles) re-points it
+# hourly. The dotfiles select that name at size 40 (environment.d/90-dracula.conf, gtk-3.0/4.0, .icons/default, sway).
+# Dracula-cursors and Bibata-Modern-Ice stay wherever they were installed earlier.
 install_cursor_theme() {
-  local dir="$HOME/.local/share/icons/Bibata-Modern-Ice" tmp
-  local url=https://github.com/ful1e5/Bibata_Cursor/releases/download/v2.0.7/Bibata-Modern-Ice.tar.xz
-  local sum=a68cae60c4dc706350e194ebc91c5fe48bc7bc9d59e119555834a2a7ee5078ef
-  [[ -f $dir/index.theme ]] && { ok "cursor theme Bibata-Modern-Ice already installed"; return 0; }
-  (( DRY_RUN )) && { info "(dry run) would install Bibata-Modern-Ice to $dir"; return 0; }
-  tmp=$(mktemp)
-  if curl -fsSL -o "$tmp" "$url" && echo "$sum  $tmp" | sha256sum -c --quiet; then
-    mkdir -p "${dir%/*}" && tar -xJf "$tmp" -C "${dir%/*}" && did "cursor theme installed ($dir)"
+  local icons="$HOME/.local/share/icons" tmp src c
+  local url=https://github.com/ful1e5/Bibata_Cursor/releases/download/v2.0.7/Bibata-Modern-Amber.tar.xz
+  local sum=58b7ac00ed3cb45acb6b917cb9807a553873f1cca5c91348c4abaebe638e5884
+  if [[ -f $icons/Bibata-Modern-Dracula-Purple/index.theme && -f $icons/Bibata-Modern-Dracula-Green/index.theme ]]; then
+    ok "cursor themes Bibata-Modern-Dracula-Purple/-Green already installed"
+  elif (( DRY_RUN )); then info "(dry run) would build Bibata-Modern-Dracula-Purple/-Green in $icons"
   else
-    warn "Bibata cursors: download or checksum failed -- cursor stays the default"
+    tmp=$(mktemp -d)
+    if curl -fsSL -o "$tmp/amber.tar.xz" "$url" && echo "$sum  $tmp/amber.tar.xz" | sha256sum -c --quiet \
+       && tar -xJf "$tmp/amber.tar.xz" -C "$tmp"; then
+      src=$tmp/Bibata-Modern-Amber; mkdir -p "$icons"
+      for c in Purple:bd93f9 Green:50fa7b; do
+        python3 -I "$SCRIPT_DIR/tools/cursor-recolor" "$src" "$icons/Bibata-Modern-Dracula-${c%%:*}" \
+          "Bibata-Modern-Dracula-${c%%:*}" "#${c#*:}" >/dev/null && did "cursor theme Bibata-Modern-Dracula-${c%%:*} built"
+      done
+    else
+      warn "Bibata Amber: download or checksum failed -- cursor stays the default"
+    fi
+    rm -rf "$tmp"
   fi
-  rm -f "$tmp"
+  # The name everything selects; cursor-rotate moves it. A real directory there would be a hand-made theme: left alone.
+  [[ -e $icons/Bibata-Modern-Dracula || -L $icons/Bibata-Modern-Dracula ]] \
+    || { [[ -d $icons/Bibata-Modern-Dracula-Purple ]] && ln -s Bibata-Modern-Dracula-Purple "$icons/Bibata-Modern-Dracula"; }
 }
 
 # Chores: regular jobs as systemd user timers (chores/, beast-arch task 69). chore-run
