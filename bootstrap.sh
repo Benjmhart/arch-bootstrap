@@ -4732,7 +4732,15 @@ setup_castiron() {
   if ! listen=$(castiron_listen); then
     warn "castiron: needs a LAN and a tailnet IPv4 address, has neither or one -- not set up (tailscale up?)"; return 0
   fi
-  if (( DRY_RUN )) && [[ $(git -C "$src" rev-parse HEAD 2>/dev/null) != "$pin" ]]; then
+  # Once castiron's own deployer is installed, it owns the binary: every commit merged to castiron's staging runs here
+  # (owner decision 2026-11-06; /usr/local/sbin/castiron-deploy, log /var/log/castiron-deploy.log). The pin is only the
+  # first install. The 2026-11-07 16:14 fpush built the pin c0fdb46 and installed it over the deployed 207c4a9, nine
+  # commits back (media-center 7). The user, unit, config and service below stay managed here.
+  local deployed=""
+  if [[ -x /usr/local/sbin/castiron-deploy && -x $bin ]]; then
+    deployed=$(sed -n 's/^[^ ]* deployed \([0-9a-f]\{40\}\) .*/\1/p' /var/log/castiron-deploy.log 2>/dev/null | tail -1)
+    ok "castiron binary is castiron-deploy's (last deployed ${deployed:0:7}${deployed:+, }not the pin ${pin:0:7}) -- left as is"
+  elif (( DRY_RUN )) && [[ $(git -C "$src" rev-parse HEAD 2>/dev/null) != "$pin" ]]; then
     info "(dry run) would clone/fetch castiron into $src, build ${pin:0:7} and install it at $bin"
     did "castiron ${pin:0:7} built and installed"
   elif (( ! DRY_RUN )); then
@@ -4749,7 +4757,7 @@ setup_castiron() {
       && ( cd "$src" && run rustup run "$rust" cargo build -q --release --locked -p castiron ) \
       || { warn "castiron: build of ${pin:0:7} failed -- service left as it was"; return 0; }
   fi
-  if [[ -x $src/target/release/castiron && $(git -C "$src" rev-parse HEAD 2>/dev/null) == "$pin" ]] \
+  if [[ ! -x /usr/local/sbin/castiron-deploy && -x $src/target/release/castiron && $(git -C "$src" rev-parse HEAD 2>/dev/null) == "$pin" ]] \
      && ! cmp -s "$src/target/release/castiron" "$bin"; then
     run sudo install -m 755 "$src/target/release/castiron" "$bin" && did "castiron ${pin:0:7} installed at $bin" && changed=1
   fi
