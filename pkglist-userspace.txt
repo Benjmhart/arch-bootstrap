@@ -203,6 +203,8 @@ ffmpeg
 dracut
 plymouth              # boot screen for the unlock prompts (setup_boot, Ben 2026-11-07)
 rofi                  # launcher on trial against dmenu (Ben 2026-11-07)
+wiremix               # terminal volume mixers on trial against pacmixer, mod-v scratchpad (Ben 2026-11-07)
+pulsemixer
 
 # Steam, beast-arch only (Ben, 2026-10-17; station-maintenance beast-arch 110). From [multilib], which stage 10
 # turns on (ensure_multilib). lib32-vulkan-radeon / lib32-mesa named so --noconfirm picks the RX 580's drivers
