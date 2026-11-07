@@ -6,8 +6,18 @@
 status() {
     echo "== disk unlock: $(systemctl --no-pager --plain --no-legend list-units 'systemd-cryptsetup@*' 2>/dev/null | head -3)"
     command -v journalctl >/dev/null && journalctl -b --no-pager -o cat -n 8 -u 'systemd-cryptsetup@*' 2>/dev/null | sed 's/^/   /'
-    if command -v plymouth >/dev/null && plymouth --ping 2>/dev/null; then echo "== plymouth: running (the prompt is drawn on its screen)"; fi
+    if command -v plymouth >/dev/null; then
+        # a frozen plymouthd makes `plymouth --ping` block, so it gets 3 s (carbon 2026-11-07: the boot hung on plymouth)
+        if timeout 3 plymouth --ping 2>/dev/null; then echo "== plymouth: running and answering"
+        elif [ -e /run/plymouth/pid ]; then echo "== plymouth: pid file present but NOT answering (frozen?)"
+        else echo "== plymouth: not running"; fi
+        journalctl -b --no-pager -o cat -n 10 -u plymouth-start -u systemd-ask-password-plymouth -u plymouth-switch-root \
+            2>/dev/null | sed 's/^/   /'
+        # with plymouth.debug on the kernel line, plymouthd logs here
+        [ -f /var/log/plymouth-debug.log ] && { echo "== plymouth-debug.log (last 25):"; tail -n 25 /var/log/plymouth-debug.log | sed 's/^/   /'; }
+    fi
     echo "== pending prompts: $(ls /run/systemd/ask-password/ask.* 2>/dev/null | wc -l)"
+    echo "== boot jobs waiting:"; systemctl --no-pager --no-legend list-jobs 2>/dev/null | head -12 | sed 's/^/   /'
 }
 status
 for i in $(seq 120); do
