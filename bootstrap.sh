@@ -5443,8 +5443,11 @@ if [ "$root_fs" = btrfs ]; then sv=$(findmnt -no FSROOT /); [ "$sv" = / ] || roo
 common="root=UUID=$root_uuid rw rootfstype=$root_fs$rootflags zswap.enabled=0"
 rd="rd.luks.name=$luks_uuid=root systemd.setenv=SYSTEMD_CRYPTSETUP_USE_TOKEN_MODULE=0"
 tail=${GRUB_CMDLINE_LINUX_DEFAULT-loglevel=3 quiet}
-# splash only where plymouth is in the image (arch-bootstrap writes 90-no-plymouth.conf where it is not)
-if [ -x /usr/bin/plymouthd ] && [ ! -e /etc/dracut.conf.d/90-no-plymouth.conf ]; then tail="$tail splash"; fi
+# Where plymouth is in the image (no 90-no-plymouth.conf), the normal entries still boot without it, and a separate
+# "plymouth test" entry has splash plus plymouth.debug: carbon hung twice in plymouth on 2026-11-07, so a plymouth boot
+# is chosen, never the default, until it works (station-maintenance carbon 12).
+ply=0
+if [ -x /usr/bin/plymouthd ] && [ ! -e /etc/dracut.conf.d/90-no-plymouth.conf ]; then ply=1; tail="$tail plymouth.enable=0"; fi
 
 entry() { # title, message, kernel options, image
   cat <<EOF
@@ -5466,6 +5469,10 @@ if [ "$keys" -gt 0 ]; then
   entry "Arch Linux" "Plug in your YubiKey (PIN, then touch), or wait 3 s for the passphrase prompt" \
     "$common $rd rd.luks.options=$luks_uuid=fido2-device=auto,token-timeout=3s $tail" initramfs-linux.img
   entry "Arch Linux (passphrase)" "Passphrase unlock (no YubiKey)" "$common $rd $tail" initramfs-linux.img
+  if [ "$ply" = 1 ]; then
+    entry "Arch Linux (plymouth test)" "YubiKey or passphrase, with the plymouth splash and its debug log" \
+      "$common $rd rd.luks.options=$luks_uuid=fido2-device=auto,token-timeout=3s ${tail% plymouth.enable=0} splash plymouth.debug" initramfs-linux.img
+  fi
 else
   entry "Arch Linux" "Passphrase unlock (no YubiKey enrolled here)" "$common $rd $tail" initramfs-linux.img
 fi
