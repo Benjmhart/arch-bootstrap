@@ -5245,6 +5245,9 @@ setup_boot() {
 hostonly="yes"
 hostonly_cmdline="no"
 add_dracutmodules+=" systemd systemd-cryptsetup fido2 "
+# Plymouth is NOT in the image (2026-11-07): the first boot on carbon with it showed a spinner and no unlock prompt at all;
+# it sat in the initramfs. Off until it is made to work on one machine (station-maintenance carbon task).
+omit_dracutmodules+=" plymouth "
 early_microcode="no"
 compress="zstd"' "dracut: systemd initramfs with FIDO2 unlock" && rebuild=1
   put_etc_file /etc/mkinitcpio.d/linux.preset \
@@ -5276,9 +5279,6 @@ fallback_options="-S autodetect"' "mkinitcpio: fallback image only" && rebuild=1
       || { warn "building the boot images failed -- the old menu stays"; return 1; }
     dracut_ok || { warn "$img has no FIDO2 token module or systemd-cryptsetup -- the old menu stays"; return 1; }
     did "boot images: dracut $img, mkinitcpio fallback ($kver)"
-    if [[ -x /usr/bin/plymouthd ]] && ! grep -q 'usr/bin/plymouthd$' <<<"$(sudo lsinitrd "$img" 2>/dev/null)"; then
-      warn "plymouth is installed but not in $img -- prompts stay on the text console"
-    fi
   else
     ok "boot images in place (dracut with FIDO2, mkinitcpio fallback)"
   fi
@@ -5421,10 +5421,10 @@ EOF
 
 if [ "$keys" -gt 0 ]; then
   entry "Arch Linux" "Plug in your YubiKey (PIN, then touch), or wait 3 s for the passphrase prompt" \
-    "$common $rd rd.luks.options=$luks_uuid=fido2-device=auto,token-timeout=3s $tail splash" initramfs-linux.img
-  entry "Arch Linux (passphrase)" "Passphrase unlock (no YubiKey)" "$common $rd $tail splash" initramfs-linux.img
+    "$common $rd rd.luks.options=$luks_uuid=fido2-device=auto,token-timeout=3s $tail" initramfs-linux.img
+  entry "Arch Linux (passphrase)" "Passphrase unlock (no YubiKey)" "$common $rd $tail" initramfs-linux.img
 else
-  entry "Arch Linux" "Passphrase unlock (no YubiKey enrolled here)" "$common $rd $tail splash" initramfs-linux.img
+  entry "Arch Linux" "Passphrase unlock (no YubiKey enrolled here)" "$common $rd $tail" initramfs-linux.img
 fi
 if [ -f /boot/initramfs-linux-fallback.img ]; then
   entry "Arch Linux (fallback)" "Fallback image (mkinitcpio), passphrase unlock" \
