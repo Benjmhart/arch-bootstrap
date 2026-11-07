@@ -1,0 +1,63 @@
+#!/usr/bin/env python3
+"""vivaldi-theme [--prefs PATH] [--dry-run] -- give Vivaldi the Dracula theme and make it the dark-mode theme.
+
+station-maintenance beast-arch 127 (Ben 2026-11-07, "option 2": every machine without clicking). The entry below is the
+one Vivaldi wrote when Ben installed "Dracula Official" from themes.vivaldi.net on carbon, with backgroundImage emptied:
+the image lives in Vivaldi's own thumbnail store, not in Preferences, so it cannot be carried. Colours, blur and
+translucency are. The theme is added to vivaldi.themes.user if missing (matched by id) and set as
+vivaldi.theme.schedule.o_s.dark, the theme Vivaldi uses while the system is dark. Nothing else is touched.
+
+VIVALDI MUST BE CLOSED: it rewrites Preferences from memory on exit, so an edit made while it runs is lost. A running
+Vivaldi makes this exit 3 without writing. Exit: 0 written or nothing to do (or no profile), 1 error, 3 Vivaldi running.
+"""
+import json, os, shutil, subprocess, sys, tempfile
+
+THEME = {
+    "accentFromPage": False, "accentOnWindow": False, "accentSaturationLimit": 1, "alpha": 0.87,
+    "backgroundImage": "", "backgroundPosition": "stretch", "blur": 10,
+    "colorAccentBg": "#6272a4", "colorBg": "#282a36", "colorFg": "#f8f8f2", "colorHighlightBg": "#6590fd",
+    "colorPosition": "", "colorWindowBg": "#6272a4", "contrast": 5, "dimBlurred": True, "engineVersion": 1,
+    "id": "84ab4b62-f96f-42bf-8dba-07a9cb2329cf", "name": "Dracula Official", "preferSystemAccent": False, "radius": 9,
+    "simpleScrollbar": False, "transparencyTabBar": True, "transparencyTabs": False,
+    "url": "https://themes.vivaldi.net/themes/zwnlM3eJO0d/status.json", "version": 4,
+}
+
+
+def main():
+    args = sys.argv[1:]
+    dry = "--dry-run" in args
+    prefs = args[args.index("--prefs") + 1] if "--prefs" in args else \
+        os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "vivaldi/Default/Preferences")
+    if not os.path.isfile(prefs):
+        print(f"vivaldi-theme: no profile at {prefs} -- nothing to do"); return 0
+    if subprocess.run(["pgrep", "-x", "vivaldi-bin"], capture_output=True).returncode == 0:
+        print("vivaldi-theme: Vivaldi is running -- close it first (it would overwrite the change on exit)"); return 3
+    with open(prefs) as f:
+        d = json.load(f)
+    v = d.setdefault("vivaldi", {})
+    users = v.setdefault("themes", {}).setdefault("user", [])
+    sched = v.setdefault("theme", {}).setdefault("schedule", {}).setdefault("o_s", {})
+    changes = []
+    if not any(t.get("id") == THEME["id"] for t in users):
+        users.append(dict(THEME)); changes.append("theme added")
+    if sched.get("dark") != THEME["id"]:
+        sched["dark"] = THEME["id"]; changes.append("set as the dark-mode theme")
+    if not changes:
+        print("vivaldi-theme: Dracula already installed and selected"); return 0
+    if dry:
+        print(f"vivaldi-theme (dry run): would write {prefs}: {', '.join(changes)}"); return 0
+    shutil.copy2(prefs, prefs + ".bak-vivaldi-theme")
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(prefs), prefix=".Preferences.")
+    with os.fdopen(fd, "w") as f:
+        json.dump(d, f, separators=(",", ":"))
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, prefs)
+    print(f"vivaldi-theme: {', '.join(changes)} ({prefs}; backup .bak-vivaldi-theme)")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except Exception as e:  # a corrupt or unexpected Preferences: report, never half-write
+        print(f"vivaldi-theme: {e}"); sys.exit(1)

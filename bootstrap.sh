@@ -5410,6 +5410,19 @@ stage_services() {
   install_cursor_theme
   install_icon_theme
   update_wallpapers
+  # Vivaldi's Dracula theme (tools/vivaldi-theme; Ben 2026-11-07, "option 2"). Vivaldi must be closed: it rewrites
+  # its Preferences on exit, so a run with it open writes nothing and leaves a todo; the next fpush tries again.
+  local vtrc=0
+  if (( DRY_RUN )); then python3 -I "$SCRIPT_DIR/tools/vivaldi-theme" --dry-run || true
+  else
+    python3 -I "$SCRIPT_DIR/tools/vivaldi-theme" || vtrc=$?
+    case $vtrc in
+      0) ok "Vivaldi theme: Dracula" ;;
+      3) warn "Vivaldi is open, so its Dracula theme was not set"
+         todo "close Vivaldi, then:  $SCRIPT_DIR/tools/vivaldi-theme   (or wait for the next fpush)" ;;
+      *) warn "vivaldi-theme failed (exit $vtrc)" ;;
+    esac
+  fi
   manage_tmp_storage
   user_tmp_cleanup
   install_system_dropins
