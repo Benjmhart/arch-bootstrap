@@ -4955,7 +4955,8 @@ ACTION=="add|change", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1050", TAG+="uacces
 #!/bin/sh
 # Written by arch-bootstrap. pam_exec (seteuid, as root) runs this from /etc/pam.d/sudo; exit 0 skips the next module.
 #   pipe   stdin is not a terminal (sudo -S: the password is already on stdin): every YubiKey is skipped.
-#   agent  the forwarded client key (pam_rssh): only when this sudo runs under ssh, or `sudo-from <host>` pinned one.
+#   agent  the forwarded client key (pam_rssh): only when this sudo runs under ssh, or `sudo-from <host>` pinned one
+#          in the last 10 minutes.
 #          At the machine's own keyboard it is never used by default (2026-11-07: a forwarded session from micro
 #          silently took carbon's console sudo). Says whose key it wants.
 #   (none) the key plugged in here (pam_u2f): skipped under ssh, where nobody can touch it. Says so.
@@ -4968,7 +4969,8 @@ while [ "$p" -gt 1 ]; do
   p=$(sed "s/.*) //" "/proc/$p/stat" | cut -d" " -f2)
 done
 home=$(getent passwd "$PAM_USER" | cut -d: -f6)
-pin=$(cat "$home/.ssh/sudo-agent.pin" 2>/dev/null)
+# A sudo-from pin counts for 10 minutes after it was set (Ben, 2026-11-07); after that, as if there were none.
+pin=$(find "$home/.ssh/sudo-agent.pin" -mmin -10 -exec cat {} \; 2>/dev/null)
 if [ "$1" = agent ]; then
   [ "$pin" = here ] && exit 0
   [ -n "$pin" ] || [ $ssh = 1 ] || exit 0
