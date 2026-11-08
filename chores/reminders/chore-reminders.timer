@@ -1,0 +1,11 @@
+[Unit]
+Description=At login and 09:00 daily: notify due reminders from station-maintenance reminders.md (arch-bootstrap chores/reminders)
+
+[Timer]
+OnStartupSec=2min
+OnCalendar=*-*-* 09:00
+Persistent=true
+Unit=chore@reminders.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily: log yesterday's tailscale path changes and a netcheck to $OPS (arch-bootstrap chores/tailnet-paths)
+
+[Timer]
+OnCalendar=*-*-* 00:20
+Persistent=true
+Unit=chore@tailnet-paths.service
+
+[Install]
+WantedBy=timers.target

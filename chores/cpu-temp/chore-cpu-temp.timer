@@ -1,0 +1,9 @@
+[Unit]
+Description=Every 15 minutes: CPU temperature and load to $OPS (arch-bootstrap chores/cpu-temp)
+
+[Timer]
+OnCalendar=*:0/15
+Unit=chore@cpu-temp.service
+
+[Install]
+WantedBy=timers.target
