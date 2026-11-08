@@ -4270,6 +4270,12 @@ SystemMaxUse=100M" "journal capped at 100 MiB (lean)"; then
     run sudo systemctl restart systemd-journald
   fi
 
+  # Background tabs unloaded after a while (Chromium's Memory Saver, which Vivaldi carries: HighEfficiencyModeEnabled,
+  # MemorySaverModeSavings 1 = balanced; Ben 2026-11-08). The browser is micro's heaviest program. A managed policy,
+  # applied without a restart; check vivaldi://policy and vivaldi://discards.
+  put_etc_file /etc/vivaldi/policies/managed/memory-saver.json \
+    '{ "HighEfficiencyModeEnabled": true, "MemorySaverModeSavings": 1 }' "Vivaldi Memory Saver on (lean)" || true
+
   # Vivaldi's profile in RAM (profile-sync-daemon; Ben 2026-11-08, beast-arch 127): on micro's spinning disk the
   # browser's constant small writes were the lag. Overlay mode keeps only what changed in RAM (the 361 MiB profile stays
   # on disk underneath), which needs its helper run as root without a password. psd.conf is in the dotfiles. The
