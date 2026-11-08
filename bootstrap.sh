@@ -4234,6 +4234,14 @@ compression-algorithm = zstd" "zram sized to RAM (lean)"; then
     info "zram size changes at the next boot"
   fi
 
+  # The journal capped at 100 MiB (Ben 2026-11-08): 296 MiB on micro, and journald maps its files, 97 MiB resident.
+  # Lean hosts only: the others keep weeks of logs that task investigations read back.
+  if put_etc_file /etc/systemd/journald.conf.d/lean-size.conf "# Written by arch-bootstrap (profile lean).
+[Journal]
+SystemMaxUse=100M" "journal capped at 100 MiB (lean)"; then
+    run sudo systemctl restart systemd-journald
+  fi
+
   # Vivaldi's profile in RAM (profile-sync-daemon; Ben 2026-11-08, beast-arch 127): on micro's spinning disk the
   # browser's constant small writes were the lag. Overlay mode keeps only what changed in RAM (the 361 MiB profile stays
   # on disk underneath), which needs its helper run as root without a password. psd.conf is in the dotfiles. The
