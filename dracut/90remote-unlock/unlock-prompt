@@ -3,19 +3,21 @@
 # (systemd-cryptsetup asks once the FIDO2 token wait, token-timeout, has passed) and answer it on this terminal.
 # First it says what the unlock is doing, so a boot that shows nothing on its screen can be read from here
 # (station-maintenance carbon 12).
+# Dracula on the client's terminal (fleet 9, 2026-11-08): headings purple, waiting yellow, a failure red.
+P='\033[1;34m' Y='\033[33m' R='\033[1;31m' N='\033[0m'
 status() {
-    echo "== disk unlock: $(systemctl --no-pager --plain --no-legend list-units 'systemd-cryptsetup@*' 2>/dev/null | head -3)"
+    printf "${P}== disk unlock:${N} %s\n" "$(systemctl --no-pager --plain --no-legend list-units 'systemd-cryptsetup@*' 2>/dev/null | head -3)"
     command -v journalctl >/dev/null && journalctl -b --no-pager -o cat -n 8 -u 'systemd-cryptsetup@*' 2>/dev/null | sed 's/^/   /'
-    echo "== pending prompts: $(ls /run/systemd/ask-password/ask.* 2>/dev/null | wc -l)"
-    echo "== boot jobs waiting:"; systemctl --no-pager --no-legend list-jobs 2>/dev/null | head -12 | sed 's/^/   /'
+    printf "${P}== pending prompts:${N} %s\n" "$(ls /run/systemd/ask-password/ask.* 2>/dev/null | wc -l)"
+    printf "${P}== boot jobs waiting:${N}\n"; systemctl --no-pager --no-legend list-jobs 2>/dev/null | head -12 | sed 's/^/   /'
 }
 status
 for i in $(seq 120); do
     ls /run/systemd/ask-password/ask.* >/dev/null 2>&1 && exec systemd-tty-ask-password-agent --query
-    [ "$i" = 1 ] && echo "waiting for the passphrase prompt (up to 60 s)..."
+    [ "$i" = 1 ] && printf "${Y}waiting for the passphrase prompt (up to 60 s)...${N}\n"
     sleep 0.5
 done
-echo "no passphrase prompt after 60 s: the disk is already unlocked, the boot went past the initramfs, or the unlock is"
-echo "stuck before asking (a YubiKey that is present but not answering?):"
+printf "${R}no passphrase prompt after 60 s:${N} the disk is already unlocked, the boot went past the initramfs, or the unlock is\n"
+printf "stuck before asking (a YubiKey that is present but not answering?):\n"
 status
 exit 1

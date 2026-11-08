@@ -6118,6 +6118,9 @@ stage_verify() {
   [[ -n $SECRETS_REMOTE  ]] && check "secrets repo present"  "[ -d '$SECRETS_DIR' ]"
   for _u in $PROJECT_REPOS; do _n=${_u##*/}; _n=${_n%.git}; check "project $_n cloned" "[ -d '$HOME/projects/$_n/.git' ]"; done
   [[ -d $XMONAD_DIR ]]      && check "xmonad binary built"   "command -v xmonad"
+  # Every xmonad key has its sway twin (station-maintenance fleet 8, 2026-11-08). Run by hand only before this, it had
+  # been failing on its own parser since dotfiles 247c477 and nobody saw; it then found mod-o missing in sway.
+  have sway && [[ -x $HOME/.local/bin/wm-sync-check ]] && check "wm-sync-check: xmonad keys all bound in sway" "$HOME/.local/bin/wm-sync-check"
   check "nvm present"                   "[ -s \"\${NVM_DIR:-\$HOME/.nvm}/nvm.sh\" ]"
   check "herdr installed"               "command -v herdr"
   if [[ $(findmnt -nvo SOURCE /) == /dev/mapper/root ]]; then

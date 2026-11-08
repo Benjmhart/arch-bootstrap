@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# rice-check -- what differs in the look between the machines (station-maintenance fleet 7, Ben 2026-11-08).
+# Run from micro: reads each host over the peer ssh (read-only), prints one row per setting, and marks with ! the rows
+# where hosts disagree. Rows named in profile_rows may differ on a lean host (micro) without being marked.
+#   tools/rice-check [host ...]      default: this machine + beast-arch carbon media-center surfboard
+# Also writes the report to $OPS/<host>-rice-check-<date>.log.
+set -uo pipefail
+self=$(cat /etc/hostname)
+hosts=("$@"); (( ${#hosts[@]} )) || hosts=("$self" beast-arch carbon media-center surfboard)
+
+# Printed by every host, one "key<TAB>value" per line. Values are short so the table stays readable.
+collect='
+g() { gsettings get org.gnome.desktop.interface "$1" 2>/dev/null | tr -d "'"'"'" || echo -; }
+d() { /usr/bin/git --git-dir="$HOME/.dot" --work-tree="$HOME" "$@" 2>/dev/null; }
+p() { pacman -Q "$1" 2>/dev/null | cut -d" " -f2 || echo -; }
+row() { printf "%s\t%s\n" "$1" "${2:--}"; }
+row profile "$(~/bin/lean-host 2>/dev/null && echo lean || echo full)"
+row "gtk theme" "$(g gtk-theme)"
+row "icon theme" "$(g icon-theme)"
+row "cursor (gsettings)" "$(g cursor-theme)"
+row "color-scheme" "$(g color-scheme)"
+row "kvantum theme" "$(sed -n "s/^theme=//p" ~/.config/Kvantum/kvantum.kvconfig 2>/dev/null)"
+row "XCURSOR_THEME" "$(sed -n "s/^XCURSOR_THEME=//p" ~/.config/environment.d/90-dracula.conf 2>/dev/null)"
+row "font monospace" "$(fc-match -f "%{family[0]}" monospace 2>/dev/null)"
+row "font sans" "$(fc-match -f "%{family[0]}" sans-serif 2>/dev/null)"
+row "dotfiles HEAD" "$(d rev-parse --short HEAD)"
+row "dotfiles themed files changed here" "$(d status --porcelain -- .config/alacritty .config/rofi .config/dunst .config/Kvantum .config/gtk-3.0 .config/gtk-4.0 .config/waybar .config/sway .xmobarrc .xmonad/xmonad.hs .config/environment.d .config/btop .config/cava .config/mpv 2>/dev/null | wc -l)"
+row "wallpapers HEAD" "$(git -C ~/projects/wallpapers rev-parse --short HEAD 2>/dev/null)"
+for k in dracula-gtk-theme kvantum papirus-icon-theme alacritty xmonad sway rofi dunst btop fastfetch cava; do row "pkg $k" "$(p $k)"; done
+'
+# Rows a lean host may differ on without it being drift.
+profile_rows=''   # none yet: add a row's key here when a lean host may differ on it
+
+declare -A val; declare -a keys=()
+for h in "${hosts[@]}"; do
+  if [[ $h == "$self" ]]; then out=$(bash -c "$collect")
+  else out=$(timeout 30 ssh -o BatchMode=yes -o ConnectTimeout=6 "$h" "bash -s" <<<"$collect" 2>/dev/null) || out=""; fi
+  [[ -n $out ]] || { val["$h|profile"]="UNREACHABLE"; continue; }
+  while IFS=$'\t' read -r k v; do
+    [[ -v "val[x|$k]" ]] || { keys+=("$k"); val["x|$k"]=1; }
+    val["$h|$k"]=$v
+  done <<<"$out"
+done
+
+log="${OPS:-$HOME/.local/state/ops}/$self-rice-check-$(date +%Y%m%d).log"; mkdir -p "${log%/*}"
+{
+  printf '%-2s%-36s' "" "rice-check $(date '+%F %H:%M')"; printf '%-22s' "${hosts[@]}"; echo
+  drift=0
+  for k in "${keys[@]}"; do
+    declare -A seen=(); n=0
+    for h in "${hosts[@]}"; do
+      [[ ${val["$h|profile"]:-} == UNREACHABLE ]] && continue
+      [[ " $profile_rows " == *" $k "* && ${val["$h|profile"]:-} == lean ]] && continue
+      v=${val["$h|$k"]:--}; [[ -v "seen[$v]" ]] || { seen[$v]=1; n=$((n+1)); }
+    done
+    mark=" "; [[ $k != profile ]] && (( n > 1 )) && { mark="!"; drift=$((drift+1)); }
+    # A themed file changed locally is drift even when every host agrees on the count.
+    if [[ $k == "dotfiles themed files changed here" ]]; then
+      for h in "${hosts[@]}"; do [[ ${val["$h|$k"]:-0} =~ ^[1-9] ]] && { [[ $mark == "!" ]] || drift=$((drift+1)); mark="!"; }; done
+    fi
+    printf '%-2s%-36s' "$mark" "$k"
+    for h in "${hosts[@]}"; do printf '%-22.21s' "${val["$h|$k"]:--}"; done; echo
+    unset seen
+  done
+  echo; echo "$drift row(s) differ (!). Unreachable hosts are left out of the comparison."
+} | tee "$log"
