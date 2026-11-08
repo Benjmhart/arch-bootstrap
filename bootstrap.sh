@@ -3644,6 +3644,12 @@ espanso_skip_wizard() {
 keepassxc_seed_config() {
   local d="$HOME/.config/keepassxc"
   [[ -f $d/keepassxc.defaults.ini ]] || return 0
+  # Its look follows the Qt style, i.e. Kvantum's Dracula (ApplicationTheme=classic; Ben 2026-11-08). Set in an existing
+  # keepassxc.ini too, but only while KeePassXC is closed: it rewrites the file on exit.
+  if [[ -e $d/keepassxc.ini ]] && ! grep -q '^ApplicationTheme=classic$' "$d/keepassxc.ini" && ! pgrep -x keepassxc >/dev/null; then
+    run sed -i -e '/^ApplicationTheme=/d' -e 's/^\[GUI\]$/[GUI]\nApplicationTheme=classic/' "$d/keepassxc.ini"
+    did "KeePassXC follows the Dracula Qt style (ApplicationTheme=classic)"
+  fi
   [[ -e $d/keepassxc.ini ]] && { ok "keepassxc.ini present (left as is)"; return 0; }
   run install -m 600 "$d/keepassxc.defaults.ini" "$d/keepassxc.ini"
   did "keepassxc.ini seeded from keepassxc.defaults.ini"
@@ -4147,8 +4153,8 @@ install_browser_search_policy() {
 }' "KeePassXC-Browser removed from Chromium (policy)" || true
   # Firefox reads one policies.json, not a directory; nothing else writes it yet.
   put_etc_file /etc/firefox/policies/policies.json \
-    '{ "policies": { "SearchEngines": { "Default": "DuckDuckGo" }, "OfferToSaveLogins": false } }' \
-    "Firefox DuckDuckGo default search, no save-password prompts" || true
+    '{ "policies": { "SearchEngines": { "Default": "DuckDuckGo" }, "OfferToSaveLogins": false, "ExtensionSettings": { "{b743f56d-1cc1-4048-8ba6-f9c2ab7aa54d}": { "installation_mode": "normal_installed", "install_url": "https://addons.mozilla.org/firefox/downloads/latest/dracula-dark-colorscheme/latest.xpi" } } } }' \
+    "Firefox DuckDuckGo default search, no save-password prompts, Dracula theme (AMO dracula-dark-colorscheme, a static theme)" || true
 }
 
 # zram is this machine's ONLY swap: zram configured, no SWAP_PARTUUID, and nothing
