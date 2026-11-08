@@ -3745,7 +3745,7 @@ install_chores() {
     run systemctl --user disable --now chore-backup.timer
     did "chore backup off here: micro backs this machine up over its tunnel"
   fi
-  for c in low-disk virus-scan repo-hygiene clipboard-wipe vivaldi-theme $extra $CHORES; do
+  for c in low-disk virus-scan repo-hygiene clipboard-wipe vivaldi-theme claude-restart $extra $CHORES; do
     [[ -f $d/$c/chore-$c.timer ]] || { warn "CHORES names '$c', but there is no chores/$c/chore-$c.timer"; continue; }
     if systemctl --user is-enabled --quiet "chore-$c.timer" 2>/dev/null; then
       ok "chore $c scheduled"

@@ -1,0 +1,10 @@
+[Unit]
+Description=Every 10 minutes: /restart idle Claude Code sessions in herdr that run an older version (arch-bootstrap chores/claude-restart)
+
+[Timer]
+OnStartupSec=2min
+OnCalendar=*:0/10
+Unit=chore@claude-restart.service
+
+[Install]
+WantedBy=timers.target
