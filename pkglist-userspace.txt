@@ -184,6 +184,7 @@ xmobar
 xmonad
 xmonad-contrib
 xorg-server
+xorg-server-xvfb     # off-screen X: agents open and screenshot GUI changes without taking the screen (Ben 2026-11-08)
 xorg-xev
 xorg-xinit
 xorg-xrandr
