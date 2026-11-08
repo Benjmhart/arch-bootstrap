@@ -65,13 +65,24 @@ claude_pid() {   # the pane's claude process
 restart() {   # 0 restarted, 2 skipped (draft), 3 refused (remote control), 1 failed
   local pane=$1 pid b i; pid=$(claude_pid "$pane")
   [[ -n $pid && -e $state/rc-$pid ]] && { echo "skip $pane: Remote Control (told before; exit and start claude again)"; return 3; }
+  [[ -n $pid && -e $state/nr-$pid ]] && { echo "skip $pane: this claude has no /restart (exit and start claude again)"; return 3; }
   [[ -n $pid && -n $(find "$state/bg-$pid" -mmin -60 2>/dev/null) ]] && { echo "skip $pane: background work (refused <1h ago)"; return 2; }
   b=$(box "$pane")
   if [[ -n $b ]] && ! grep -qv '^/restart$' <<<"$b"; then "$herdr" pane send-keys "$pane" c-c >/dev/null; sleep 1; b=$(box "$pane"); fi
   [[ -z $b ]] || { echo "skip $pane: the prompt holds a draft"; return 2; }
   local refused0 why; refused0=$("$herdr" agent read "$pane" 2>/dev/null | grep -c "Can't restart while")
   "$herdr" pane send-text "$pane" /restart >/dev/null || return 1
-  sleep 1; "$herdr" pane send-keys "$pane" "$accept" >/dev/null || return 1
+  # The menu's highlighted entry must BE /restart before it is accepted. A claude without /restart (2.1.318 in w2:p1,
+  # 2026-11-08) highlights the nearest match instead, and accepting it ran /deep-research twice in Ben's session.
+  sleep 1; local sel
+  sel=$("$herdr" agent read "$pane" 2>/dev/null | tr -d '\r' | sed "s/$nbsp/ /g" \
+        | awk '/^─/ {n++; last[n]=NR} {l[NR]=$0} END {for (i=last[n-1]-1; i>0 && i>last[n-1]-20; i--) if (l[i] ~ /^ +❯ \//) {print l[i]; exit}}' \
+        | awk '{print $2}')
+  if [[ $sel != /restart ]]; then
+    "$herdr" pane send-keys "$pane" c-c >/dev/null; [[ -n $pid ]] && : > "$state/nr-$pid"
+    echo "skip $pane: no /restart in its menu (highlighted: ${sel:-nothing}); cleared"; return 3
+  fi
+  "$herdr" pane send-keys "$pane" "$accept" >/dev/null || return 1
   sleep 1; "$herdr" pane send-keys "$pane" "$submit" >/dev/null || return 1
   for i in 1 2 3 4 5 6; do
     sleep 2
@@ -88,7 +99,7 @@ restart() {   # 0 restarted, 2 skipped (draft), 3 refused (remote control), 1 fa
   done
   echo "note: $pane: /restart sent ($accept, $submit), but the pane still runs an old claude"; return 1
 }
-find "$state" -name 'rc-*' -o -name 'bg-*' 2>/dev/null | while read -r f; do [[ -e /proc/${f##*-} ]] || rm -f "$f"; done
+find "$state" -name 'rc-*' -o -name 'bg-*' -o -name 'nr-*' 2>/dev/null | while read -r f; do [[ -e /proc/${f##*-} ]] || rm -f "$f"; done
 done_n=0 busy=0 rc=0
 if (( ${#stale[@]} )) && [[ -x $herdr ]]; then
   states=$("$herdr" agent list 2>/dev/null | jq -r '.result.agents[] | "\(.pane_id) \(.agent_status)"')
