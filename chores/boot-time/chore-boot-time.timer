@@ -1,0 +1,9 @@
+[Unit]
+Description=Once a boot, 3 minutes in: log the boot's timings to $OPS (arch-bootstrap chores/boot-time)
+
+[Timer]
+OnStartupSec=3min
+Unit=chore@boot-time.service
+
+[Install]
+WantedBy=timers.target
