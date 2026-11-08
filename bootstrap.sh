@@ -4442,6 +4442,31 @@ HandleLidSwitchDocked=lock" "lid: lock on AC, suspend on battery (from the next 
   return 0
 }
 
+# TLP on the laptops (Ben 2026-11-08): disk link, USB, PCIe, audio and wifi power saving on battery, TLP's defaults.
+# tlp-pd answers power-profile requests over D-Bus, so ~/bin/battery-saver (dotfiles) switches to TLP's power-saver
+# profile as the user, without sudo. The power-saver profile is tightened here: no turbo, the CPU capped at half
+# speed, energy preference "power". TLP wants systemd-rfkill masked (it keeps radio state itself). The lean profile's
+# AC/battery governor rule stays: TLP is not told to set a governor.
+setup_tlp() {
+  have tlp || return 0
+  put_etc_file /etc/tlp.d/50-arch-bootstrap.conf "# Written by arch-bootstrap (setup_tlp). Edit bootstrap.sh, not this file.
+# The power-saver profile (tlpctl / ~/bin/battery-saver): no turbo, at most half speed, prefer power.
+CPU_BOOST_ON_SAV=0
+CPU_MAX_PERF_ON_SAV=50
+CPU_ENERGY_PERF_POLICY_ON_SAV=power
+PLATFORM_PROFILE_ON_SAV=low-power
+WIFI_PWR_ON_SAV=on" "TLP power-saver profile" && { systemctl is-active --quiet tlp.service && run sudo tlp start >/dev/null; }
+  local u
+  for u in systemd-rfkill.service systemd-rfkill.socket; do
+    [[ $(systemctl is-enabled "$u" 2>/dev/null) == masked ]] || { run sudo systemctl mask "$u"; did "$u masked (TLP handles radios)"; }
+  done
+  for u in tlp.service tlp-pd.service; do
+    systemctl list-unit-files "$u" >/dev/null 2>&1 || continue
+    if systemctl is-enabled --quiet "$u" 2>/dev/null; then ok "$u enabled"
+    else run sudo systemctl enable --now "$u"; did "$u enabled"; fi
+  done
+}
+
 # Pointer speed under X, every machine: the maximum (Ben 2026-10-17: +30%, then +30% more, then "max it out on all
 # systems"). libinput's AccelSpeed runs -1..1, 0 the default. Mice and trackpoints (MatchIsPointer) AND touchpads
 # (MatchIsTouchpad): the first version matched pointers only, and micro's touchpad stayed at the default (its Xorg log:
@@ -5611,6 +5636,7 @@ stage_services() {
   setup_games_at_login
   setup_lid
   setup_pointer
+  setup_tlp
   setup_caps_escape
   setup_touchpad_quirks
   setup_firewall
