@@ -9,7 +9,12 @@ grep -qs "^== $day" "$log" && { echo "$day already logged"; exit 0; }
 hours=$(journalctl -u tailscaled --since "$day 00:00" --until "$day 23:59:59" -q --no-pager -o short-iso 2>/dev/null \
   | grep 'now using' | cut -c12-13 | sort | uniq -c | awk '{printf "%s:%s ", $2, $1}')
 total=$(awk '{for(i=1;i<=NF;i++){split($i,a,":"); s+=a[2]}} END{print s+0}' <<<"$hours")
-{ echo "== $day  path changes: $total"
+# Most "now using" lines re-select the address the peer already had. A real move names a different address than that
+# peer's previous line: those are counted apart, with the peers that moved (beast-arch 147, 2026-11-08).
+moves=$(journalctl -u tailscaled --since "$day 00:00" --until "$day 23:59:59" -q --no-pager 2>/dev/null \
+  | sed -nE 's/.*node \[([^]]+)\].* now using ([^ ]+).*/\1 \2/p' \
+  | awk '$1 in last && last[$1]!=$2 {n[$1]++; t++} {last[$1]=$2} END{printf "%d", t; for(p in n) printf " %s:%d", p, n[p]}')
+{ echo "== $day  path changes: $total  address moves: ${moves:-0}"
   echo "  by hour: ${hours:-none}"
   tailscale netcheck 2>/dev/null | grep -E 'UDP|IPv4|MappingVariesByDestIP|Nearest DERP' | sed 's/^/  /'
 } >> "$log"

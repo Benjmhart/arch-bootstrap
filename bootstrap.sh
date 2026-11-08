@@ -2966,6 +2966,17 @@ stage_session() {
       did "NetworkManager enabled"
     fi
   fi
+  # One DHCP client per NIC. archinstall left systemd-networkd enabled on beast-arch beside NetworkManager, so enp3s0
+  # held two leases (.69 networkd, .74 NM) and every tailnet peer alternated between them, ~200 path changes a day seen
+  # from micro alone (station-maintenance beast-arch 147, 2026-11-08). Only the unit goes: dracut copies
+  # /etc/systemd/network/*.network into the initramfs, where the remote-unlock network still uses them.
+  if systemctl is-enabled NetworkManager >/dev/null 2>&1 && systemctl is-enabled systemd-networkd >/dev/null 2>&1; then
+    warn "systemd-networkd and NetworkManager both enabled: two DHCP clients on one NIC"
+    if confirm "disable systemd-networkd (NetworkManager stays)?"; then
+      run sudo systemctl disable --now systemd-networkd.service systemd-networkd.socket
+      did "systemd-networkd disabled"
+    fi
+  fi
 
   # Font cache. Newly installed fonts are invisible to running apps until this
   # runs, which looks exactly like the font failing to install.
@@ -3949,7 +3960,9 @@ ssh_tailnet_peers() {
     # ssh offers agent-held keys before key files, and AddKeysToAgent puts a used YubiKey peer key there: every later
     # connection then waited for a touch ahead of $PEER_KEY, and the agent stalled meanwhile (micro, 2026-10-21).
     (( ${#sk[@]} )) && want+=$'\n'"    IdentityAgent none"
-    (( ${#sk[@]} )) && want+=$'\n'"    ControlMaster auto"$'\n'"    ControlPath ~/.ssh/cm-%C"$'\n'"    ControlPersist 10m"
+    # Multiplexed for every peer, not only YubiKey ones: a second ssh/scp/rsync to a peer reuses the open connection
+    # instead of a new handshake (Ben 2026-11-08). tools/fleet keeps its own sockets.
+    want+=$'\n'"    ControlMaster auto"$'\n'"    ControlPath ~/.ssh/cm-%C"$'\n'"    ControlPersist 10m"
     [[ -n $fwd ]] && want+=$'\n'"    ForwardAgent $fwd"
   done
   want+=$'\n'"$end"
