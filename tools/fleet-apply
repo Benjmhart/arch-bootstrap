@@ -293,6 +293,13 @@ if [[ -d $DOTDIR ]]; then
        && env $xenv xmonad --restart; then echo "ok    xmobar config changed: xmonad restarted, bars reloaded"
     else echo "note  xmobar config changed but xmonad was not restarted: press mod-q"; fi
   fi
+  # stalonetray reads ~/.stalonetrayrc only at start; the tray apps dock again in the new one (tested on micro 2026-11-08).
+  if xpid=$(pgrep -u "$USER" -o -x xmonad-x86_64-l) && pgrep -u "$USER" -x stalonetray >/dev/null \
+     && ! git --git-dir="$DOTDIR" --work-tree="$HOME" diff --quiet "$dot_was" "$dot" -- ':/.stalonetrayrc'; then
+    if xenv=$(tr '\0' '\n' < "/proc/$xpid/environ" | grep -E '^(DISPLAY|XAUTHORITY)=') && pkill -u "$USER" -x stalonetray \
+       && sleep 0.5 && env $xenv setsid -f "$HOME/bin/stalonetray-start" >/dev/null 2>&1 </dev/null
+    then echo "ok    tray config changed: stalonetray restarted"; else echo "note  stalonetray not restarted: run ~/bin/stalonetray-start"; fi
+  fi
   # picom rereads nothing it was started with, so a change to its setup restarts it on xmonad's display (Ben 2026-11-07).
   if xpid=$(pgrep -u "$USER" -o -x xmonad-x86_64-l) && [[ -x $HOME/bin/compositor-start ]] \
      && ! git --git-dir="$DOTDIR" --work-tree="$HOME" diff --quiet "$dot_was" "$dot" -- \
