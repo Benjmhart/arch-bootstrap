@@ -16,3 +16,4 @@ lightworks    # only: micro
 rambox-pro-bin   # only: micro
 # plymouth: tried as the boot screen 2026-11-07, retired the same day (station-maintenance carbon 12).
 plymouth
+cbatticon             # battery on xmobar instead (dotfiles 6a1cdd0; Ben 2026-11-08)
