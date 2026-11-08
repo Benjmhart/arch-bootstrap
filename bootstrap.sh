@@ -5393,6 +5393,9 @@ install_grub_theme() {
         -e 's/left = 50%-240/left = 50%-360/' -e 's/width = 480/width = 720/' -e 's/item_height = 32/item_height = 48/' \
         -e "s/  id = \"__timeout__\"/  id = \"__timeout__\"\n  font = \"Fira Code Regular $px\"/" "$src/theme.txt"
     fi
+    # The countdown label sits at 82%, inside the menu's box (top 60% + height 30% = 90%): with enough entries
+    # "Booting in N seconds" drew over them (beast-arch, Ben 2026-11-08). Below the box, at 92%.
+    sed -i 's/top = 82%/top = 92%/' "$src/theme.txt"
     if sudo diff -rq "$src" "$dst" >/dev/null 2>&1; then
       ok "GRUB theme in place ($dst)"
     else
