@@ -74,6 +74,13 @@ exit 1
 STUB
 printf '#!/bin/sh\necho "xmonad: $* DISPLAY=$DISPLAY" >> "$HOME/xmonad.calls"\n' > "$t/bin/xmonad"   # stub: restarts nothing
 printf '#!/bin/sh\necho "dunstctl: $*" >> "$HOME/dunst.calls"\n' > "$t/bin/dunstctl"; chmod +x "$t/bin/dunstctl"
+cat > "$t/bin/systemctl" <<STUB
+#!/bin/bash
+[[ "\$*" == "--user --quiet is-active pipewire.service" ]] && { [[ -e "$t/pw.on" ]]; exit; }
+[[ "\$1 \$2" == "--user restart" ]] && { echo "systemctl: \$*" >> "\$HOME/pw.calls"; exit 0; }
+exec /usr/bin/systemctl "\$@"
+STUB
+chmod +x "$t/bin/systemctl"
 printf '#!/bin/sh\necho "herdr: $*" >> "$HOME/herdr.calls"\n' > "$t/bin/herdr"   # stub: a running herdr server
 chmod +x "$t/bin/"*; export PATH="$t/bin:$PATH"
 
@@ -151,6 +158,12 @@ check "dunstrc changed, dunst running: reloaded"            'grep -qx "dunstctl:
 rm -f "$H/dunst.calls"; echo pw-ok | fa self apply "$ab2" "$dot10" "$sec2" keys >/dev/null 2>&1
 check "...dunstrc unchanged: no reload"                     '[[ ! -e $H/dunst.calls ]]'
 rm "$t/dunst.on"
+dot11=$(commit "$t/dot-seed" .config/pipewire/pipewire.conf.d/50-louder.conf l11 "louder"); dot12=$(commit "$t/dot-seed" .zshrc rc12 "dot twelve"); touch "$t/pw.on"
+out=$(echo pw-ok | fa self apply "$ab2" "$dot11" "$sec2" keys 2>&1)
+check "pipewire config changed, pipewire running: restarted" 'grep -qx "systemctl: --user restart pipewire.service pipewire-pulse.service wireplumber.service" "$H/pw.calls" && grep -q "pipewire restarted" <<<"$out"'
+rm -f "$H/pw.calls"; echo pw-ok | fa self apply "$ab2" "$dot12" "$sec2" keys >/dev/null 2>&1
+check "...pipewire config unchanged: no restart"            '[[ ! -e $H/pw.calls ]]'
+rm "$t/pw.on"
 
 # ================= fleet-apply secrets-push (h1 is the vault host)
 sp() { fa "$1" secrets-push 2>&1; }

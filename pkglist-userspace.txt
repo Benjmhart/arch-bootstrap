@@ -130,6 +130,7 @@ sway
 swaybg
 swayidle
 swaylock
+swh-plugins           # the louder compressor/limiter (dotfiles .config/pipewire; Ben 2026-11-08)
 tailscale
 tealdeer
 terminus-font
