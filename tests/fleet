@@ -69,11 +69,13 @@ cat > "$t/bin/pgrep" <<STUB
 [[ "\$*" == "-x keepassxc" && -e "$t/kpx.\${FLEET_HOST:-x}" ]] && exit 0
 [[ "\$*" == "-x herdr" && -e "$t/herdr.on" ]] && exit 0
 [[ "\$*" == "-u "*" -x dunst" && -e "$t/dunst.on" ]] && exit 0
+[[ "\$*" == "-u "*" -x fcitx5" && -e "$t/fcitx.on" ]] && exit 0
 [[ "\$*" == "-u "*" -o -x xmonad-x86_64-l" && -e "$t/xmonad.pid" ]] && { cat "$t/xmonad.pid"; exit 0; }
 exit 1
 STUB
 printf '#!/bin/sh\necho "xmonad: $* DISPLAY=$DISPLAY" >> "$HOME/xmonad.calls"\n' > "$t/bin/xmonad"   # stub: restarts nothing
 printf '#!/bin/sh\necho "dunstctl: $*" >> "$HOME/dunst.calls"\n' > "$t/bin/dunstctl"; chmod +x "$t/bin/dunstctl"
+printf '#!/bin/sh\necho "fcitx5-remote: $*" >> "$HOME/fcitx.calls"\n' > "$t/bin/fcitx5-remote"; chmod +x "$t/bin/fcitx5-remote"
 cat > "$t/bin/systemctl" <<STUB
 #!/bin/bash
 [[ "\$*" == "--user --quiet is-active pipewire.service" ]] && { [[ -e "$t/pw.on" ]]; exit; }
@@ -164,6 +166,12 @@ check "pipewire config changed, pipewire running: restarted" 'grep -qx "systemct
 rm -f "$H/pw.calls"; echo pw-ok | fa self apply "$ab2" "$dot12" "$sec2" keys >/dev/null 2>&1
 check "...pipewire config unchanged: no restart"            '[[ ! -e $H/pw.calls ]]'
 rm "$t/pw.on"
+dot13=$(commit "$t/dot-seed" .config/fcitx5/conf/classicui.conf f13 "fcitx"); dot14=$(commit "$t/dot-seed" .zshrc rc14 "dot fourteen"); touch "$t/fcitx.on"
+out=$(echo pw-ok | fa self apply "$ab2" "$dot13" "$sec2" keys 2>&1)
+check "fcitx5 config changed, fcitx5 running: reloaded"     'grep -qx "fcitx5-remote: -r" "$H/fcitx.calls" && grep -q "fcitx5 config reloaded" <<<"$out"'
+rm -f "$H/fcitx.calls"; echo pw-ok | fa self apply "$ab2" "$dot14" "$sec2" keys >/dev/null 2>&1
+check "...fcitx5 config unchanged: no reload"               '[[ ! -e $H/fcitx.calls ]]'
+rm "$t/fcitx.on"
 
 # ================= fleet-apply secrets-push (h1 is the vault host)
 sp() { fa "$1" secrets-push 2>&1; }
