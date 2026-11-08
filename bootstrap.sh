@@ -224,6 +224,11 @@ PKG_EXCLUDE_FILE="${PKG_EXCLUDE_FILE:-}"
 # packages in pkglist-profile-<name>.txt (and any SYSTEM_UNITS they bring). Set it
 # per host in bootstrap.conf, e.g.  case "$(uname -n)" in tv) PROFILES="media-center" ;; esac
 PROFILES="${PROFILES:-}"
+# The LAN package cache (station-maintenance fleet 6): pacoloco on media-center, port 9129, repo "archive" =
+# archive.archlinux.org/repos. Clients: the home machines only (a cloud box is off the LAN). The tailnet policy must
+# grant these hosts tcp:9129 to media-center. Empty PKG_CACHE_URL turns it off.
+PKG_CACHE_URL="${PKG_CACHE_URL-http://media-center:9129/repo/archive}"
+PKG_CACHE_HOSTS="${PKG_CACHE_HOSTS-micro beast-arch carbon media-center surfboard}"
 
 BOOTSTRAP_CONFIG="${BOOTSTRAP_CONFIG:-$SCRIPT_DIR/bootstrap.conf}"
 
@@ -1105,6 +1110,13 @@ pin_repo_date() {
 # copy of the repos on $date; moving the date is a reviewed commit (fleet push, on micro).
 # The stock list is mirrorlist.orig. Unpin: delete repo-date in arch-bootstrap, restore that.
 Server = ${ARCHIVE_URL:-https://archive.archlinux.org/repos}/${date//-//}/\$repo/os/\$arch"
+  # The LAN cache first on the home machines (station-maintenance fleet 6, Ben 2026-11-08): media-center's pacoloco
+  # fetches each package from the same archive URL once and serves the rest. Same files, same signatures. When it is
+  # off or unreachable pacman moves on to the archive line (after 3 failures it skips the cache for that run).
+  if [[ -n $PKG_CACHE_URL && " $PKG_CACHE_HOSTS " == *" $(uname -n) "* ]]; then
+    want="${want%Server = *}Server = $PKG_CACHE_URL/${date//-//}/\$repo/os/\$arch
+${want##*$'\n'}"
+  fi
   if [[ "$(cat /etc/pacman.d/mirrorlist 2>/dev/null)" == "$want" ]]; then
     ok "repos pinned to the archive of $date"; return 0
   fi
@@ -5772,11 +5784,33 @@ single_dhcp_client() {
     && did "systemd-networkd disabled (NetworkManager manages every link it had)"
 }
 
+# pacoloco on the media-center profile: a pull-through cache of the Arch Linux Archive for the home machines
+# (station-maintenance fleet 6, Ben 2026-11-08). Clients reach it through pin_repo_date's first Server line.
+# Files unused for 30 days are purged by pacoloco itself.
+setup_package_cache() {
+  profile_on media-center || return 0
+  have pacoloco || { warn "pacoloco not installed (pkglist-profile-media-center.txt)"; return 0; }
+  if put_etc_file /etc/pacoloco.yaml "# Written by arch-bootstrap (setup_package_cache, station-maintenance fleet 6).
+cache_dir: /var/cache/pacoloco
+port: 9129
+download_timeout: 3600
+purge_files_after: 2592000
+repos:
+  archive:
+    url: https://archive.archlinux.org/repos" "pacoloco config (the archive, for the home machines)"; then
+    systemctl -q is-active pacoloco.service && run sudo systemctl restart pacoloco.service
+  fi
+  if ! systemctl -q is-enabled pacoloco.service 2>/dev/null; then
+    run sudo systemctl enable --now pacoloco.service && did "pacoloco serving the package cache on :9129"
+  fi
+}
+
 stage_services() {
   stage_banner "60 services -- system and user units"
 
   enable_system_units
   single_dhcp_client
+  setup_package_cache
   harden_sshd
   stop_sshd_no_inbound
   ssh_tailnet_peers
@@ -6130,6 +6164,10 @@ stage_verify() {
   [[ -d $XMONAD_DIR ]]      && check "xmonad binary built"   "command -v xmonad"
   # Every xmonad key has its sway twin (station-maintenance fleet 8, 2026-11-08). Run by hand only before this, it had
   # been failing on its own parser since dotfiles 247c477 and nobody saw; it then found mod-o missing in sway.
+  if profile_on media-center && [[ -f $SCRIPT_DIR/repo-date ]]; then
+    local rd; rd=$(tr - / < "$SCRIPT_DIR/repo-date")
+    check "pacoloco serves the archive on :9129" "curl -sf -m 30 -o /dev/null http://localhost:9129/repo/archive/$rd/core/os/x86_64/core.db"
+  fi
   have sway && [[ -x $HOME/.local/bin/wm-sync-check ]] && check "wm-sync-check: xmonad keys all bound in sway" "$HOME/.local/bin/wm-sync-check"
   check "nvm present"                   "[ -s \"\${NVM_DIR:-\$HOME/.nvm}/nvm.sh\" ]"
   check "herdr installed"               "command -v herdr"

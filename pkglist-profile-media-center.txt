@@ -20,3 +20,5 @@ wireguard-tools
 openvpn
 networkmanager-openvpn
 ntfs-3g
+# The LAN package cache for the home machines (bootstrap setup_package_cache; station-maintenance fleet 6, Ben 2026-11-08).
+pacoloco
