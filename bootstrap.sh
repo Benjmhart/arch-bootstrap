@@ -3715,6 +3715,63 @@ install_icon_theme() {
   did "icon theme Papirus-Dark-Dracula: tray icons recoloured to Dracula ($ver)"
 }
 
+# Tray images that apps bundle (LocalSend's tray_manager PNG, streamdeck-ui's QSystemTrayIcon logo) in Dracula purple
+# (Ben 2026-11-08, "yes patch to dracula colors"): no icon theme reaches them. The files are the packages', so a pacman
+# hook re-applies the recolour after each install or upgrade, and the run here covers what is installed now. Handy's
+# tray icon is compiled into its binary and is left as it is.
+setup_dracula_tray_images() {
+  local f=/usr/local/lib/arch-bootstrap/dracula-tray-images
+  put_etc_file "$f" "$(cat <<'EOF'
+# Written by arch-bootstrap (setup_dracula_tray_images). Tray images that apps bundle themselves, recoloured to Dracula
+# purple (Ben 2026-11-08: "yes patch to dracula colors"). An icon theme cannot reach these. Brightness becomes opacity
+# and every pixel becomes #bd93f9: a white glyph stays, a black backing square disappears (below 30 counts as black:
+# streamdeck-ui's square is 12-22 grey, which otherwise stays as a faint box). Run (python3 -I) by the pacman hook
+# dracula-tray-images.hook after these packages install or upgrade (which restores the originals), and by fpush.
+# An image that is already all purple is left alone, so a rerun changes nothing. Arguments: files instead of the list.
+import glob, sys
+try:
+    from PIL import Image
+except ImportError:
+    print("dracula-tray-images: python-pillow missing, nothing recoloured"); sys.exit(0)
+
+PURPLE = (0xbd, 0x93, 0xf9)
+DEFAULT = ["/opt/localsend/data/flutter_assets/assets/img/logo-32-white.png",  # localsend-bin: its tray icon
+           *glob.glob("/usr/lib/python3*/site-packages/streamdeck_ui/logo.png")]  # streamdeck-ui: QSystemTrayIcon
+
+for path in sys.argv[1:] or DEFAULT:
+    try:
+        im = Image.open(path).convert("RGBA")
+    except OSError:
+        continue
+    px = list(im.get_flattened_data() if hasattr(im, "get_flattened_data") else im.getdata())
+    if all(p[:3] == PURPLE for p in px if p[3]):
+        print(f"dracula-tray-images: {path} already Dracula"); continue
+    im.putdata([PURPLE + (round(a * max(0, max(r, g, b) - 30) / 225),) for r, g, b, a in px])
+    try:
+        im.save(path)
+    except OSError as e:
+        print(f"dracula-tray-images: {path}: {e}"); continue
+    print(f"dracula-tray-images: {path} recoloured")
+EOF
+)" "tray image recolour (Dracula)" || true
+  put_etc_file /etc/pacman.d/hooks/dracula-tray-images.hook "$(cat <<EOF
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = localsend-bin
+Target = streamdeck-ui
+
+[Action]
+Description = Recolouring bundled tray images to Dracula (arch-bootstrap)
+When = PostTransaction
+Exec = /usr/bin/python3 -I $f
+EOF
+)" "tray image recolour hook" || true
+  (( DRY_RUN )) && return 0
+  run sudo python3 -I "$f"
+}
+
 install_cursor_theme() {
   local icons="$HOME/.local/share/icons" tmp
   local url=https://github.com/ful1e5/Bibata_Cursor/releases/download/v2.0.7/Bibata-Modern-Amber.tar.xz
@@ -5672,6 +5729,7 @@ stage_services() {
   keepassxc_seed_config
   install_cursor_theme
   install_icon_theme
+  setup_dracula_tray_images
   update_wallpapers
   # Vivaldi's Dracula theme (tools/vivaldi-theme; Ben 2026-11-07, "option 2"). Vivaldi must be closed: it rewrites
   # its Preferences on exit, so a run with it open writes nothing and leaves a todo; the next fpush tries again.
