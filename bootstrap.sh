@@ -224,11 +224,6 @@ PKG_EXCLUDE_FILE="${PKG_EXCLUDE_FILE:-}"
 # packages in pkglist-profile-<name>.txt (and any SYSTEM_UNITS they bring). Set it
 # per host in bootstrap.conf, e.g.  case "$(uname -n)" in tv) PROFILES="media-center" ;; esac
 PROFILES="${PROFILES:-}"
-# Machines whose boot image has plymouth (a splash for the unlock prompts), by hostname, or "all". carbon's first plymouth
-# boot (2026-11-07) showed a spinner and no prompt, then emergency mode, so it goes back one machine at a time: carbon
-# first, where Ben tests it (station-maintenance carbon 12). Elsewhere 90-no-plymouth.conf keeps it out.
-PLYMOUTH_HOSTS="${PLYMOUTH_HOSTS:-carbon}"
-plymouth_on() { [[ -x /usr/bin/plymouthd ]] && [[ $PLYMOUTH_HOSTS == all || " $PLYMOUTH_HOSTS " == *" $(uname -n) "* ]]; }
 
 BOOTSTRAP_CONFIG="${BOOTSTRAP_CONFIG:-$SCRIPT_DIR/bootstrap.conf}"
 
@@ -5200,42 +5195,6 @@ add_dracutmodules+=" remote-unlock "' "dracut: remote-unlock" && REMOTE_UNLOCK_C
 # copied to /boot/grub/themes/dracula and named in GRUB_THEME, which grub-mkconfig's header then loads (gfxterm).
 # setup_boot regenerates and checks the menu right after this. A theme GRUB cannot load costs only the looks: it
 # falls back to the plain menu. Called from setup_boot only, so /boot is known to be this machine's GRUB.
-# Plymouth's stock spinner theme with Dracula colours (Ben 2026-11-07); its images are read from spinner's directory.
-PLYMOUTH_DRACULA='# Written by arch-bootstrap (setup_boot): plymouth spinner, Dracula colours.
-[Plymouth Theme]
-Name=Dracula
-Description=Spinner in Dracula colours (arch-bootstrap)
-ModuleName=two-step
-
-[two-step]
-Font=Fira Code 12
-TitleFont=Fira Code 24
-MonospaceFont=Fira Code 12
-ImageDir=/usr/share/plymouth/themes/spinner
-DialogHorizontalAlignment=.5
-DialogVerticalAlignment=.382
-TitleHorizontalAlignment=.5
-TitleVerticalAlignment=.382
-HorizontalAlignment=.5
-VerticalAlignment=.7
-WatermarkHorizontalAlignment=.5
-WatermarkVerticalAlignment=.96
-Transition=none
-TransitionDuration=0.0
-BackgroundStartColor=0x282a36
-BackgroundEndColor=0x282a36
-ProgressBarBackgroundColor=0x44475a
-ProgressBarForegroundColor=0xbd93f9
-MessageBelowAnimation=true
-
-[boot-up]
-UseEndAnimation=false
-
-[shutdown]
-UseEndAnimation=false
-
-[reboot]
-UseEndAnimation=false'
 
 install_grub_theme() {
   local url=https://github.com/dracula/grub/archive/0e721d99dbf0d5d6c4fd489b88248365b7a60d12.tar.gz
@@ -5293,29 +5252,14 @@ ALL_kver="/boot/vmlinuz-linux"
 PRESETS=('"'"'fallback'"'"')
 fallback_image="/boot/initramfs-linux-fallback.img"
 fallback_options="-S autodetect"' "mkinitcpio: fallback image only" && rebuild=1
-  # Plymouth (Ben 2026-11-07): a Dracula boot screen; the PIN and passphrase prompts show on it instead of bare tty1
-  # text. Plymouth's own spinner images in Dracula colours, so nothing is downloaded. dracut's plymouth module takes
-  # the theme into the image whenever plymouth is installed; the dracut GRUB entries add `splash`.
-  if [[ -x /usr/bin/plymouthd ]]; then
-    put_etc_file /usr/share/plymouth/themes/dracula/dracula.plymouth "$PLYMOUTH_DRACULA" "plymouth: Dracula theme" && rebuild=1
-    put_etc_file /etc/plymouth/plymouthd.conf $'# Written by arch-bootstrap (setup_boot).\n[Daemon]\nTheme=dracula' "plymouth: theme" && rebuild=1
-  fi
-  # Off unless this machine is in PLYMOUTH_HOSTS. The same file tells 10_arch not to add `splash`.
-  local noply=/etc/dracut.conf.d/90-no-plymouth.conf pango=/etc/dracut.conf.d/91-plymouth-pango.conf
-  if plymouth_on; then
-    if [[ -e $noply ]]; then run sudo rm -f "$noply" && did "plymouth on here (PLYMOUTH_HOSTS)" && rebuild=1; fi
-    # The prompt's text: plymouth-populate-initrd ships only label-freetype, which measured "Please enter security token
-    # PIN" as 67109101 px wide on carbon (2026-11-07, plymouth 26.134.222), so the question was drawn off-screen and the
-    # disk passphrase went in as the YubiKey PIN. label-pango (plymouth tries it first) with fontconfig and the theme's
-    # font renders it; dracut resolves the plugin's libraries. Arch plymouth issue 2: the same since 24.004.60.
-    put_etc_file "$pango" '# Written by arch-bootstrap (setup_boot; station-maintenance carbon 12): plymouth prompt text via pango.
-install_items+=" /usr/lib/plymouth/label-pango.so /etc/fonts/fonts.conf /usr/share/fonts/TTF/FiraCode-Regular.ttf "' \
-      "plymouth: label-pango in the image" && rebuild=1
-  else
-    if [[ -e $pango ]]; then run sudo rm -f "$pango" && rebuild=1; fi
-    put_etc_file "$noply" '# Written by arch-bootstrap (setup_boot): this machine is not in PLYMOUTH_HOSTS (station-maintenance carbon 12).
-omit_dracutmodules+=" plymouth "' "plymouth out of the boot image" && rebuild=1
-  fi
+  # Plymouth was tried on 2026-11-07 and retired the same day (Ben: "call this a loss"; station-maintenance carbon 12):
+  # on carbon it hung with no prompt, or showed a prompt with no text (label-freetype), then hung again with
+  # label-pango. pkglist-remove.txt takes the package off; this takes off what setup_boot wrote for it.
+  for f in /etc/dracut.conf.d/90-no-plymouth.conf /etc/dracut.conf.d/91-plymouth-pango.conf /etc/plymouth/plymouthd.conf \
+           /etc/plymouth/plymouthd.conf.pacsave \
+           /usr/share/plymouth/themes/dracula; do
+    if [[ -e $f ]]; then run sudo rm -rf "$f" && did "plymouth leftover removed: $f" && rebuild=1; fi
+  done
   if (( DRY_RUN )); then info "(dry run) would build the images and regenerate $cfg if needed"; return 0; fi
   setup_remote_unlock; if (( REMOTE_UNLOCK_CHANGED )); then rebuild=1; fi
 
@@ -5331,9 +5275,6 @@ omit_dracutmodules+=" plymouth "' "plymouth out of the boot image" && rebuild=1
       || { warn "building the boot images failed -- the old menu stays"; return 1; }
     dracut_ok || { warn "$img has no FIDO2 token module or systemd-cryptsetup -- the old menu stays"; return 1; }
     did "boot images: dracut $img, mkinitcpio fallback ($kver)"
-    if plymouth_on && ! grep -q 'label-pango.so$' <<<"$(sudo lsinitrd "$img" 2>/dev/null)"; then
-      warn "plymouth is on here but label-pango is not in $img -- its prompts will have no text"
-    fi
   else
     ok "boot images in place (dracut with FIDO2, mkinitcpio fallback)"
   fi
@@ -5460,11 +5401,6 @@ if [ "$root_fs" = btrfs ]; then sv=$(findmnt -no FSROOT /); [ "$sv" = / ] || roo
 common="root=UUID=$root_uuid rw rootfstype=$root_fs$rootflags zswap.enabled=0"
 rd="rd.luks.name=$luks_uuid=root systemd.setenv=SYSTEMD_CRYPTSETUP_USE_TOKEN_MODULE=0"
 tail=${GRUB_CMDLINE_LINUX_DEFAULT-loglevel=3 quiet}
-# Where plymouth is in the image (no 90-no-plymouth.conf), the normal entries still boot without it, and a separate
-# "plymouth test" entry has splash plus plymouth.debug: carbon hung twice in plymouth on 2026-11-07, so a plymouth boot
-# is chosen, never the default, until it works (station-maintenance carbon 12).
-ply=0
-if [ -x /usr/bin/plymouthd ] && [ ! -e /etc/dracut.conf.d/90-no-plymouth.conf ]; then ply=1; tail="$tail plymouth.enable=0"; fi
 
 entry() { # title, message, kernel options, image
   cat <<EOF
@@ -5486,10 +5422,6 @@ if [ "$keys" -gt 0 ]; then
   entry "Arch Linux" "Plug in your YubiKey (PIN, then touch), or wait 3 s for the passphrase prompt" \
     "$common $rd rd.luks.options=$luks_uuid=fido2-device=auto,token-timeout=3s $tail" initramfs-linux.img
   entry "Arch Linux (passphrase)" "Passphrase unlock (no YubiKey)" "$common $rd $tail" initramfs-linux.img
-  if [ "$ply" = 1 ]; then
-    entry "Arch Linux (plymouth test)" "YubiKey or passphrase, with the plymouth splash and its debug log" \
-      "$common $rd rd.luks.options=$luks_uuid=fido2-device=auto,token-timeout=3s ${tail% plymouth.enable=0} splash plymouth.debug" initramfs-linux.img
-  fi
 else
   entry "Arch Linux" "Passphrase unlock (no YubiKey enrolled here)" "$common $rd $tail" initramfs-linux.img
 fi

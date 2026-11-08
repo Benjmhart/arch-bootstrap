@@ -201,7 +201,6 @@ zoxide
 zsh
 ffmpeg
 dracut
-plymouth              # boot screen for the unlock prompts (setup_boot, Ben 2026-11-07)
 rofi                  # launcher on trial against dmenu (Ben 2026-11-07)
 wiremix               # terminal volume mixers on trial against pacmixer, mod-v scratchpad (Ben 2026-11-07)
 pulsemixer
