@@ -273,6 +273,12 @@ if [[ -d $DOTDIR ]]; then
     if "$herdr" server reload-config >/dev/null; then echo "ok    herdr config reloaded"
     else echo "note  herdr: reload-config failed; run \`herdr server reload-config\`"; fi
   fi
+  # The theme keys in gsettings, which apps read through the portal (station-maintenance fleet 7): set on every apply,
+  # so a change reaches the machine without Ben logging in on it (Ben 2026-11-08). Idempotent; no session needed.
+  if [[ -x $HOME/bin/theme-gsettings ]]; then
+    if "$HOME/bin/theme-gsettings" >/dev/null 2>&1; then echo "ok    theme gsettings applied"
+    else echo "note  theme gsettings failed: run ~/bin/theme-gsettings"; fi
+  fi
   # PipeWire reads its drop-ins only at start (the louder filter, Ben 2026-11-08): restart it, and what rides on it.
   if systemctl --user --quiet is-active pipewire.service 2>/dev/null \
      && ! git --git-dir="$DOTDIR" --work-tree="$HOME" diff --quiet "$dot_was" "$dot" -- ':/.config/pipewire'; then

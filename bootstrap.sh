@@ -2966,17 +2966,6 @@ stage_session() {
       did "NetworkManager enabled"
     fi
   fi
-  # One DHCP client per NIC. archinstall left systemd-networkd enabled on beast-arch beside NetworkManager, so enp3s0
-  # held two leases (.69 networkd, .74 NM) and every tailnet peer alternated between them, ~200 path changes a day seen
-  # from micro alone (station-maintenance beast-arch 147, 2026-11-08). Only the unit goes: dracut copies
-  # /etc/systemd/network/*.network into the initramfs, where the remote-unlock network still uses them.
-  if systemctl is-enabled NetworkManager >/dev/null 2>&1 && systemctl is-enabled systemd-networkd >/dev/null 2>&1; then
-    warn "systemd-networkd and NetworkManager both enabled: two DHCP clients on one NIC"
-    if confirm "disable systemd-networkd (NetworkManager stays)?"; then
-      run sudo systemctl disable --now systemd-networkd.service systemd-networkd.socket
-      did "systemd-networkd disabled"
-    fi
-  fi
 
   # Font cache. Newly installed fonts are invisible to running apps until this
   # runs, which looks exactly like the font failing to install.
@@ -5763,10 +5752,31 @@ WantedBy=timers.target" "log-purge timer (1st and 15th)" && run sudo systemctl d
   else run sudo systemctl enable --now log-purge.timer; did "log-purge timer on: btmp emptied, journal kept to 14 days, 1st and 15th"; fi
 }
 
+# One DHCP client per NIC (station-maintenance beast-arch 147, 2026-11-08). archinstall left systemd-networkd enabled on
+# beast-arch beside NetworkManager, so enp3s0 held two leases (.69 networkd, .74 NM) and every tailnet peer alternated
+# between them: 155 of micro's 157 real path moves on 2026-11-07. Stage 60, not 40, and no prompt, so an fpush applies it
+# (Ben: "doesn't the fpush turn off the second dhcp client?"). Guarded for a machine reached over the network: networkd
+# goes only when NetworkManager has every link networkd configures connected, so no link is left without a manager.
+# Only the unit goes: dracut copies /etc/systemd/network/*.network into the initramfs (the remote-unlock network).
+single_dhcp_client() {
+  systemctl -q is-enabled NetworkManager 2>/dev/null && systemctl -q is-enabled systemd-networkd 2>/dev/null || return 0
+  local l nm
+  nm=$(nmcli -t -f DEVICE,STATE device 2>/dev/null)
+  for l in $(networkctl list --no-legend 2>/dev/null | awk '$5=="configured"{print $2}'); do
+    if ! grep -qx "$l:connected" <<<"$nm"; then
+      warn "systemd-networkd and NetworkManager both enabled, but NetworkManager has not connected $l: left alone"
+      return 0
+    fi
+  done
+  run sudo systemctl disable --now systemd-networkd.service systemd-networkd.socket systemd-networkd-wait-online.service \
+    && did "systemd-networkd disabled (NetworkManager manages every link it had)"
+}
+
 stage_services() {
   stage_banner "60 services -- system and user units"
 
   enable_system_units
+  single_dhcp_client
   harden_sshd
   stop_sshd_no_inbound
   ssh_tailnet_peers
