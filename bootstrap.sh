@@ -4233,6 +4233,25 @@ zram-size = ram
 compression-algorithm = zstd" "zram sized to RAM (lean)"; then
     info "zram size changes at the next boot"
   fi
+
+  # Vivaldi's profile in RAM (profile-sync-daemon; Ben 2026-11-08, beast-arch 127): on micro's spinning disk the
+  # browser's constant small writes were the lag. Overlay mode keeps only what changed in RAM (the 361 MiB profile stays
+  # on disk underneath), which needs its helper run as root without a password. psd.conf is in the dotfiles. The
+  # service is enabled, not started: psd will not take a profile while Vivaldi runs, so it begins at the next login.
+  if have psd-overlay-helper; then
+    local sf=/etc/sudoers.d/30-psd-overlay tmp; tmp=$(mktemp)
+    printf '%s\n' "$USER ALL=(ALL) NOPASSWD: /usr/bin/psd-overlay-helper" >"$tmp"
+    if sudo -n cmp -s "$tmp" "$sf" 2>/dev/null; then
+      ok "psd overlay helper: no password"
+    elif run sudo visudo -cqf "$tmp" && run sudo install -m 440 -o root -g root "$tmp" "$sf"; then
+      did "psd overlay helper: no password ($sf)"
+    else
+      warn "could not write $sf"
+    fi
+    rm -f "$tmp"
+    if systemctl --user is-enabled --quiet psd.service 2>/dev/null; then ok "psd (browser profile in RAM) enabled"
+    else run systemctl --user enable psd.service; did "psd enabled: Vivaldi's profile goes to RAM at the next login"; fi
+  fi
 }
 
 # A readable kernel-console font. default8x16 at 1920x1080 is tiny; Terminus 12x24
