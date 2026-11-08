@@ -4115,6 +4115,11 @@ install_browser_search_policy() {
   for d in /etc/vivaldi /etc/chromium /etc/opt/chrome; do
     put_etc_file "$d/policies/managed/search-duckduckgo.json" "$chromium_family" \
       "DuckDuckGo default search" || true
+    # No "save password?" dialogs (Ben 2026-11-07: "disable the save password dialogues in all browsers"); passwords
+    # live in KeePassXC. PasswordManagerEnabled=false is the "Offer to save passwords" switch, locked; it covers
+    # chromium-personal too (same browser, other profile).
+    put_etc_file "$d/policies/managed/no-password-saving.json" '{ "PasswordManagerEnabled": false }' \
+      "no save-password prompts" || true
   done
   # Vimium in Vivaldi, fetched from Google's update service by the browser itself on
   # its next start -- no Web Store visit (task 22). normal_installed: installed and
@@ -4142,8 +4147,8 @@ install_browser_search_policy() {
 }' "KeePassXC-Browser removed from Chromium (policy)" || true
   # Firefox reads one policies.json, not a directory; nothing else writes it yet.
   put_etc_file /etc/firefox/policies/policies.json \
-    '{ "policies": { "SearchEngines": { "Default": "DuckDuckGo" } } }' \
-    "Firefox DuckDuckGo default search" || true
+    '{ "policies": { "SearchEngines": { "Default": "DuckDuckGo" }, "OfferToSaveLogins": false } }' \
+    "Firefox DuckDuckGo default search, no save-password prompts" || true
 }
 
 # zram is this machine's ONLY swap: zram configured, no SWAP_PARTUUID, and nothing
