@@ -41,8 +41,14 @@ printf '%s' "$key" | on_host "" "umask 077; cat > $k"
 # is shredded with it. Without it, luksAddKey asks for the passphrase on <host>.
 old=""
 if [[ -n ${UNLOCK_PASSPHRASE_FILE:-} ]]; then old=$k.old; on_host "" "umask 077; cat > $old" <"$UNLOCK_PASSPHRASE_FILE"; fi
-echo "on $host: sudo (touch)$([[ -z $old ]] && echo ", then the disk's CURRENT passphrase for luksAddKey")"
-on_host -t "set -e; trap 'for f in $k $old; do shred -u \$f 2>/dev/null || rm -f \$f; done' EXIT
+# UNLOCK_SUDO_PASSWORD_FILE (optional; Ben 2026-11-08, "sudo is also the same across all systems"): the sudo password,
+# sent the same way; `sudo -S -v` reads it once (stdin is a file, so the YubiKey steps are skipped) and the rest of this
+# session's sudo uses the cached credential. Without it, sudo asks as usual.
+sp=""
+if [[ -n ${UNLOCK_SUDO_PASSWORD_FILE:-} ]]; then sp=$k.sudo; on_host "" "umask 077; cat > $sp" <"$UNLOCK_SUDO_PASSWORD_FILE"; fi
+echo "on $host: $([[ -n $sp ]] && echo "sudo from the password file" || echo "sudo (touch)")$([[ -z $old ]] && echo ", then the disk's CURRENT passphrase for luksAddKey")"
+on_host -t "set -e; trap 'for f in $k $old $sp; do shred -u \$f 2>/dev/null || rm -f \$f; done' EXIT
+  ${sp:+sudo -S -v -p '' <$sp}
   u=\$(sed -n 's/.*rd\.luks\.name=\([^= ]*\)=root.*/\1/p' /proc/cmdline); [ -n \"\$u\" ]
   d=/dev/disk/by-uuid/\$u
   if sudo cryptsetup open --test-passphrase --key-file $k \"\$d\" 2>/dev/null; then echo 'this key already opens the disk'
