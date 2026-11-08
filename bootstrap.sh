@@ -3698,6 +3698,21 @@ install_icon_theme() {
     done
   done
   ok "icon theme Papirus-Dark-Dracula: $n folder icons violet"
+  # Tray icons in Dracula colours (Ben 2026-11-08: the keyboard, volume, mozc, udiskie... tray icons "are white instead of
+  # dracula colors"). XEmbed tray apps that name a themed icon get Papirus's panel set: #dfdfdf glyphs with Material
+  # accents. A copy of it here is recoloured: glyph purple, accents to Dracula's cyan/green/red/orange. Every link in it
+  # points within its own directory, so cp -a keeps them valid. Rebuilt only when the Papirus package changes.
+  local ver p stamp; ver=$(pacman -Q papirus-icon-theme 2>/dev/null | awk '{print $2}'); stamp="$dst/.panel-dracula-$ver"
+  if [[ -e $stamp ]]; then ok "icon theme Papirus-Dark-Dracula: tray icons Dracula ($ver)"; return 0; fi
+  rm -f "$dst"/.panel-dracula-*
+  for p in "$src"/Papirus/*/panel; do
+    d=${p%/panel}; d=${d##*/}
+    rm -rf "$dst/$d/panel"; mkdir -p "$dst/$d"; cp -a "$p" "$dst/$d/panel"
+    find "$dst/$d/panel" -maxdepth 1 -type f -name '*.svg' -exec sed -i \
+      -e 's/#dfdfdf/#bd93f9/gI; s/#4285f4/#8be9fd/gI; s/#4caf50/#50fa7b/gI; s/#f44336/#ff5555/gI; s/#ff9800/#ffb86c/gI' {} +
+  done
+  touch "$stamp"
+  did "icon theme Papirus-Dark-Dracula: tray icons recoloured to Dracula ($ver)"
 }
 
 install_cursor_theme() {
