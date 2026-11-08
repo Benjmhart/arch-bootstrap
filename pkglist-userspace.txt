@@ -147,6 +147,8 @@ ttf-fira-code
 # Hasklig is otf-hasklig (AUR list), Monoid below. ttf-nerd-fonts-symbols-mono: fontconfig falls back to it for
 # Nerd Font icons, so every font here shows them without its own "-nerd" build.
 ttc-iosevka
+ttc-iosevka-aile      # Iosevka everywhere: the proportional UI face (Ben 2026-11-08)
+ttc-iosevka-etoile    # and the serif one
 ttf-jetbrains-mono
 ttf-cascadia-code
 otf-monaspace
