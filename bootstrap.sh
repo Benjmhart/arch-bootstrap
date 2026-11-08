@@ -5588,6 +5588,19 @@ echo y | /usr/bin/ventoy -u \"\$disk\"" "rescue-ventoy-upgrade" || true
   rm -f "$tmp"
 }
 
+# gh-dash (Ben 2026-11-08): PRs and issues across repos in one terminal dashboard, as a gh extension from its author's
+# repo (dlvhdr/gh-dash; the AUR copies have 2-3 votes). Only where gh is logged in: it is useless without a token,
+# and tokens stay off the dirty machines (beast-arch 94). Kept on the latest release, as the herdr plugins are.
+# Its Dracula theme is in the dotfiles (~/.config/gh-dash/config.yml).
+setup_gh_dash() {
+  have gh && gh auth status >/dev/null 2>&1 || return 0
+  if gh extension list 2>/dev/null | grep -q 'dlvhdr/gh-dash'; then
+    gh extension upgrade gh-dash >/dev/null 2>&1 && ok "gh-dash on its latest release" || warn "gh-dash: upgrade failed (offline?)"
+  else
+    run gh extension install dlvhdr/gh-dash && did "gh-dash installed (gh dash)"
+  fi
+}
+
 # log-purge (every machine; Ben 2026-11-08: "purges login logs in case i accidentally reveal a password"): a password
 # typed into a username field is kept by the failed-login record (/var/log/btmp, `lastb`) and by the journal (sshd's
 # "Invalid user ...", PAM's user=). On the 1st and 15th at 03:00 (or at the next boot after a missed one) it empties
@@ -5638,6 +5651,7 @@ stage_services() {
   restart_stale_tailscaled
   install_chores
   setup_log_purge
+  setup_gh_dash
   install_rclone_conf
   espanso_skip_wizard
   keepassxc_seed_config

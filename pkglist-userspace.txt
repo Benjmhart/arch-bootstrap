@@ -243,3 +243,5 @@ android-tools         # only: beast-arch
 android-udev          # only: beast-arch
 # scrcpy: the Pixel 5 as a microphone (station-maintenance beast-arch 115).
 scrcpy                # only: beast-arch
+hyperfine             # command timing (Ben 2026-11-08)
+dust                  # disk usage at a glance (Ben 2026-11-08)
