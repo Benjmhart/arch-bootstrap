@@ -4137,15 +4137,21 @@ install_browser_search_policy() {
   local kpxc='"oboonakemofpalcgghocfoadofidjkkk": {
       "installation_mode": "removed"
     }'
+  # uBlock Origin Lite (ddkjiahejlhfcafbddmgiahcphecmpfh; Ben 2026-11-08): ads and trackers blocked, the biggest
+  # page-load saving on a slow machine. The Lite (MV3) build: rule lists the browser applies itself, no resident script.
   put_etc_file /etc/vivaldi/policies/managed/extensions.json '{
   "ExtensionSettings": {
     "dbepggeogbaibhgnhhndojpepiihcmeb": {
       "installation_mode": "normal_installed",
       "update_url": "https://clients2.google.com/service/update2/crx"
     },
+    "ddkjiahejlhfcafbddmgiahcphecmpfh": {
+      "installation_mode": "normal_installed",
+      "update_url": "https://clients2.google.com/service/update2/crx"
+    },
     '"$kpxc"'
   }
-}' "Vimium for Vivaldi (installed by policy); KeePassXC-Browser removed" || true
+}' "Vimium and uBlock Origin Lite for Vivaldi (installed by policy); KeePassXC-Browser removed" || true
   put_etc_file /etc/chromium/policies/managed/extensions.json '{
   "ExtensionSettings": {
     '"$kpxc"'
