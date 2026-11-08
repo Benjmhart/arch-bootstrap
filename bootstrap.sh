@@ -5780,8 +5780,15 @@ single_dhcp_client() {
       return 0
     fi
   done
-  run sudo systemctl disable --now systemd-networkd.service systemd-networkd.socket systemd-networkd-wait-online.service \
-    && did "systemd-networkd disabled (NetworkManager manages every link it had)"
+  # Disable only, from the next boot. `disable --now` failed the fpush on beast-arch (2026-11-08 18:51, Ben -2):
+  # networkd's four other sockets (varlink, varlink-metrics, resolve-hook) were still active and systemd cancelled the
+  # stop ("Job for systemd-networkd.socket canceled"), exit 1, which ended stage 60 before ssh, boot and the rest ran.
+  # The disable itself had gone through. No live stop: this runs over the network on the machine it would cut off.
+  local en; en=$(systemctl list-unit-files --no-legend --state=enabled 'systemd-networkd*' 2>/dev/null | awk '{print $1}')
+  # shellcheck disable=SC2086 # unit names, one word each
+  if run sudo systemctl disable $en; then did "systemd-networkd disabled from the next boot (NetworkManager manages every link it had)"
+  else warn "could not disable systemd-networkd ($en): left as it is"; fi
+  return 0
 }
 
 # pacoloco on the media-center profile: a pull-through cache of the Arch Linux Archive for the home machines
