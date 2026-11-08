@@ -281,6 +281,14 @@ if [[ -d $DOTDIR ]]; then
        && env $xenv xmonad --restart; then echo "ok    xmobar config changed: xmonad restarted, bars reloaded"
     else echo "note  xmobar config changed but xmonad was not restarted: press mod-q"; fi
   fi
+  # picom rereads nothing it was started with, so a change to its setup restarts it on xmonad's display (Ben 2026-11-07).
+  if xpid=$(pgrep -u "$USER" -o -x xmonad-x86_64-l) && [[ -x $HOME/bin/compositor-start ]] \
+     && ! git --git-dir="$DOTDIR" --work-tree="$HOME" diff --quiet "$dot_was" "$dot" -- \
+          ':/.config/picom.conf' ':/bin/compositor-start' ':/.xinitrc'; then
+    if xenv=$(tr '\0' '\n' < "/proc/$xpid/environ" | grep -E '^(DISPLAY|XAUTHORITY)=') \
+       && env $xenv "$HOME/bin/compositor-start"; then echo "ok    picom setup changed: picom restarted"
+    else echo "note  picom setup changed but picom was not restarted: run ~/bin/compositor-start"; fi
+  fi
 fi
 move secrets "${FLEET_SEC_BRANCH:-master}" "$sec" 1 git -C "$SECRETS"
 # git writes a changed file with the umask (644), so the vault turned world-readable on beast-arch when 19a3c2e was

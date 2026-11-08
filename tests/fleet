@@ -136,6 +136,12 @@ out=$(echo pw-ok | fa self apply "$ab2" "$dot5" "$sec2" keys 2>&1)
 check "xmobarrc changed, xmonad running: restarted on its display" 'grep -qx "xmonad: --restart DISPLAY=:99" "$H/xmonad.calls" && grep -q "xmonad restarted, bars reloaded" <<<"$out"'
 rm -f "$H/xmonad.calls"; echo pw-ok | fa self apply "$ab2" "$dot6" "$sec2" keys >/dev/null 2>&1
 check "...xmobarrc unchanged: no restart"                   '[[ ! -e $H/xmonad.calls ]]'
+dot7=$(commit "$t/dot-seed" .config/picom.conf pc7 "picom"); dot8=$(commit "$t/dot-seed" .zshrc rc8 "dot eight")
+mkdir -p "$H/bin"; printf '#!/bin/sh\necho "compositor: DISPLAY=$DISPLAY" >> "$HOME/compositor.calls"\n' > "$H/bin/compositor-start"; chmod +x "$H/bin/compositor-start"
+out=$(echo pw-ok | fa self apply "$ab2" "$dot7" "$sec2" keys 2>&1)
+check "picom.conf changed, xmonad running: picom restarted on its display" 'grep -qx "compositor: DISPLAY=:99" "$H/compositor.calls" && grep -q "picom restarted" <<<"$out"'
+rm -f "$H/compositor.calls"; echo pw-ok | fa self apply "$ab2" "$dot8" "$sec2" keys >/dev/null 2>&1
+check "...picom setup unchanged: no restart"                '[[ ! -e $H/compositor.calls ]]'
 kill "$(cat "$t/xmonad.pid")"; rm "$t/xmonad.pid"
 
 # ================= fleet-apply secrets-push (h1 is the vault host)
