@@ -4298,8 +4298,8 @@ set_console_font() {
 # uses colour 0 as its background and 7 as its foreground, so those take Alacritty's
 # primary background/foreground (282a36, f8f8f2) instead of its black/white.
 # setvtrgb rewrites the kernel's default palette, so every VT gets it, from the
-# console-palette unit at boot. The LUKS prompt runs before that and keeps the stock
-# colours (only vt.default_* on the kernel command line would reach it).
+# console-palette unit at boot. The LUKS prompt runs before that, so GRUB_10_ARCH puts the same
+# colours on the kernel command line too (vt.default_*, 2026-11-08). Change both together.
 CONSOLE_PALETTE=(282a36 ff5555 50fa7b f1fa8c bd93f9 ff79c6 8be9fd f8f8f2
                  4d4d4d ff6e67 5af78e f4f99d 40a29d ff92d0 9aedfe e6e6e6)
 set_console_palette() {
@@ -4330,6 +4330,14 @@ WantedBy=sysinit.target" "console palette unit" && run sudo systemctl daemon-rel
       && did "console palette on (every VT now; from boot on)"
   fi
   return 0
+}
+
+# The console login banner in the palette above (Ben 2026-11-08): the host in pink (colour 5), the system in purple (4),
+# the tty in comment grey (8). agetty's \e{name} colour escapes; the filesystem package owns /etc/issue, so an upgrade
+# that changes it leaves an /etc/issue.pacnew and this file stands.
+set_console_issue() {
+  put_etc_file /etc/issue '\e{magenta}\n\e{reset}  \e{blue}\S{PRETTY_NAME} \r\e{reset}  \e{darkgray}\l\e{reset}
+' "console login banner in Dracula" || true
 }
 
 # kmscon is GONE (Ben 2026-10-17: "i want true ttys when i move to another session"). It ran on tty2-6 from
@@ -5441,9 +5449,9 @@ rootflags=
 if [ "$root_fs" = btrfs ]; then sv=$(findmnt -no FSROOT /); [ "$sv" = / ] || rootflags=" rootflags=subvol=${sv#/}"; fi
 # zswap off: every machine swaps to zram.
 common="root=UUID=$root_uuid rw rootfstype=$root_fs$rootflags zswap.enabled=0"
-# The text console in Dracula colours, from the first line of boot through the disk-unlock prompt (Ben 2026-11-08):
-# colour 0, the console background, is #282a36; the rest are the 16 Dracula ANSI colours.
-common="$common vt.default_red=40,255,80,241,189,255,139,248,98,255,105,255,214,255,164,255 vt.default_grn=42,85,250,250,147,121,233,248,114,110,255,255,172,146,255,255 vt.default_blu=54,85,123,140,249,198,253,242,164,110,148,165,255,223,255,255"
+# The console palette from the first line of boot, so the disk-unlock prompt has it too (Ben 2026-11-08): the same
+# 16 colours as CONSOLE_PALETTE (set_console_palette), whose setvtrgb unit runs only after the initramfs. Keep in step.
+common="$common vt.default_red=40,255,80,241,189,255,139,248,77,255,90,244,64,255,154,230 vt.default_grn=42,85,250,250,147,121,233,248,77,110,247,249,162,146,237,230 vt.default_blu=54,85,123,140,249,198,253,242,77,103,142,157,157,208,254,230"
 rd="rd.luks.name=$luks_uuid=root systemd.setenv=SYSTEMD_CRYPTSETUP_USE_TOKEN_MODULE=0"
 tail=${GRUB_CMDLINE_LINUX_DEFAULT-loglevel=3 quiet}
 
@@ -5564,6 +5572,7 @@ stage_services() {
   apply_lean_profile
   set_console_font
   set_console_palette
+  set_console_issue
   remove_kmscon
   setup_games_at_login
   setup_lid
