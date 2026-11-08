@@ -273,6 +273,12 @@ if [[ -d $DOTDIR ]]; then
     if "$herdr" server reload-config >/dev/null; then echo "ok    herdr config reloaded"
     else echo "note  herdr: reload-config failed; run \`herdr server reload-config\`"; fi
   fi
+  # dunst keeps its old settings until told; dunstctl reaches it on the session bus, which an ssh shell may not name.
+  if pgrep -u "$USER" -x dunst >/dev/null \
+     && ! git --git-dir="$DOTDIR" --work-tree="$HOME" diff --quiet "$dot_was" "$dot" -- ':/.config/dunst'; then
+    if DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-unix:path=/run/user/$(id -u)/bus} dunstctl reload >/dev/null 2>&1
+    then echo "ok    dunst config reloaded"; else echo "note  dunst: reload failed; run \`dunstctl reload\`"; fi
+  fi
   # xmobar never rereads ~/.xmobarrc; an xmonad restart replaces its bars (dynamicSBs). Windows and layouts survive.
   # As bootstrap's xmonad_restart_running, on xmonad's own display (station-maintenance micro 18, 2026-11-06).
   if xpid=$(pgrep -u "$USER" -o -x xmonad-x86_64-l) \

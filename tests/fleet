@@ -68,10 +68,12 @@ cat > "$t/bin/pgrep" <<STUB
 #!/bin/bash
 [[ "\$*" == "-x keepassxc" && -e "$t/kpx.\${FLEET_HOST:-x}" ]] && exit 0
 [[ "\$*" == "-x herdr" && -e "$t/herdr.on" ]] && exit 0
+[[ "\$*" == "-u "*" -x dunst" && -e "$t/dunst.on" ]] && exit 0
 [[ "\$*" == "-u "*" -o -x xmonad-x86_64-l" && -e "$t/xmonad.pid" ]] && { cat "$t/xmonad.pid"; exit 0; }
 exit 1
 STUB
 printf '#!/bin/sh\necho "xmonad: $* DISPLAY=$DISPLAY" >> "$HOME/xmonad.calls"\n' > "$t/bin/xmonad"   # stub: restarts nothing
+printf '#!/bin/sh\necho "dunstctl: $*" >> "$HOME/dunst.calls"\n' > "$t/bin/dunstctl"; chmod +x "$t/bin/dunstctl"
 printf '#!/bin/sh\necho "herdr: $*" >> "$HOME/herdr.calls"\n' > "$t/bin/herdr"   # stub: a running herdr server
 chmod +x "$t/bin/"*; export PATH="$t/bin:$PATH"
 
@@ -143,6 +145,12 @@ check "picom.conf changed, xmonad running: picom restarted on its display" 'grep
 rm -f "$H/compositor.calls"; echo pw-ok | fa self apply "$ab2" "$dot8" "$sec2" keys >/dev/null 2>&1
 check "...picom setup unchanged: no restart"                '[[ ! -e $H/compositor.calls ]]'
 kill "$(cat "$t/xmonad.pid")"; rm "$t/xmonad.pid"
+dot9=$(commit "$t/dot-seed" .config/dunst/dunstrc d9 "dunst"); dot10=$(commit "$t/dot-seed" .zshrc rc10 "dot ten"); touch "$t/dunst.on"
+out=$(echo pw-ok | fa self apply "$ab2" "$dot9" "$sec2" keys 2>&1)
+check "dunstrc changed, dunst running: reloaded"            'grep -qx "dunstctl: reload" "$H/dunst.calls" && grep -q "dunst config reloaded" <<<"$out"'
+rm -f "$H/dunst.calls"; echo pw-ok | fa self apply "$ab2" "$dot10" "$sec2" keys >/dev/null 2>&1
+check "...dunstrc unchanged: no reload"                     '[[ ! -e $H/dunst.calls ]]'
+rm "$t/dunst.on"
 
 # ================= fleet-apply secrets-push (h1 is the vault host)
 sp() { fa "$1" secrets-push 2>&1; }
