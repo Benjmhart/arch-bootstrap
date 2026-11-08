@@ -5301,10 +5301,18 @@ fallback_options="-S autodetect"' "mkinitcpio: fallback image only" && rebuild=1
     put_etc_file /etc/plymouth/plymouthd.conf $'# Written by arch-bootstrap (setup_boot).\n[Daemon]\nTheme=dracula' "plymouth: theme" && rebuild=1
   fi
   # Off unless this machine is in PLYMOUTH_HOSTS. The same file tells 10_arch not to add `splash`.
-  local noply=/etc/dracut.conf.d/90-no-plymouth.conf
+  local noply=/etc/dracut.conf.d/90-no-plymouth.conf pango=/etc/dracut.conf.d/91-plymouth-pango.conf
   if plymouth_on; then
     if [[ -e $noply ]]; then run sudo rm -f "$noply" && did "plymouth on here (PLYMOUTH_HOSTS)" && rebuild=1; fi
+    # The prompt's text: plymouth-populate-initrd ships only label-freetype, which measured "Please enter security token
+    # PIN" as 67109101 px wide on carbon (2026-11-07, plymouth 26.134.222), so the question was drawn off-screen and the
+    # disk passphrase went in as the YubiKey PIN. label-pango (plymouth tries it first) with fontconfig and the theme's
+    # font renders it; dracut resolves the plugin's libraries. Arch plymouth issue 2: the same since 24.004.60.
+    put_etc_file "$pango" '# Written by arch-bootstrap (setup_boot; station-maintenance carbon 12): plymouth prompt text via pango.
+install_items+=" /usr/lib/plymouth/label-pango.so /etc/fonts/fonts.conf /usr/share/fonts/TTF/FiraCode-Regular.ttf "' \
+      "plymouth: label-pango in the image" && rebuild=1
   else
+    if [[ -e $pango ]]; then run sudo rm -f "$pango" && rebuild=1; fi
     put_etc_file "$noply" '# Written by arch-bootstrap (setup_boot): this machine is not in PLYMOUTH_HOSTS (station-maintenance carbon 12).
 omit_dracutmodules+=" plymouth "' "plymouth out of the boot image" && rebuild=1
   fi
@@ -5323,6 +5331,9 @@ omit_dracutmodules+=" plymouth "' "plymouth out of the boot image" && rebuild=1
       || { warn "building the boot images failed -- the old menu stays"; return 1; }
     dracut_ok || { warn "$img has no FIDO2 token module or systemd-cryptsetup -- the old menu stays"; return 1; }
     did "boot images: dracut $img, mkinitcpio fallback ($kver)"
+    if plymouth_on && ! grep -q 'label-pango.so$' <<<"$(sudo lsinitrd "$img" 2>/dev/null)"; then
+      warn "plymouth is on here but label-pango is not in $img -- its prompts will have no text"
+    fi
   else
     ok "boot images in place (dracut with FIDO2, mkinitcpio fallback)"
   fi
@@ -5385,6 +5396,9 @@ EOF" "GRUB: the Windows entries" || true
     rm -f "$rwtmp"
   fi
   install_grub_theme
+  # 10 s at the menu (Ben 2026-11-07: "can we make the grub screen wait longer?"; the package default is 5).
+  if grep -qx 'GRUB_TIMEOUT=10' /etc/default/grub; then ok "GRUB menu waits 10 s"
+  else run sudo sed -i 's/^#\?GRUB_TIMEOUT=.*/GRUB_TIMEOUT=10/' /etc/default/grub && did "GRUB menu waits 10 s"; fi
   for f in 10_linux 15_uki 20_linux_xen 31_efi_bootnext; do
     [[ -x /etc/grub.d/$f ]] && { run sudo chmod 644 "/etc/grub.d/$f"; did "GRUB: $f switched off"; }
   done
