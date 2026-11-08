@@ -5431,6 +5431,9 @@ rootflags=
 if [ "$root_fs" = btrfs ]; then sv=$(findmnt -no FSROOT /); [ "$sv" = / ] || rootflags=" rootflags=subvol=${sv#/}"; fi
 # zswap off: every machine swaps to zram.
 common="root=UUID=$root_uuid rw rootfstype=$root_fs$rootflags zswap.enabled=0"
+# The text console in Dracula colours, from the first line of boot through the disk-unlock prompt (Ben 2026-11-08):
+# colour 0, the console background, is #282a36; the rest are the 16 Dracula ANSI colours.
+common="$common vt.default_red=40,255,80,241,189,255,139,248,98,255,105,255,214,255,164,255 vt.default_grn=42,85,250,250,147,121,233,248,114,110,255,255,172,146,255,255 vt.default_blu=54,85,123,140,249,198,253,242,164,110,148,165,255,223,255,255"
 rd="rd.luks.name=$luks_uuid=root systemd.setenv=SYSTEMD_CRYPTSETUP_USE_TOKEN_MODULE=0"
 tail=${GRUB_CMDLINE_LINUX_DEFAULT-loglevel=3 quiet}
 
