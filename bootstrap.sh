@@ -5588,6 +5588,45 @@ echo y | /usr/bin/ventoy -u \"\$disk\"" "rescue-ventoy-upgrade" || true
   rm -f "$tmp"
 }
 
+# log-purge (every machine; Ben 2026-11-08: "purges login logs in case i accidentally reveal a password"): a password
+# typed into a username field is kept by the failed-login record (/var/log/btmp, `lastb`) and by the journal (sshd's
+# "Invalid user ...", PAM's user=). On the 1st and 15th at 03:00 (or at the next boot after a missed one) it empties
+# btmp and drops journal entries older than 14 days. By hand: `sudo log-purge`, or `sudo log-purge --all` right after a
+# slip, which also drops every journal file but the one being written. Shell history (zsh, atuin) is not touched.
+# The cost: no machine keeps more than ~2 weeks of journal, which task investigations used to read back further.
+setup_log_purge() {
+  put_etc_file /usr/local/sbin/log-purge '#!/bin/sh
+# Written by arch-bootstrap (setup_log_purge). Empties the failed-login record and ages out the journal.
+# log-purge        : btmp emptied, journal entries older than 14 days dropped (what the timer runs)
+# log-purge --all  : btmp emptied, and every journal file but the one being written now dropped
+set -e
+[ "$(id -u)" = 0 ] || { echo "log-purge: run it as root (sudo log-purge)" >&2; exit 1; }
+: > /var/log/btmp
+journalctl --rotate >/dev/null
+if [ "${1:-}" = --all ]; then journalctl --vacuum-time=1s >/dev/null 2>&1; else journalctl --vacuum-time=14d >/dev/null 2>&1; fi
+echo "log-purge: btmp emptied; journal $(journalctl --disk-usage | sed "s/.*take up //")"' "log-purge (btmp + journal age-out)" || true
+  [[ -x /usr/local/sbin/log-purge ]] || run sudo chmod 755 /usr/local/sbin/log-purge
+  put_etc_file /etc/systemd/system/log-purge.service "# Written by arch-bootstrap (setup_log_purge).
+[Unit]
+Description=Purge login logs: empty btmp, drop journal entries older than 14 days
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/log-purge" "log-purge unit" && run sudo systemctl daemon-reload
+  put_etc_file /etc/systemd/system/log-purge.timer "# Written by arch-bootstrap (setup_log_purge).
+[Unit]
+Description=Purge login logs on the 1st and 15th of each month
+
+[Timer]
+OnCalendar=*-*-01,15 03:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target" "log-purge timer (1st and 15th)" && run sudo systemctl daemon-reload
+  if systemctl is-enabled --quiet log-purge.timer 2>/dev/null; then ok "log-purge timer on (1st and 15th)"
+  else run sudo systemctl enable --now log-purge.timer; did "log-purge timer on: btmp emptied, journal kept to 14 days, 1st and 15th"; fi
+}
+
 stage_services() {
   stage_banner "60 services -- system and user units"
 
@@ -5598,6 +5637,7 @@ stage_services() {
   ssh_cloud_boxes
   restart_stale_tailscaled
   install_chores
+  setup_log_purge
   install_rclone_conf
   espanso_skip_wizard
   keepassxc_seed_config
