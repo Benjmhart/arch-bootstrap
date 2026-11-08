@@ -4410,7 +4410,11 @@ HandleLidSwitchDocked=lock" "lid: lock on AC, suspend on battery (from the next 
 # well"); carbon by Ben's choice ("can we also set edge scroll for carbon?").
 POINTER_ACCEL="${POINTER_ACCEL:-1.0}"
 setup_pointer() {
-  local edge=""
+  local edge="" tpaccel=$POINTER_ACCEL
+  # micro's X131e touchpad at 0.3, not the maximum (Ben 2026-11-08): at 1.0 a resting finger's wobble moved the pointer
+  # enough to miss buttons. Tried live at 0.3: "greatly reduced". Finger pressure was not the cause (one finger: median
+  # 85, max 102, against the 56:54 quirk; hands off: no contact at all; $OPS/micro-touchpad-jitter-20261108.log).
+  [[ $(cat /sys/class/dmi/id/product_version 2>/dev/null) == "ThinkPad X131e" ]] && tpaccel=0.3
   case $(cat /sys/class/dmi/id/product_version 2>/dev/null) in "ThinkPad X131e"|"ThinkPad X1 Carbon 6th") edge="
 
 Section \"InputClass\"
@@ -4433,8 +4437,8 @@ Section \"InputClass\"
     Identifier \"touchpad speed\"
     MatchIsTouchpad \"on\"
     Driver \"libinput\"
-    Option \"AccelSpeed\" \"$POINTER_ACCEL\"
-EndSection$edge" "pointer + touchpad speed $POINTER_ACCEL under X${edge:+, edge scroll} (next X start)" || true
+    Option \"AccelSpeed\" \"$tpaccel\"
+EndSection$edge" "pointer speed $POINTER_ACCEL, touchpad $tpaccel under X${edge:+, edge scroll} (next X start)" || true
 }
 
 # Caps Lock is Escape under X, for every keyboard including hotplugged ones. `.xinitrc`'s `setxkbmap -option caps:escape`
