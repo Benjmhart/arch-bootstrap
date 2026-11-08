@@ -3715,6 +3715,41 @@ install_icon_theme() {
   did "icon theme Papirus-Dark-Dracula: tray icons recoloured to Dracula ($ver)"
 }
 
+# Launcher icons in the theme (Ben 2026-11-08: "theme the items that do have an icon on rofi"). An app whose icon name
+# Papirus lacks falls through to its own colours in hicolor; here that name becomes a link to a fitting Papirus icon in
+# Papirus-Dark-Dracula, which is searched first. Launchers that name an image file, or no icon, get a user copy of their
+# .desktop with a themed name, rewritten every run so it follows the package. Commands on PATH get their icon from
+# ~/.local/bin/rofi-path (dotfiles). A new app showing its own colours: add it to `alias` below.
+theme_launcher_icons() {
+  local src=/usr/share/icons/Papirus dst="$HOME/.local/share/icons/Papirus-Dark-Dracula" apps="$HOME/.local/share/applications"
+  local pair name target d f n=0
+  [[ -d $dst && -d $src ]] || return 0
+  (( DRY_RUN )) && { info "(dry run) would theme launcher icons"; return 0; }
+  local -a alias=(claude-desktop:internet-chat espanso:accessories-text-editor handy:audio-input-microphone
+    keymapp:preferences-desktop-keyboard rofi:kmenuedit scrcpy:guiscrcpy xpra:krdc yazi:system-file-manager)
+  for f in "$apps"/*.desktop; do   # Steam games: an icon name per game (steam_icon_<appid>), all to Steam's
+    name=$(sed -n 's/^Icon=\(steam_icon_[0-9]*\)$/\1/p' "$f"); [[ -n $name ]] && alias+=("$name:steam")
+  done
+  for pair in "${alias[@]}"; do
+    name=${pair%%:*} target=${pair#*:}
+    for d in "$src"/*/; do
+      d=${d%/}; d=${d##*/}
+      f=$(find "$src/$d" -maxdepth 2 -name "$target.svg" -print -quit)   # in apps/ or devices/
+      [[ -n $f ]] || continue
+      mkdir -p "$dst/$d/apps" && ln -sfn "$f" "$dst/$d/apps/$name.svg" && n=$((n + 1))
+    done
+  done
+  mkdir -p "$apps"
+  for pair in lightworks:lightworks xgps:gpsd-logo xgpsspeed:gpsd-logo streamdeck-ui:input-tablet wiremix:pavucontrol \
+              xdvi:okular; do
+    name=${pair%%:*} target=${pair#*:} f=/usr/share/applications/${pair%%:*}.desktop
+    [[ -f $f ]] && grep -v '^Icon=' "$f" | sed "/^\[Desktop Entry\]/a Icon=$target" >"$apps/$name.desktop"
+  done
+  # Rambox's installer writes its own launcher here, with an image path.
+  [[ -f $apps/rambox.desktop ]] && sed -i 's|^Icon=.*|Icon=rambox|' "$apps/rambox.desktop"
+  ok "launcher icons themed ($n icon links)"
+}
+
 # Tray images that apps bundle (LocalSend's tray_manager PNG, streamdeck-ui's QSystemTrayIcon logo) in Dracula purple
 # (Ben 2026-11-08, "yes patch to dracula colors"): no icon theme reaches them. The files are the packages', so a pacman
 # hook re-applies the recolour after each install or upgrade, and the run here covers what is installed now. Handy's
@@ -5732,6 +5767,7 @@ stage_services() {
   keepassxc_seed_config
   install_cursor_theme
   install_icon_theme
+  theme_launcher_icons
   setup_dracula_tray_images
   update_wallpapers
   # Vivaldi's Dracula theme (tools/vivaldi-theme; Ben 2026-11-07, "option 2"). Vivaldi must be closed: it rewrites
