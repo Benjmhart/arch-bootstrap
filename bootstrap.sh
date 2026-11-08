@@ -4240,6 +4240,28 @@ compression-algorithm = zstd" "zram sized to RAM (lean)"; then
     info "zram size changes at the next boot"
   fi
 
+  # ext4 commits every 60 s, not 5 (Ben 2026-11-08): fewer small writes on micro's spinning disk. The cost: a hard crash
+  # can lose up to a minute of writes (fsync'd data, e.g. git and databases, is safe either way). / and /home, ext4
+  # lines only, added once; checked with findmnt --verify and put back if it fails; remounted live.
+  if awk '$1 !~ /^#/ && $3 == "ext4" && ($2 == "/" || $2 == "/home") && $4 !~ /commit=/ {f=1} END {exit !f}' /etc/fstab; then
+    if (( DRY_RUN )); then info "(dry run) would add commit=60 to the ext4 / and /home lines in /etc/fstab"
+    else
+      run sudo cp -a /etc/fstab /etc/fstab.before-commit60
+      sudo awk -v OFS='\t' '$1 !~ /^#/ && $3 == "ext4" && ($2 == "/" || $2 == "/home") && $4 !~ /commit=/ {$4 = $4 ",commit=60"} {print}' \
+        /etc/fstab.before-commit60 | sudo tee /etc/fstab.new >/dev/null
+      if sudo findmnt --verify --tab-file /etc/fstab.new >/dev/null 2>&1; then
+        run sudo mv /etc/fstab.new /etc/fstab
+        run sudo systemctl daemon-reload
+        run sudo mount -o remount,commit=60 / ; run sudo mount -o remount,commit=60 /home
+        did "ext4 / and /home commit every 60 s (lean; /etc/fstab.before-commit60 kept)"
+      else
+        run sudo rm -f /etc/fstab.new; warn "fstab with commit=60 failed findmnt --verify: left as it was"
+      fi
+    fi
+  else
+    ok "ext4 commit=60 already in /etc/fstab (lean)"
+  fi
+
   # The journal capped at 100 MiB (Ben 2026-11-08): 296 MiB on micro, and journald maps its files, 97 MiB resident.
   # Lean hosts only: the others keep weeks of logs that task investigations read back.
   if put_etc_file /etc/systemd/journald.conf.d/lean-size.conf "# Written by arch-bootstrap (profile lean).
