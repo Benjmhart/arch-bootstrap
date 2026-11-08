@@ -36,12 +36,17 @@ k=/run/user/$(id -u)/unlock-touch.key
 # Run on <host> over ssh, or directly when <host> is this machine (carbon has no ssh to itself; 2026-11-04, beast-arch 144).
 on_host() { if [[ $host == "$(uname -n)" ]]; then bash -c "$2"; else ssh $1 "$host" "$2"; fi; }
 printf '%s' "$key" | on_host "" "umask 077; cat > $k"
-echo "on $host: sudo (touch), then the disk's CURRENT passphrase for luksAddKey"
-on_host -t "set -e; trap 'shred -u $k 2>/dev/null || rm -f $k' EXIT
+# UNLOCK_PASSPHRASE_FILE (optional; Ben 2026-11-08, "all drives unlock on the same password"): a file holding the disk's
+# current passphrase, no trailing newline, so a batch of enrollments asks for it once. It goes over like the new key and
+# is shredded with it. Without it, luksAddKey asks for the passphrase on <host>.
+old=""
+if [[ -n ${UNLOCK_PASSPHRASE_FILE:-} ]]; then old=$k.old; on_host "" "umask 077; cat > $old" <"$UNLOCK_PASSPHRASE_FILE"; fi
+echo "on $host: sudo (touch)$([[ -z $old ]] && echo ", then the disk's CURRENT passphrase for luksAddKey")"
+on_host -t "set -e; trap 'for f in $k $old; do shred -u \$f 2>/dev/null || rm -f \$f; done' EXIT
   u=\$(sed -n 's/.*rd\.luks\.name=\([^= ]*\)=root.*/\1/p' /proc/cmdline); [ -n \"\$u\" ]
   d=/dev/disk/by-uuid/\$u
   if sudo cryptsetup open --test-passphrase --key-file $k \"\$d\" 2>/dev/null; then echo 'this key already opens the disk'
-  else sudo cryptsetup luksAddKey --pbkdf argon2id \"\$d\" $k
+  else sudo cryptsetup luksAddKey --pbkdf argon2id ${old:+--key-file $old} \"\$d\" $k
        sudo cryptsetup open --test-passphrase --key-file $k \"\$d\" && echo 'new key slot opens the disk'; fi"
 mkdir -p "$sec/unlock-touch"; printf '%s %s %s\n' "$rp" "$cred" "$salt" >"$sec/$f"
 git -C "$sec" add "$f"
