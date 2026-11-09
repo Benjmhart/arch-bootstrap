@@ -15,6 +15,7 @@ ops=${OPS:-$HOME/.local/state/ops}; mkdir -p "$ops"
 log=$ops/$host-repo-hygiene-$(date +%Y%m%d).log
 export GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=20" GIT_TERMINAL_PROMPT=0
 pushed=0 attention=0 suggest=0
+declare -A need=()   # project repo dir -> why, for section 5
 out() { echo "$*" >> "$log"; }
 : > "$log"
 out "# repo-hygiene $host $(date -Is). PUSHED/HELD/DIVERGED/FAILED = acted on; SUGGEST = for a maintenance agent."
@@ -32,7 +33,7 @@ for d in "$HOME"/projects/*/; do
     if [[ -z $u ]]; then out "SUGGEST $p: branch $b has no upstream -- push it to GitHub (git push -u origin $b) or delete it"; (( suggest++ )); continue; fi
     read -r ahead behind < <("${g[@]}" rev-list --left-right --count "$b...$u" 2>/dev/null) || continue
     (( ahead )) || continue
-    if (( behind )); then out "DIVERGED $p: $b is $ahead ahead, $behind behind $u -- rebase or merge, then push"; (( attention++ )); continue; fi
+    if (( behind )); then out "DIVERGED $p: $b is $ahead ahead, $behind behind $u -- rebase or merge, then push"; (( attention++ )); need[$d]+="$b diverged from $u; "; continue; fi
     hits=$("${g[@]}" log -p --no-renames --format= "$u..$b" | python3 "$scan")
     if [[ -n $hits ]]; then out "HELD $p: $b not pushed, the secret scan flagged: ${hits//$'\n'/; }"; (( attention++ )); continue; fi
     remote=${u%%/*}
@@ -42,9 +43,9 @@ for d in "$HOME"/projects/*/; do
     else out "FAILED $p: push of $b -> $u: ${err//$'\n'/ }"; (( attention++ )); fi
   done < <("${g[@]}" for-each-ref --format='%(refname:short) %(upstream:short)' refs/heads)
   n=$("${g[@]}" ls-files -o --exclude-standard --directory | wc -l)
-  (( n )) && { out "SUGGEST $p: $n untracked path(s), not ignored -- track or .gitignore: $("${g[@]}" ls-files -o --exclude-standard --directory | head -5 | tr '\n' ' ')"; (( suggest++ )); }
+  (( n )) && { out "SUGGEST $p: $n untracked path(s), not ignored -- track or .gitignore: $("${g[@]}" ls-files -o --exclude-standard --directory | head -5 | tr '\n' ' ')"; (( suggest++ )); need[$d]+="$n untracked path(s); "; }
   n=$("${g[@]}" status --porcelain -uno | wc -l)
-  (( n )) && { out "SUGGEST $p: $n tracked file(s) changed, not committed -- commit or discard: $("${g[@]}" status --porcelain -uno | head -5 | cut -c4- | tr '\n' ' ')"; (( suggest++ )); }
+  (( n )) && { out "SUGGEST $p: $n tracked file(s) changed, not committed -- commit or discard: $("${g[@]}" status --porcelain -uno | head -5 | cut -c4- | tr '\n' ' ')"; (( suggest++ )); need[$d]+="$n changed file(s) not committed; "; }
 done
 
 # 2. The system repos: report only (fpush moves them).
@@ -79,7 +80,28 @@ while read -r f; do
   out "SUGGEST ~/${f#"$HOME"/}: loose file in ~ -- into a repo, \$OPS, or delete"; (( suggest++ ))
 done < <(find "$HOME" -mindepth 1 -maxdepth 1 -type f -not -name '.*' 2>/dev/null | sort)
 
-summary="$pushed pushed, $attention need a person, $suggest suggestion(s) -- $log"
+# 5. Ask the repo's own agent to clean up (station-maintenance fleet 13, Ben 2026-11-08). For each project repo above
+#    with work left, an IDLE Claude agent in herdr whose cwd is that repo gets one prompt (agent-prompt: the text plus
+#    Alt+Enter, which submits in Ben's keybindings). Busy agents and repos without an agent are left to the report.
+prompted=0
+hb=$HOME/.local/bin
+if (( ${#need[@]} )) && [[ -x $hb/herdr && -x $hb/agent-prompt ]] && agents=$(PATH=$hb:$PATH herdr agent list 2>/dev/null); then
+  for d in "${!need[@]}"; do
+    pane=$(python3 -c '
+import json, sys
+d = sys.argv[1]
+for a in json.loads(sys.stdin.read())["result"]["agents"]:
+    if a.get("agent") == "claude" and a.get("cwd") == d and a.get("agent_status") in ("idle", "done"):
+        print(a["pane_id"]); break' "$d" <<<"$agents" 2>/dev/null)
+    [[ -n $pane ]] || continue
+    msg="From the repo-hygiene chore on $host ($(date +%F)): this repo has work not committed or pushed: ${need[$d]}Please commit what belongs in the repo, .gitignore what does not (never commit secrets, credentials or personal documents), and push by this repo's own convention. Reply in one line: what you committed and pushed, and anything you left and why. Details: $log"
+    if [[ -n ${REPO_HYGIENE_DRY:-} ]]; then out "WOULD-PROMPT ${d/#$HOME/\~}: agent $pane"; continue; fi
+    if r=$(PATH=$hb:$PATH agent-prompt "$pane" "$msg" 2>&1); then out "PROMPTED ${d/#$HOME/\~}: agent $pane ($r)"; (( prompted++ ))
+    else out "PROMPT-FAILED ${d/#$HOME/\~}: agent $pane: ${r//$'\n'/ }"; fi
+  done
+fi
+
+summary="$pushed pushed, $prompted agent(s) prompted, $attention need a person, $suggest suggestion(s) -- $log"
 out "# $summary"
 echo "$summary"
 (( attention )) && exit 75
