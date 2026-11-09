@@ -3904,7 +3904,8 @@ restart_stale_tailscaled() {
   [[ -n $client && -n $daemon && $client != "$daemon" ]] || return 0
   if (( DRY_RUN )); then info "(dry run) would restart tailscaled in 2 min: daemon $daemon, package $client"; return 0; fi
   run sudo systemd-run --quiet --on-active=2min --unit=tailscaled-upgrade-restart systemctl try-restart tailscaled \
-    && ok "tailscaled $daemon -> $client: restart scheduled in 2 min (the tailnet drops for a few seconds)"
+    && ok "tailscaled $daemon -> $client: restart scheduled in 2 min (the tailnet drops for a few seconds)" \
+    || warn "could not schedule the tailscaled restart: reboot, or \`sudo systemctl restart tailscaled\` at the machine"
 }
 
 # sudo_agent: on a machine with YubiKey sk keys (micro's peer keys, tools/unlock-key's unlock keys), a user ssh-agent
@@ -5283,7 +5284,8 @@ setup_wake() {
   # same wake worked from s2idle, set by hand). Costs more battery asleep. Read at each suspend: no reboot needed.
   local f=/etc/systemd/sleep.conf.d/50-wake.conf want=$'[Sleep]\nMemorySleepMode=s2idle'
   if [[ $(cat "$f" 2>/dev/null) == "$want" ]]; then ok "suspend uses s2idle (Wi-Fi stays powered for wake)"
-  else printf '%s\n' "$want" | run sudo install -D -m 644 /dev/stdin "$f" && did "suspend uses s2idle: $f"; fi
+  elif printf '%s\n' "$want" | run sudo install -D -m 644 /dev/stdin "$f"; then did "suspend uses s2idle: $f"
+  else warn "could not write $f: suspend stays as it was"; fi
 }
 
 # setup_claude_mem: the claude-mem trial (beast-arch 08) on the hosts in CLAUDE_MEM_HOSTS.

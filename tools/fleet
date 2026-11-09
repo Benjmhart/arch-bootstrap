@@ -509,6 +509,14 @@ push)
        echo; echo "note  no approved snapshot yet: reviewing from what $SELF has checked out now"; fi
   review_all "$b_ab" "$b_dot" "$b_sec"
   [[ -t 1 ]] && clear
+  # Pre-flight on the arch-bootstrap commit about to go out (station-maintenance fleet 11): its own tests/stage-steps
+  # against its own bootstrap.sh. Catches a function that would end a stage on a failed `a && b` (beast-arch, 2026-11-08).
+  preflight=$(mktemp -d); mkdir "$preflight/tests"
+  gitr ab show "$ab:bootstrap.sh" > "$preflight/bootstrap.sh"
+  if gitr ab show "$ab:tests/stage-steps" > "$preflight/tests/stage-steps" 2>/dev/null; then
+    bash "$preflight/tests/stage-steps" || { rm -rf "$preflight"; die "pre-flight failed (above): nothing applied"; }
+  fi
+  rm -rf "$preflight"
   echo "fpush: arch-bootstrap ${ab:0:7}  dotfiles ${dot:0:7}  secrets ${sec:0:7} -> $SELF, then ${hosts[*]}"
 
   # 4. micro first; it records the snapshot once it holds it.

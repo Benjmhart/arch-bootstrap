@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# tests/stage-steps -- no bootstrap function may END on an unguarded `a && b` list (station-maintenance fleet 11).
+# errexit ignores a failure inside an && list, but as a function's last statement the list's status becomes the
+# function's, and the stage that called it ends there: single_dhcp_client did exactly that and stopped stage 60 on
+# beast-arch (fpush 2026-11-08 18:51, Ben -2). End such a function with `|| warn ...` or `return 0`.
+# Predicates, whose status is the point, are listed in OK. Run: tests/stage-steps
+set -uo pipefail
+f=$(cd "$(dirname "$0")/.." && pwd)/bootstrap.sh
+OK=" github_cli_ready repo_holds zram_only_swap "
+found=$(awk '
+  /^[a-z_][a-z0-9_]*\(\) *\{/ { fn=$1; sub(/\(\).*/, "", fn); last=""; next }
+  fn && /^}/ { if (last ~ /&&/ && last !~ /\|\|/) printf "%s:%d %s\n", fn, n, last; fn=""; next }
+  fn && $0 !~ /^[[:space:]]*(#|$)/ { last=$0; n=NR }' "$f")
+bad=0
+while IFS= read -r l; do
+  [[ -z $l ]] && continue
+  [[ $OK == *" ${l%%:*} "* ]] && continue
+  echo "FAIL  ends on an unguarded && list: $l"; bad=$((bad+1))
+done <<<"$found"
+# The check itself: a planted case must be caught.
+planted=$(printf 'x() {\n  run a && did b\n}\n' | awk '/^[a-z_][a-z0-9_]*\(\) *\{/{fn=1;next} fn&&/^}/{print last;fn=0;next} fn{last=$0}')
+[[ $planted == *"&&"* ]] || { echo "FAIL  the scan no longer sees a planted case"; bad=$((bad+1)); }
+(( bad )) && exit 1
+echo "pass  no function ends on an unguarded && list (predicates allowed: $OK)"
