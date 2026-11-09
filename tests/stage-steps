@@ -17,8 +17,15 @@ while IFS= read -r l; do
   [[ $OK == *" ${l%%:*} "* ]] && continue
   echo "FAIL  ends on an unguarded && list: $l"; bad=$((bad+1))
 done <<<"$found"
+# fleet-apply runs under set -e: a bare pkill/pgrep (exit 1 when nothing matches) ends the apply. The wallpaper restart
+# did that on micro, which runs no rotation (fpush 2026-11-08 ~20:59, Ben -1). It must sit in a condition or end in ||.
+fa=$(cd "$(dirname "$0")/.." && pwd)/tools/fleet-apply
+while IFS= read -r l; do
+  [[ -z $l ]] && continue
+  echo "FAIL  tools/fleet-apply: bare pkill/pgrep under set -e: $l"; bad=$((bad+1))
+done < <(grep -n -E '^[[:space:]]*(pkill|pgrep)[[:space:]]' "$fa" | grep -v -E '\|\||&&')
 # The check itself: a planted case must be caught.
 planted=$(printf 'x() {\n  run a && did b\n}\n' | awk '/^[a-z_][a-z0-9_]*\(\) *\{/{fn=1;next} fn&&/^}/{print last;fn=0;next} fn{last=$0}')
 [[ $planted == *"&&"* ]] || { echo "FAIL  the scan no longer sees a planted case"; bad=$((bad+1)); }
 (( bad )) && exit 1
-echo "pass  no function ends on an unguarded && list (predicates allowed: $OK)"
+echo "pass  no function ends on an unguarded && list (predicates allowed: $OK); no bare pkill/pgrep in fleet-apply"

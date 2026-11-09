@@ -325,7 +325,9 @@ if [[ -d $DOTDIR ]]; then
   # its folders at every pick, so wallpapers pulled later in stage 60 join at the next change.
   if xpid=$(pgrep -u "$USER" -o -x xmonad-x86_64-l) && [[ -x $HOME/.local/bin/wallpaper-rotate ]] \
      && ! git --git-dir="$DOTDIR" --work-tree="$HOME" diff --quiet "$dot_was" "$dot" -- ':/.local/bin/wallpaper-rotate'; then
-    pkill -u "$USER" -f '^sh .*/\.local/bin/wallpaper-rotate$'
+    # || true: fleet-apply runs under set -e and pkill exits 1 when nothing matches. micro runs no rotation, so the
+    # first apply of this block died there (fpush 2026-11-08 ~20:59, Ben -1).
+    pkill -u "$USER" -f '^(/bin/)?sh .*/\.local/bin/wallpaper-rotate$' || true
     if xenv=$(tr '\0' '\n' < "/proc/$xpid/environ" | grep -E '^(DISPLAY|XAUTHORITY)=') \
        && env $xenv setsid -f "$HOME/.local/bin/wallpaper-rotate" >/dev/null 2>&1 </dev/null
     then echo "ok    wallpaper rotation restarted (new wallpaper now)"

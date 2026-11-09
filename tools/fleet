@@ -511,8 +511,9 @@ push)
   [[ -t 1 ]] && clear
   # Pre-flight on the arch-bootstrap commit about to go out (station-maintenance fleet 11): its own tests/stage-steps
   # against its own bootstrap.sh. Catches a function that would end a stage on a failed `a && b` (beast-arch, 2026-11-08).
-  preflight=$(mktemp -d); mkdir "$preflight/tests"
+  preflight=$(mktemp -d); mkdir "$preflight/tests" "$preflight/tools"
   gitr ab show "$ab:bootstrap.sh" > "$preflight/bootstrap.sh"
+  gitr ab show "$ab:tools/fleet-apply" > "$preflight/tools/fleet-apply"
   if gitr ab show "$ab:tests/stage-steps" > "$preflight/tests/stage-steps" 2>/dev/null; then
     bash "$preflight/tests/stage-steps" || { rm -rf "$preflight"; die "pre-flight failed (above): nothing applied"; }
   fi
