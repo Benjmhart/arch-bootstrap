@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# reboot-unlock <host> -- reboot <host>, then unlock its disk from here when it comes back: one command (Ben
+# 2026-11-09). Run on micro (or carbon/beast-arch, which may also unlock). Two YubiKey touches: one for sudo on <host>
+# (the reboot), one at its passphrase prompt (tools/unlock). Then waits up to $UNLOCK_WAIT seconds (default 900: POST,
+# the GRUB menu and the initramfs) for <host>-boot, so walking away is fine.
+set -uo pipefail
+h=${1:?usage: reboot-unlock <host>}
+here=$(dirname "$(readlink -f "$0")")
+[[ $h != "$(uname -n)" ]] || { echo "reboot-unlock: not this machine ($h); nobody would be left to unlock it" >&2; exit 2; }
+echo "rebooting $h: touch your YubiKey when it blinks (sudo on $h)"
+ssh -t "$h" "${REBOOT_CMD:-sudo systemctl reboot}"; rc=$?
+# 255 = the connection dropped as the machine went down (the normal case); 0 = the reboot was accepted. Anything else is
+# sudo (or the command) refusing: nothing was rebooted, so do not sit waiting for a boot that will not come.
+if (( rc != 0 && rc != 255 )); then echo "reboot-unlock: the reboot was refused on $h (exit $rc): nothing rebooted" >&2; exit 1; fi
+UNLOCK_WAIT=${UNLOCK_WAIT:-900} exec "$here/unlock" "$h"

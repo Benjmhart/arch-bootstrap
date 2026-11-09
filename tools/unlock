@@ -2,8 +2,8 @@
 # unlock <host> -- type <host>'s disk passphrase from here while it boots, at home or away (station-maintenance
 # surfboard 04). Its initramfs joins the tailnet as "<host>-boot" and runs sshd (dracut/90remote-unlock); only YubiKey
 # (sk) keys may log in, and all they can run is the passphrase prompt: touch the key when it blinks. Works from micro,
-# carbon and beast-arch (tag:unlock's grant). Waits up to 3 minutes for the boot node, so it can be started before the
-# reboot. The initramfs has its own host key, kept as "<host>-initramfs" in known_hosts: trusted on first use.
+# carbon and beast-arch (tag:unlock's grant). Waits up to $UNLOCK_WAIT seconds (default 180) for the boot node, so it can
+# be started before the reboot; tools/reboot-unlock does both. The initramfs has its own host key, kept as "<host>-initramfs" in known_hosts: trusted on first use.
 # A cloud box (tools/cloud-box; station-maintenance beast-arch 85) is not on the tailnet: its initramfs sshd answers on
 # the box's public address (secrets cloud-box/<host>), and its host key is PINNED from that record
 # (~/.ssh/known_hosts.cloud-box, alias cloud-box-<host>-initramfs), never trusted on first use.
@@ -50,7 +50,7 @@ run=(); if [[ -n $disk ]]; then export UNLOCK_DISK=$disk; run=(python3 -c "$inje
 if [[ -n ${UNLOCK_ADDR:-} || -f $cbrec ]]; then
   addr=${UNLOCK_ADDR:-$(awk '$1 == "ipv4" {print $2; exit}' "$cbrec")}
   echo "waiting for $host's initramfs at $addr ..."
-  for _ in $(seq 90); do
+  deadline=$(( SECONDS + ${UNLOCK_WAIT:-180} )); while (( SECONDS < deadline )); do
     if timeout 3 bash -c "</dev/tcp/$addr/22" 2>/dev/null; then
       echo "connecting to $host's initramfs ($addr): touch your YubiKey when it blinks"
       exec "${run[@]}" ssh -F /dev/null -t "${keys[@]}" -o IdentitiesOnly=yes -o IdentityAgent=none -o ConnectTimeout=10 \
@@ -62,7 +62,7 @@ if [[ -n ${UNLOCK_ADDR:-} || -f $cbrec ]]; then
   echo "$host ($addr) never answered on :22"; exit 1
 fi
 echo "waiting for $host-boot on the tailnet ..."
-for _ in $(seq 90); do
+deadline=$(( SECONDS + ${UNLOCK_WAIT:-180} )); while (( SECONDS < deadline )); do
   addr=$(tailscale ip -4 "$host-boot" 2>/dev/null || true)
   # Online in tailscale's own status first: a TCP probe to a boot node that is still offline is held and retried by
   # tailscale, and the held probes all landed at once when media-center's came up (2026-11-06), tripping its sshd's
