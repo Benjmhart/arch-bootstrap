@@ -247,6 +247,7 @@ scrcpy                # only: beast-arch
 hyperfine             # command timing (Ben 2026-11-08)
 dust                  # disk usage at a glance (Ben 2026-11-08)
 cava                  # the mod-s showcase (dotfiles rice-show; fleet 9, Ben 2026-11-08)
+yt-dlp                # mpv streams YouTube through it: the mod-s showcase song (fleet 9, Ben 2026-11-09)
 man-db                # man was on no host (2026-11-08); MANPAGER renders through bat in Dracula (fleet 9)
 man-pages
 maim                  # screenshots for agents checking GUI changes on the real screen (tools/shot; Ben 2026-11-08)
