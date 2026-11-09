@@ -7,7 +7,7 @@
 #                             changed since the diff (If-Match on its ETag), so a console edit is never overwritten blind
 # Credential, first found: an OAuth trust credential for the policy file (preferred: scope `policy_file` plus the two it
 # requires, `devices:posture_attributes` and `devices:core:read`; no expiry;
-# cannot touch devices, keys or users) in ~/.config/tailscale/oauth-client (mode 600; line 1 client id, line 2 secret),
+# cannot add devices, keys or users; it can write device posture attributes) in ~/.config/tailscale/oauth-client (mode 600; line 1 client id, line 2 secret),
 # exchanged for a 1-hour token at each run; else $TS_API_KEY; else ~/.config/tailscale/api-key (mode 600). Ben creates
 # it and keeps it in the vault; it never goes in a repo. File: $TAILNET_POLICY, else ~/secrets/tailnet_access.json.
 set -euo pipefail
