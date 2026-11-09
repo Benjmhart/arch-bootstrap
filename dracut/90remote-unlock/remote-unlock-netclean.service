@@ -12,6 +12,10 @@ ExecStart=/usr/bin/true
 # /run survives switch-root. The real root runs NetworkManager, not networkd, so nothing rewrites this, and timesyncd
 # read the image's ONLINE_STATE=offline and never synced (surfboard, 2026-11-01; its Wi-Fi had failed in the image).
 ExecStop=/usr/bin/rm -rf /run/systemd/netif
+# The image's DHCP leases outlive it too: the address stays on the NIC after switch-root and NetworkManager adds its
+# own, so the machine held two (beast-arch .69 + .74, every tailnet peer flapping between them; station-maintenance
+# beast-arch 147, 2026-11-09). Drop every global address here; the real root asks again.
+ExecStop=/bin/sh -c 'for d in /sys/class/net/*; do n=$${d##*/}; [ "$$n" = lo ] || ip addr flush dev "$$n" scope global; done; true'
 
 [Install]
 WantedBy=sysinit.target
