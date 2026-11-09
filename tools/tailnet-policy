@@ -5,19 +5,28 @@
 #   tailnet-policy validate   ask Tailscale whether the file is a valid policy (read-only)
 #   tailnet-policy apply      diff, confirm, then replace the live policy with the file; refuses if the live policy
 #                             changed since the diff (If-Match on its ETag), so a console edit is never overwritten blind
-# Key: $TS_API_KEY, else the file ~/.config/tailscale/api-key (mode 600). An API access token from
-# login.tailscale.com/admin/settings/keys; Ben creates it and keeps it in the vault (it can rewrite the whole policy,
-# so it never goes in a repo). File: $TAILNET_POLICY, else ~/secrets/tailnet_access.json.
+# Credential, first found: an OAuth client limited to the policy file (preferred: scope `policy_file` only, no expiry,
+# cannot touch devices, keys or users) in ~/.config/tailscale/oauth-client (mode 600; line 1 client id, line 2 secret),
+# exchanged for a 1-hour token at each run; else $TS_API_KEY; else ~/.config/tailscale/api-key (mode 600). Ben creates
+# it and keeps it in the vault; it never goes in a repo. File: $TAILNET_POLICY, else ~/secrets/tailnet_access.json.
 set -euo pipefail
-[[ ${1:-} =~ ^(diff|validate|apply)$ ]] || { sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+[[ ${1:-} =~ ^(diff|validate|apply)$ ]] || { sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 api=https://api.tailscale.com/api/v2/tailnet/-/acl
 file=${TAILNET_POLICY:-$HOME/secrets/tailnet_access.json}
-key=${TS_API_KEY:-}
-if [[ -z $key ]]; then
+private() { [[ $(stat -c %a "$1") == 600 ]] || { echo "tailnet-policy: $1 must be mode 600" >&2; exit 2; }; }
+oc=$HOME/.config/tailscale/oauth-client key=
+if [[ -r $oc ]]; then
+  private "$oc"
+  { read -r cid; read -r csec; } < "$oc"
+  key=$(curl -fsS -d "client_id=$cid" -d "client_secret=$csec" https://api.tailscale.com/api/v2/oauth/token \
+        | sed -n 's/.*"access_token" *: *"\([^"]*\)".*/\1/p' || true)
+  unset csec
+  [[ -n $key ]] || { echo "tailnet-policy: the OAuth client in $oc was refused" >&2; exit 2; }
+elif [[ -n ${TS_API_KEY:-} ]]; then key=$TS_API_KEY
+else
   kf=$HOME/.config/tailscale/api-key
-  [[ -r $kf ]] || { echo "tailnet-policy: no API key (TS_API_KEY or $kf)" >&2; exit 2; }
-  [[ $(stat -c %a "$kf") == 600 ]] || { echo "tailnet-policy: $kf must be mode 600" >&2; exit 2; }
-  key=$(<"$kf")
+  [[ -r $kf ]] || { echo "tailnet-policy: no credential ($oc, TS_API_KEY or $kf)" >&2; exit 2; }
+  private "$kf"; key=$(<"$kf")
 fi
 [[ -r $file ]] || { echo "tailnet-policy: no policy file $file" >&2; exit 2; }
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
