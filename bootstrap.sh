@@ -5478,8 +5478,19 @@ setup_boot() {
 hostonly="yes"
 hostonly_cmdline="no"
 add_dracutmodules+=" systemd systemd-cryptsetup fido2 "
+install_items+=" /etc/systemd/system/systemd-cryptsetup@.service.d/50-console-notices.conf "
 early_microcode="no"
 compress="zstd"' "dracut: systemd initramfs with FIDO2 unlock" && rebuild=1
+  # The unlock says what it wants on the screen (Ben 2026-11-09: "it just prompts for a pin and then the yubikey starts
+  # flashing"). systemd-cryptsetup logs "Please confirm presence on security token to unlock." at notice level, but only
+  # to the journal: quiet/loglevel=3 keep it off the console. This copies its notices to the console, under the PIN
+  # prompt, without un-quieting the rest of the boot (station-maintenance fleet 1). In the image via install_items.
+  put_etc_file /etc/systemd/system/systemd-cryptsetup@.service.d/50-console-notices.conf \
+'# Written by arch-bootstrap (setup_boot): the notices of systemd-cryptsetup ("Please confirm presence on security token")
+# on the console as well as in the journal.
+[Service]
+Environment=SYSTEMD_LOG_TARGET=console SYSTEMD_LOG_LEVEL=notice
+StandardError=journal+console' "systemd-cryptsetup: notices on the console" && rebuild=1
   put_etc_file /etc/mkinitcpio.d/linux.preset \
 '# Written by arch-bootstrap (station-maintenance beast-arch 95): dracut builds /boot/initramfs-linux.img; mkinitcpio
 # only the passphrase-only fallback (busybox `encrypt`, reads cryptdevice=), offered by GRUB as "fallback initramfs".
@@ -5503,6 +5514,7 @@ fallback_options="-S autodetect"' "mkinitcpio: fallback image only" && rebuild=1
   # and pipefail makes that a failure (micro, 2026-10-16 20:43: a good image refused).
   dracut_ok() { local l; l=$(sudo lsinitrd "$img" 2>/dev/null) || return 1
     grep -q libcryptsetup-token-systemd-fido2 <<<"$l" && grep -q 'systemd-cryptsetup$' <<<"$l" \
+      && grep -q 'systemd-cryptsetup@.service.d/50-console-notices.conf$' <<<"$l" \
       && { (( ! REMOTE_UNLOCK_ON )) || grep -q 'usr/bin/unlock-prompt$' <<<"$l"; }; }
   if (( rebuild )) || ! dracut_ok || ! sudo test -f /boot/initramfs-linux-fallback.img; then
     local kver; kver=$(pacman -Qlq linux | grep -m1 '/vmlinuz$'); kver=${kver%/vmlinuz}; kver=${kver##*/}
