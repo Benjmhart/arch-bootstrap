@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# tailnet-policy -- the tailnet policy file as code (station-maintenance fleet 12, Ben 2026-11-08): secrets'
+# tailnet_access.json is what the tailnet runs, applied through the Tailscale API instead of pasted in the admin console.
+#   tailnet-policy diff       the live policy vs the file (read-only)
+#   tailnet-policy validate   ask Tailscale whether the file is a valid policy (read-only)
+#   tailnet-policy apply      diff, confirm, then replace the live policy with the file; refuses if the live policy
+#                             changed since the diff (If-Match on its ETag), so a console edit is never overwritten blind
+# Key: $TS_API_KEY, else the file ~/.config/tailscale/api-key (mode 600). An API access token from
+# login.tailscale.com/admin/settings/keys; Ben creates it and keeps it in the vault (it can rewrite the whole policy,
+# so it never goes in a repo). File: $TAILNET_POLICY, else ~/secrets/tailnet_access.json.
+set -euo pipefail
+[[ ${1:-} =~ ^(diff|validate|apply)$ ]] || { sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+api=https://api.tailscale.com/api/v2/tailnet/-/acl
+file=${TAILNET_POLICY:-$HOME/secrets/tailnet_access.json}
+key=${TS_API_KEY:-}
+if [[ -z $key ]]; then
+  kf=$HOME/.config/tailscale/api-key
+  [[ -r $kf ]] || { echo "tailnet-policy: no API key (TS_API_KEY or $kf)" >&2; exit 2; }
+  [[ $(stat -c %a "$kf") == 600 ]] || { echo "tailnet-policy: $kf must be mode 600" >&2; exit 2; }
+  key=$(<"$kf")
+fi
+[[ -r $file ]] || { echo "tailnet-policy: no policy file $file" >&2; exit 2; }
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+fetch() {   # live policy (HuJSON, comments kept) to $tmp/live, its ETag to $tmp/etag
+  curl -fsS -u "$key:" -H 'Accept: application/hujson' -D "$tmp/hdr" -o "$tmp/live" "$api"
+  sed -n 's/^[Ee][Tt][Aa][Gg]: *//p' "$tmp/hdr" | tr -d '\r' > "$tmp/etag"
+}
+case ${1:-} in
+  diff) fetch; diff -u --label live "$tmp/live" --label "$file" "$file" && echo "no difference" ;;
+  validate)
+    curl -fsS -u "$key:" -H 'Content-Type: application/hujson' --data-binary "@$file" "$api/validate" > "$tmp/v"
+    if grep -q '"message"' "$tmp/v"; then cat "$tmp/v"; echo; exit 1; else echo "valid"; fi ;;
+  apply)
+    fetch
+    if diff -u --label live "$tmp/live" --label "$file" "$file"; then echo "no difference: nothing to apply"; exit 0; fi
+    read -r -p "Apply $file as the tailnet policy? [y/N] " a </dev/tty
+    [[ $a == [yY]* ]] || { echo "not applied"; exit 1; }
+    curl -fsS -u "$key:" -H 'Content-Type: application/hujson' -H "If-Match: $(<"$tmp/etag")" \
+      --data-binary "@$file" -o /dev/null "$api"
+    echo "applied" ;;
+esac
