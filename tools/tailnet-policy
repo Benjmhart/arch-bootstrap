@@ -2,6 +2,7 @@
 # tailnet-policy -- the tailnet policy file as code (station-maintenance fleet 12, Ben 2026-11-08): secrets'
 # tailnet_access.json is what the tailnet runs, applied through the Tailscale API instead of pasted in the admin console.
 #   tailnet-policy diff       the live policy vs the file (read-only)
+#   tailnet-policy fetch      print the live policy, comments kept (read-only): bring the file up to date with it
 #   tailnet-policy validate   ask Tailscale whether the file is a valid policy (read-only)
 #   tailnet-policy apply      diff, confirm, then replace the live policy with the file; refuses if the live policy
 #                             changed since the diff (If-Match on its ETag), so a console edit is never overwritten blind
@@ -11,7 +12,7 @@
 # exchanged for a 1-hour token at each run; else $TS_API_KEY; else ~/.config/tailscale/api-key (mode 600). Ben creates
 # it and keeps it in the vault; it never goes in a repo. File: $TAILNET_POLICY, else ~/secrets/tailnet_access.json.
 set -euo pipefail
-[[ ${1:-} =~ ^(diff|validate|apply)$ ]] || { sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+[[ ${1:-} =~ ^(diff|fetch|validate|apply)$ ]] || { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 api=https://api.tailscale.com/api/v2/tailnet/-/acl
 file=${TAILNET_POLICY:-$HOME/secrets/tailnet_access.json}
 private() { [[ $(stat -c %a "$1") == 600 ]] || { echo "tailnet-policy: $1 must be mode 600" >&2; exit 2; }; }
@@ -36,6 +37,7 @@ fetch() {   # live policy (HuJSON, comments kept) to $tmp/live, its ETag to $tmp
   sed -n 's/^[Ee][Tt][Aa][Gg]: *//p' "$tmp/hdr" | tr -d '\r' > "$tmp/etag"
 }
 case ${1:-} in
+  fetch) fetch; cat "$tmp/live" ;;
   diff) fetch; diff -u --label live "$tmp/live" --label "$file" "$file" && echo "no difference" ;;
   validate)
     curl -fsS -u "$key:" -H 'Content-Type: application/hujson' --data-binary "@$file" "$api/validate" > "$tmp/v"
