@@ -6204,8 +6204,11 @@ stage_verify() {
   stage_banner "80 verify"
 
   local fails=0
+  # No pipefail inside a check: in `producer | grep -q`, grep exits at the first match and the producer dies of SIGPIPE
+  # writing the rest, so pipefail failed checks at random ("herdr claude integration": 16 of 200 runs on media-center,
+  # fpush 2026-11-09). The last command of a check decides.
   check() {
-    if eval "$2" >/dev/null 2>&1; then ok "$1"; else warn "$1 -- FAILED"; fails=$(( fails + 1 )); fi
+    if (set +o pipefail; eval "$2") >/dev/null 2>&1; then ok "$1"; else warn "$1 -- FAILED"; fails=$(( fails + 1 )); fi
   }
 
   check "zsh installed"                 "command -v zsh"
