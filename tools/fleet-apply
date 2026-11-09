@@ -320,6 +320,17 @@ if [[ -d $DOTDIR ]]; then
        && env $xenv "$HOME/bin/compositor-start"; then echo "ok    picom setup changed: picom restarted"
     else echo "note  picom setup changed but picom was not restarted: run ~/bin/compositor-start"; fi
   fi
+  # A running wallpaper-rotate is the old script until restarted: a change to it restarts it on xmonad's display, so a
+  # new rotation reaches the desktop without a login (Ben 2026-11-08: the Dracula photos, wallpapers/dracula). It finds
+  # its folders at every pick, so wallpapers pulled later in stage 60 join at the next change.
+  if xpid=$(pgrep -u "$USER" -o -x xmonad-x86_64-l) && [[ -x $HOME/.local/bin/wallpaper-rotate ]] \
+     && ! git --git-dir="$DOTDIR" --work-tree="$HOME" diff --quiet "$dot_was" "$dot" -- ':/.local/bin/wallpaper-rotate'; then
+    pkill -u "$USER" -f '^sh .*/\.local/bin/wallpaper-rotate$'
+    if xenv=$(tr '\0' '\n' < "/proc/$xpid/environ" | grep -E '^(DISPLAY|XAUTHORITY)=') \
+       && env $xenv setsid -f "$HOME/.local/bin/wallpaper-rotate" >/dev/null 2>&1 </dev/null
+    then echo "ok    wallpaper rotation restarted (new wallpaper now)"
+    else echo "note  wallpaper rotation not restarted: run ~/.local/bin/wallpaper-rotate &"; fi
+  fi
 fi
 move secrets "${FLEET_SEC_BRANCH:-master}" "$sec" 1 git -C "$SECRETS"
 # git writes a changed file with the umask (644), so the vault turned world-readable on beast-arch when 19a3c2e was

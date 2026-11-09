@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# shot <host> [out.png] -- a screenshot of <host>'s screen, fetched to this machine (Ben 2026-11-08, station-maintenance
+# fleet 10: agents check GUI changes on the real screen instead of asking Ben to look). Read-only on the target.
+# X (xmonad): maim on the display xmonad runs on. sway: grim with sway's socket. Default out: $OPS/shot-<host>-<time>.png
+set -euo pipefail
+h=${1:?usage: shot <host> [out.png]}
+out=${2:-${OPS:-$HOME/.local/state/ops}/shot-$h-$(date +%Y%m%d-%H%M%S).png}
+remote='set -e
+if x=$(pgrep -u "$USER" -o -x xmonad-x86_64-l); then
+  env $(tr "\0" "\n" < /proc/$x/environ | grep -E "^(DISPLAY|XAUTHORITY)=") maim -u
+elif s=$(ls /run/user/$(id -u)/sway-ipc.*.sock 2>/dev/null | head -1) && [ -n "$s" ]; then
+  w=$(tr "\0" "\n" < /proc/$(pgrep -u "$USER" -o -x sway)/environ | sed -n "s/^WAYLAND_DISPLAY=//p")
+  XDG_RUNTIME_DIR=/run/user/$(id -u) WAYLAND_DISPLAY=${w:-wayland-1} grim -
+else echo "no graphical session on $(uname -n)" >&2; exit 3; fi'
+if [[ $h == "$(uname -n)" ]]; then bash -c "$remote" > "$out"; else ssh -o BatchMode=yes "$h" "$remote" > "$out"; fi
+echo "$out"
