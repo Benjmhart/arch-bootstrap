@@ -5,12 +5,13 @@
 #   tailnet-policy validate   ask Tailscale whether the file is a valid policy (read-only)
 #   tailnet-policy apply      diff, confirm, then replace the live policy with the file; refuses if the live policy
 #                             changed since the diff (If-Match on its ETag), so a console edit is never overwritten blind
-# Credential, first found: an OAuth client limited to the policy file (preferred: scope `policy_file` only, no expiry,
+# Credential, first found: an OAuth trust credential for the policy file (preferred: scope `policy_file` plus the two it
+# requires, `devices:posture_attributes` and `devices:core:read`; no expiry;
 # cannot touch devices, keys or users) in ~/.config/tailscale/oauth-client (mode 600; line 1 client id, line 2 secret),
 # exchanged for a 1-hour token at each run; else $TS_API_KEY; else ~/.config/tailscale/api-key (mode 600). Ben creates
 # it and keeps it in the vault; it never goes in a repo. File: $TAILNET_POLICY, else ~/secrets/tailnet_access.json.
 set -euo pipefail
-[[ ${1:-} =~ ^(diff|validate|apply)$ ]] || { sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+[[ ${1:-} =~ ^(diff|validate|apply)$ ]] || { sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 api=https://api.tailscale.com/api/v2/tailnet/-/acl
 file=${TAILNET_POLICY:-$HOME/secrets/tailnet_access.json}
 private() { [[ $(stat -c %a "$1") == 600 ]] || { echo "tailnet-policy: $1 must be mode 600" >&2; exit 2; }; }
