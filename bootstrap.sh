@@ -5584,9 +5584,28 @@ EOF" "GRUB: the Windows entries" || true
     rm -f "$rwtmp"
   fi
   install_grub_theme
-  # 10 s at the menu (Ben 2026-11-07: "can we make the grub screen wait longer?"; the package default is 5).
-  if grep -qx 'GRUB_TIMEOUT=10' /etc/default/grub; then ok "GRUB menu waits 10 s"
-  else run sudo sed -i 's/^#\?GRUB_TIMEOUT=.*/GRUB_TIMEOUT=10/' /etc/default/grub && did "GRUB menu waits 10 s"; fi
+  # 5 minutes at the menu, then the default (password or remote unlock): time to choose the unlock, and a power cut still
+  # ends at a prompt `unlock` can answer (Ben 2026-11-09, station-maintenance fleet 1; 10 s since 2026-11-07).
+  if grep -qx 'GRUB_TIMEOUT=300' /etc/default/grub; then ok "GRUB menu waits 5 min"
+  else run sudo sed -i 's/^#\?GRUB_TIMEOUT=.*/GRUB_TIMEOUT=300/' /etc/default/grub && did "GRUB menu waits 5 min"; fi
+  # grubenv: where reboot-to-unlock leaves skip_menu=1 for one boot.
+  sudo test -f /boot/grub/grubenv || { run sudo grub-editenv /boot/grub/grubenv create && did "GRUB environment block created"; }
+  # `sudo reboot-to-unlock` with no password, as reboot-windows: tools/reboot-unlock reboots a machine for a remote
+  # unlock with no touch for sudo (Ben 2026-11-09: "a single script that reboots AND THEN unlocks"). It takes no
+  # arguments: it can only skip the menu once and reboot, into the default (password / remote) entry.
+  put_etc_file /usr/local/bin/reboot-to-unlock "#!/bin/sh
+# Written by arch-bootstrap (setup_boot). Reboot without the 5-minute GRUB menu, once, into the default entry: the
+# passphrase prompt that unlock <host> answers from another machine (tools/reboot-unlock).
+[ \$# -eq 0 ] || { echo 'reboot-to-unlock takes no arguments' >&2; exit 2; }
+/usr/bin/grub-editenv /boot/grub/grubenv set skip_menu=1 && exec /usr/bin/systemctl reboot" "reboot-to-unlock" || true
+  [[ -x /usr/local/bin/reboot-to-unlock ]] || run sudo chmod 755 /usr/local/bin/reboot-to-unlock
+  local ru=/etc/sudoers.d/21-reboot-to-unlock rutmp; rutmp=$(mktemp)
+  printf '%s\n' "$USER ALL=(root) NOPASSWD: /usr/local/bin/reboot-to-unlock \"\"" >"$rutmp"
+  if sudo -n cmp -s "$rutmp" "$ru" 2>/dev/null; then ok "sudo reboot-to-unlock: no password"
+  elif run sudo visudo -cqf "$rutmp" && run sudo install -m 440 -o root -g root "$rutmp" "$ru"; then
+    did "sudo reboot-to-unlock: no password ($ru)"
+  else warn "could not write $ru"; fi
+  rm -f "$rutmp"
   for f in 10_linux 15_uki 20_linux_xen 31_efi_bootnext; do
     [[ -x /etc/grub.d/$f ]] && { run sudo chmod 644 "/etc/grub.d/$f"; did "GRUB: $f switched off"; }
   done
@@ -5618,10 +5637,14 @@ EOF" "GRUB: the Windows entries" || true
 
 GRUB_10_ARCH='#!/bin/sh
 # Written by arch-bootstrap (station-maintenance beast-arch 95); edit setup_boot there, not this file.
-# The Arch entries, read fresh at every grub-mkconfig:
-#   Arch Linux               dracut: the YubiKey (PIN + touch), or the passphrase after 3 s without it
-#   Arch Linux (passphrase)  dracut, no key step (only once a key is enrolled; tools/luks-fido2)
-#   Arch Linux (fallback)    mkinitcpio image, busybox `encrypt`, passphrase
+# The Arch entries, read fresh at every grub-mkconfig. Ben chooses, with no timer after the menu (2026-11-09: "i'"'"'d
+# really like to be able to CHOOSE whether i unlock by key or by password without a timer"; station-maintenance fleet 1):
+#   Arch Linux: password or remote unlock   (default) dracut, no key step: the passphrase prompt waits, typed here or
+#                                           by `unlock <host>` from another machine (its YubiKey derives the secret)
+#   Arch Linux: YubiKey on this machine     dracut: waits for the key (token-timeout=0), PIN, then touch
+#   Arch Linux (fallback)                   mkinitcpio image, busybox `encrypt`, passphrase
+# The menu waits 5 minutes (GRUB_TIMEOUT=300), then takes the default, so a power cut still ends at a prompt that a
+# remote unlock can answer. A remote reboot (tools/reboot-unlock) sets skip_menu=1 in grubenv for one boot: no wait.
 # SYSTEMD_CRYPTSETUP_USE_TOKEN_MODULE=0: systemd-cryptsetup'"'"'s own FIDO2 code waits for the key
 # (token-timeout) before it asks for the PIN. The libcryptsetup token module asks for the PIN first and
 # waits forever, so a boot without the key never reached the passphrase (carbon, 2026-10-16 18:40).
@@ -5668,10 +5691,19 @@ menuentry '"'"'$1'"'"' --class arch --class gnu-linux --class os {
 EOF
 }
 
+# One boot without the menu, when tools/reboot-unlock asked for it; the flag clears itself (save_env needs the vfat /boot).
+cat <<'"'"'EOF'"'"'
+if [ "${skip_menu}" = 1 ]; then
+  set timeout=0
+  set skip_menu=
+  save_env skip_menu
+fi
+EOF
 if [ "$keys" -gt 0 ]; then
-  entry "Arch Linux" "Plug in your YubiKey (PIN, then touch), or wait 3 s for the passphrase prompt" \
-    "$common $rd rd.luks.options=$luks_uuid=fido2-device=auto,token-timeout=3s $tail" initramfs-linux.img
-  entry "Arch Linux (passphrase)" "Passphrase unlock (no YubiKey)" "$common $rd $tail" initramfs-linux.img
+  entry "Arch Linux: password or remote unlock" "Passphrase prompt (no timer): type it here, or run: unlock <host> from another machine" \
+    "$common $rd $tail" initramfs-linux.img
+  entry "Arch Linux: YubiKey on this machine" "Plug in the YubiKey (it waits for it): enter the PIN, then touch the key when asked" \
+    "$common $rd rd.luks.options=$luks_uuid=fido2-device=auto,token-timeout=0 $tail" initramfs-linux.img
 else
   entry "Arch Linux" "Passphrase unlock (no YubiKey enrolled here)" "$common $rd $tail" initramfs-linux.img
 fi

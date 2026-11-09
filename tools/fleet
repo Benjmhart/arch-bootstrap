@@ -517,6 +517,11 @@ push)
   if gitr ab show "$ab:tests/stage-steps" > "$preflight/tests/stage-steps" 2>/dev/null; then
     bash "$preflight/tests/stage-steps" || { rm -rf "$preflight"; die "pre-flight failed (above): nothing applied"; }
   fi
+  # The GRUB menu must parse, or a machine does not boot (tests/grub-menu; 2026-11-09 it caught an apostrophe in a title).
+  if gitr ab show "$ab:tests/grub-menu" > "$preflight/tests/grub-menu" 2>/dev/null; then
+    bash "$preflight/tests/grub-menu" | grep -v '^pass' || true
+    bash "$preflight/tests/grub-menu" >/dev/null || { rm -rf "$preflight"; die "pre-flight: the GRUB menu would not parse: nothing applied"; }
+  fi
   rm -rf "$preflight"
   echo "fpush: arch-bootstrap ${ab:0:7}  dotfiles ${dot:0:7}  secrets ${sec:0:7} -> $SELF, then ${hosts[*]}"
 
