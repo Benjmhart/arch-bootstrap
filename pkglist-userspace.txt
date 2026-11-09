@@ -251,3 +251,4 @@ man-db                # man was on no host (2026-11-08); MANPAGER renders throug
 man-pages
 maim                  # screenshots for agents checking GUI changes on the real screen (tools/shot; Ben 2026-11-08)
 grim                  # the same under sway
+playerctl             # the play/next/previous keys (dotfiles bin/volume and xmonad/sway keys; fleet 5, Ben 2026-11-09)
