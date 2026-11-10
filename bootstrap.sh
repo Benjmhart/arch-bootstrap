@@ -6231,6 +6231,9 @@ stage_verify() {
     check "boot: dracut config"            "[ -f /etc/dracut.conf.d/arch-bootstrap.conf ]"
     check "boot: GRUB 10_arch on, 10_linux off" "[ -x /etc/grub.d/10_arch ] && [ ! -x /etc/grub.d/10_linux ]"
   fi
+  # Handy: Parakeet, dictation on super+s (dotfiles handy-settings, run by fleet-apply; Ben 2026-11-09, fleet 9).
+  [[ -f $HOME/.local/share/com.pais.handy/settings_store.json ]] && check "handy: Parakeet, dictation on super+s" \
+    "jq -e '.settings.selected_model | startswith(\"handy-computer/parakeet\")' ~/.local/share/com.pais.handy/settings_store.json && jq -e '.settings.bindings.transcribe.current_binding == \"super+s\"' ~/.local/share/com.pais.handy/settings_store.json"
   have claude && have herdr && check "herdr claude integration" "herdr integration status | grep -q '^claude: current'"
   check "arch-bootstrap origin is SSH"  "git -C '$SCRIPT_DIR' remote get-url origin | grep -q '^git@'"
   local m mn ml

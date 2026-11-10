@@ -279,6 +279,12 @@ if [[ -d $DOTDIR ]]; then
     if "$HOME/bin/theme-gsettings" >/dev/null 2>&1; then echo "ok    theme gsettings applied"
     else echo "note  theme gsettings failed: run ~/bin/theme-gsettings"; fi
   fi
+  # Handy the same everywhere: Parakeet, dictation on super+s (Ben 2026-11-09; station-maintenance fleet 9). Fetches the
+  # model once if missing, restarts a running Handy only when it changed something. Idempotent.
+  if [[ -x $HOME/.local/bin/handy-settings ]]; then
+    if hs=$("$HOME/.local/bin/handy-settings" 2>&1); then echo "ok    ${hs//$'\n'/; }"
+    else echo "note  handy-settings failed: ${hs//$'\n'/; }"; fi
+  fi
   # PipeWire reads its drop-ins only at start (the louder filter, Ben 2026-11-08): restart it, and what rides on it.
   if systemctl --user --quiet is-active pipewire.service 2>/dev/null \
      && ! git --git-dir="$DOTDIR" --work-tree="$HOME" diff --quiet "$dot_was" "$dot" -- ':/.config/pipewire'; then
