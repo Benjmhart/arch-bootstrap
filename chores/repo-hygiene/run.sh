@@ -71,8 +71,11 @@ if "${dot[@]}" rev-parse -q --git-dir >/dev/null 2>&1; then
       out "SUGGEST ~/$rel: changed in the last 14 days, holds credentials (secret scan) -- do NOT add to the dotfiles; secrets repo or vault if it must be kept"
     else out "SUGGEST ~/$rel: changed in the last 14 days, not in the dotfiles -- track it, or note why not"; fi
     (( suggest++ ))
+  # Not dotfiles, by decision (2026-11-10, station-maintenance fleet): dconf = the binary gsettings db that
+  # theme-gsettings writes every fpush; QtProject.conf = Qt's file-dialog history; procps = toprc only (often empty).
   done < <(find "$HOME/.config" "$HOME/bin" "$HOME/.local/bin" -mindepth 1 -maxdepth 1 -mtime -14 \
-             -not -name '*.lock' -not -name '*.log' -not -name '*.sock' 2>/dev/null | sort)
+             -not -name '*.lock' -not -name '*.log' -not -name '*.sock' \
+             -not -name dconf -not -name QtProject.conf -not -name procps 2>/dev/null | sort)
 fi
 
 # 4. Loose files in ~ (scratch belongs in $OPS, work in a repo).
