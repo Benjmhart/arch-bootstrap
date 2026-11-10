@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily on micro: every machine's health in one report in $OPS (arch-bootstrap chores/fleet-health)
+
+[Timer]
+OnCalendar=*-*-* 08:30
+Persistent=true
+Unit=chore@fleet-health.service
+
+[Install]
+WantedBy=timers.target
