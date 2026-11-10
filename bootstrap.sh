@@ -3140,8 +3140,27 @@ xmonad_restart_running() {
   env=$(tr '\0' '\n' < "/proc/$pid/environ" | grep -E '^(DISPLAY|XAUTHORITY)=') || { warn "xmonad pid $pid has no DISPLAY -- restart it by hand (mod-q)"; return 0; }
   if env $env xmonad --restart; then
     did "running xmonad restarted in place (pid $pid)"
+    handy_restart_running
   else
     warn "xmonad --restart failed -- restart it by hand (mod-q)"
+  fi
+}
+
+# Handy grabs its dictation key (super+s, dotfiles handy-settings) once, at start. A key the old xmonad held stays
+# Handy-less after xmonad lets go of it (mod-s, 2026-11-09: the showcase had it), so a restarted xmonad restarts Handy
+# too, on its own display (Ben 2026-11-09: "can the fpush also restart handy?"; station-maintenance fleet 9).
+handy_restart_running() {
+  local pid env i=0
+  pid=$(pgrep -u "$USER" -o -x handy) || return 0
+  env=$(tr '\0' '\n' < "/proc/$pid/environ" | grep -E '^(DISPLAY|XAUTHORITY|WAYLAND_DISPLAY|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS)=') \
+    || { warn "Handy pid $pid has no DISPLAY -- restart it by hand"; return 0; }
+  kill "$pid" 2>/dev/null || true
+  while kill -0 "$pid" 2>/dev/null && (( i++ < 50 )); do sleep 0.1; done
+  sleep 1  # xmonad --restart re-execs; let the new one take its grabs first
+  if env $env setsid -f handy --start-hidden >/dev/null 2>&1 </dev/null; then
+    did "Handy restarted, so it grabs its key again"
+  else
+    warn "Handy did not restart -- start it: handy --start-hidden &"
   fi
 }
 
