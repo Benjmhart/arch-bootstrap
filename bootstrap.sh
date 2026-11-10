@@ -3759,6 +3759,7 @@ theme_launcher_icons() {
   local -a alias=(claude-desktop:internet-chat espanso:accessories-text-editor handy:audio-input-microphone
     keymapp:preferences-desktop-keyboard rofi:kmenuedit scrcpy:guiscrcpy xpra:krdc yazi:system-file-manager)
   for f in "$apps"/*.desktop; do   # Steam games: an icon name per game (steam_icon_<appid>), all to Steam's
+    [[ -f $f ]] || continue   # no .desktop at all: the glob stays literal (VM canary, fleet 11, 2026-11-10)
     name=$(sed -n 's/^Icon=\(steam_icon_[0-9]*\)$/\1/p' "$f"); [[ -n $name ]] && alias+=("$name:steam")
   done
   for pair in "${alias[@]}"; do
