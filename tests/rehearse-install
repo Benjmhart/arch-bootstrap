@@ -266,7 +266,8 @@ elif PHASE == "convert":
     send("poweroff"); wait_exit()
 
 elif PHASE in ("provision", "canary"):
-    expect(r"[Pp]assphrase|password is required", 240); time.sleep(1); send(PW)
+    # 600: bootstrap's GRUB menu waits 5 min on the (unwatched) screen, unless skip_menu is set (end of provision).
+    expect(r"[Pp]assphrase|password is required", 600); time.sleep(1); send(PW)
     expect(r"rehearsal login:", 240); send("ben"); expect(r"Password:", 30); send(PW)
     # bootstrap makes zsh the login shell, with its own prompt: plain bash for the driving.
     time.sleep(8); send("exec bash --norc --noprofile"); time.sleep(1)
@@ -296,6 +297,9 @@ elif PHASE in ("provision", "canary"):
             "(cd ~/projects/arch-bootstrap && ./bootstrap.sh --yes --skip ssh,hardware,secrets,obsidian,tailnet,manual </dev/null)", 4 * 3600))
         step("fleet-apply at the baseline commits", run(apply, 3 * 3600))
         run("cp ~/canary/fails ~/canary/fails.base; echo baseline verify FAILs:; cat ~/canary/fails.base")
+        # The menu once without its 5-minute wait, as tools/reboot-unlock does; each canary clears it only in its
+        # -snapshot copy, so every canary boots straight through.
+        step("GRUB: skip the menu at the next boot", run("sudo grub-editenv /boot/grub/grubenv set skip_menu=1"))
     else:
         step("bundles of the candidate commits", run(get, 300))
         # fleet-apply's rc is no test here: verify always fails in a guest (no YubiKey, origin not SSH): baseline FAILs.
