@@ -1955,6 +1955,9 @@ install_herdr_integrations() {
     if herdr integration status 2>/dev/null | grep -q "^$agent: current"; then
       ok "herdr $agent integration current"
     else
+      # herdr writes pi's into ~/.pi/agent/extensions and refuses when it is missing, which it is until pi first runs:
+      # a fresh machine failed the toolchains stage there (VM canary, station-maintenance fleet 11, 2026-11-10).
+      [[ $agent == pi ]] && run mkdir -p "$HOME/.pi/agent/extensions"
       run herdr integration install "$agent"
       did "herdr $agent integration installed"
     fi
