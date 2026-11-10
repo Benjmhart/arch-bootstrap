@@ -18,6 +18,7 @@ printf '#!/bin/sh\ncase "$*" in *UUID*) echo 11111111-2222 ;; *FSTYPE*) echo ext
 printf '#!/bin/sh\ncase "$1" in status) echo "  device:  /dev/sda2" ;; luksDump) [ -n "$KEYS" ] && echo "\\"type\\": \\"systemd-fido2\\"" || echo "{}" ;; esac\n' > "$t/bin/cryptsetup"
 printf '#!/bin/sh\necho 33333333-4444\n' > "$t/bin/blkid"
 printf '#!/bin/sh\nexit 0\n' > "$t/bin/mountpoint"
+printf '#!/bin/sh\necho "${HOST:-carbon}"\n' > "$t/bin/uname"
 chmod +x "$t"/bin/*
 pass=0 fail=0
 check() { if eval "$2"; then pass=$((pass+1)); echo "pass  $1"; else fail=$((fail+1)); echo "FAIL  $1"; fi; }
@@ -29,8 +30,17 @@ for keys in 1 ""; do
   check "grub.cfg parses ($w a key)" 'grub-script-check "$t/full.cfg" >/dev/null 2>&1'
   check "skip_menu clears itself ($w a key)" 'grep -q "save_env skip_menu" "$t/out.cfg"'
 done
-KEYS=1 PATH=$t/bin:$PATH sh "$t/10_arch" > "$t/out.cfg"
-check "first entry is password / remote (the default)" '[[ $(grep -m1 -o "menuentry '"'"'[^'"'"']*" "$t/out.cfg") == *"password or remote"* ]]'
+first() { grep -m1 -o "menuentry '[^']*" "$t/out.cfg"; }
+KEYS=1 HOST=carbon PATH=$t/bin:$PATH sh "$t/10_arch" > "$t/out.cfg"
+check "carbon: first entry (the default) is the YubiKey" '[[ $(first) == *"YubiKey on this machine"* ]]'
 check "the YubiKey entry waits for the key (token-timeout=0)" 'grep -q "token-timeout=0" "$t/out.cfg"'
+check "skip_menu boots the password/remote entry by title" 'grep -q "set default=\"Arch Linux: password or remote unlock\"" "$t/out.cfg"'
+check "the password entry exists under that exact title" 'grep -q "menuentry .Arch Linux: password or remote unlock." "$t/out.cfg"'
+for h in media-center surfboard; do
+  KEYS=1 HOST=$h PATH=$t/bin:$PATH sh "$t/10_arch" > "$t/out.cfg"
+  check "$h: first entry (the default) is password / remote" '[[ $(first) == *"password or remote"* ]]'
+done
+KEYS= HOST=carbon PATH=$t/bin:$PATH sh "$t/10_arch" > "$t/out.cfg"
+check "no key: skip_menu default names the only entry" 'grep -q "set default=\"Arch Linux\"" "$t/out.cfg" && grep -q "menuentry .Arch Linux. " "$t/out.cfg"'
 echo "$pass passed, $fail failed"
 (( fail == 0 ))

@@ -4277,6 +4277,15 @@ install_browser_search_policy() {
   local kpxc='"oboonakemofpalcgghocfoadofidjkkk": {
       "installation_mode": "removed"
     }'
+  # enhanced-h264ify (omkfmpieigblcllmkgbflkikinpkodlk; Ben 2026-11-10, station-maintenance media-center 8): YouTube
+  # serves H.264, which these GPUs decode (VA-API), instead of VP9/AV1, which they cannot (Haswell, Ivy Bridge, Skylake),
+  # so the CPU decoded it. Not carbon (Kaby Lake decodes VP9) or beast-arch (fast CPU; H.264 caps YouTube at 1080p).
+  local h264=
+  case $HOSTNAME_SHORT in media-center|micro|surfboard) h264='"omkfmpieigblcllmkgbflkikinpkodlk": {
+      "installation_mode": "normal_installed",
+      "update_url": "https://clients2.google.com/service/update2/crx"
+    },'
+  esac
   # uBlock Origin Lite (ddkjiahejlhfcafbddmgiahcphecmpfh; Ben 2026-11-08): ads and trackers blocked, the biggest
   # page-load saving on a slow machine. The Lite (MV3) build: rule lists the browser applies itself, no resident script.
   put_etc_file /etc/vivaldi/policies/managed/extensions.json '{
@@ -4289,9 +4298,10 @@ install_browser_search_policy() {
       "installation_mode": "normal_installed",
       "update_url": "https://clients2.google.com/service/update2/crx"
     },
+    '"$h264"'
     '"$kpxc"'
   }
-}' "Vimium and uBlock Origin Lite for Vivaldi (installed by policy); KeePassXC-Browser removed" || true
+}' "Vimium, uBlock Origin Lite${h264:+, enhanced-h264ify} for Vivaldi (installed by policy); KeePassXC-Browser removed" || true
   put_etc_file /etc/chromium/policies/managed/extensions.json '{
   "ExtensionSettings": {
     '"$kpxc"'
@@ -5561,7 +5571,7 @@ EOF" "GRUB: the Windows entries" || true
     rm -f "$rwtmp"
   fi
   install_grub_theme
-  # 5 minutes at the menu, then the default (password or remote unlock): time to choose the unlock, and a power cut still
+  # 5 minutes at the menu, then the default (the YubiKey entry; password or remote unlock on media-center and surfboard): time to choose the unlock, and a power cut still
   # ends at a prompt `unlock` can answer (Ben 2026-11-09, station-maintenance fleet 1; 10 s since 2026-11-07).
   if grep -qx 'GRUB_TIMEOUT=300' /etc/default/grub; then ok "GRUB menu waits 5 min"
   else run sudo sed -i 's/^#\?GRUB_TIMEOUT=.*/GRUB_TIMEOUT=300/' /etc/default/grub && did "GRUB menu waits 5 min"; fi
@@ -5616,12 +5626,15 @@ GRUB_10_ARCH='#!/bin/sh
 # Written by arch-bootstrap (station-maintenance beast-arch 95); edit setup_boot there, not this file.
 # The Arch entries, read fresh at every grub-mkconfig. Ben chooses, with no timer after the menu (2026-11-09: "i'"'"'d
 # really like to be able to CHOOSE whether i unlock by key or by password without a timer"; station-maintenance fleet 1):
-#   Arch Linux: password or remote unlock   (default) dracut, no key step: the passphrase prompt waits, typed here or
-#                                           by `unlock <host>` from another machine (its YubiKey derives the secret)
 #   Arch Linux: YubiKey on this machine     dracut: waits for the key (token-timeout=0), PIN, then touch
+#   Arch Linux: password or remote unlock   dracut, no key step: the passphrase prompt waits, typed here or
+#                                           by `unlock <host>` from another machine (its YubiKey derives the secret)
 #   Arch Linux (fallback)                   mkinitcpio image, busybox `encrypt`, passphrase
-# The menu waits 5 minutes (GRUB_TIMEOUT=300), then takes the default, so a power cut still ends at a prompt that a
-# remote unlock can answer. A remote reboot (tools/reboot-unlock) sets skip_menu=1 in grubenv for one boot: no wait.
+# The first is the default (Ben 2026-11-10), except on REMOTE_FIRST hosts (media-center, surfboard, and any headless
+# ssh box added later), where "password or remote unlock" comes first. The menu waits 5 minutes (GRUB_TIMEOUT=300), then
+# boots the default: after a power cut a REMOTE_FIRST host reaches a prompt a remote unlock can answer; any other host
+# waits for its key (beast-arch included: Ben accepted that). A remote reboot (tools/reboot-unlock) sets skip_menu=1 in
+# grubenv for one boot: no wait, and always the password/remote entry, whatever the default.
 # SYSTEMD_CRYPTSETUP_USE_TOKEN_MODULE=0: systemd-cryptsetup'"'"'s own FIDO2 code waits for the key
 # (token-timeout) before it asks for the PIN. The libcryptsetup token module asks for the PIN first and
 # waits forever, so a boot without the key never reached the passphrase (carbon, 2026-10-16 18:40).
@@ -5668,21 +5681,28 @@ menuentry '"'"'$1'"'"' --class arch --class gnu-linux --class os {
 EOF
 }
 
-# One boot without the menu, when tools/reboot-unlock asked for it; the flag clears itself (save_env needs the vfat /boot).
-cat <<'"'"'EOF'"'"'
-if [ "${skip_menu}" = 1 ]; then
+REMOTE_FIRST="media-center surfboard"
+pw="Arch Linux: password or remote unlock"; [ "$keys" -gt 0 ] || pw="Arch Linux"
+# One boot without the menu, when tools/reboot-unlock asked for it, into the password/remote entry by title, whichever
+# entry is the default; the flag clears itself (save_env needs the vfat /boot).
+cat <<EOF
+if [ "\${skip_menu}" = 1 ]; then
   set timeout=0
+  set default="$pw"
   set skip_menu=
   save_env skip_menu
 fi
 EOF
-if [ "$keys" -gt 0 ]; then
-  entry "Arch Linux: password or remote unlock" "Passphrase prompt (no timer): type it here, or run: unlock <host> from another machine" \
-    "$common $rd $tail" initramfs-linux.img
-  entry "Arch Linux: YubiKey on this machine" "Plug in the YubiKey (it waits for it): enter the PIN, then touch the key when asked" \
-    "$common $rd rd.luks.options=$luks_uuid=fido2-device=auto,token-timeout=0 $tail" initramfs-linux.img
+pw_entry() { entry "$pw" "Passphrase prompt (no timer): type it here, or run: unlock <host> from another machine" \
+  "$common $rd $tail" initramfs-linux.img; }
+key_entry() { entry "Arch Linux: YubiKey on this machine" "Plug in the YubiKey (it waits for it): enter the PIN, then touch the key when asked" \
+  "$common $rd rd.luks.options=$luks_uuid=fido2-device=auto,token-timeout=0 $tail" initramfs-linux.img; }
+if [ "$keys" -eq 0 ]; then
+  entry "$pw" "Passphrase unlock (no YubiKey enrolled here)" "$common $rd $tail" initramfs-linux.img
+elif case " $REMOTE_FIRST " in *" $(uname -n) "*) true ;; *) false ;; esac; then
+  pw_entry; key_entry
 else
-  entry "Arch Linux" "Passphrase unlock (no YubiKey enrolled here)" "$common $rd $tail" initramfs-linux.img
+  key_entry; pw_entry
 fi
 if [ -f /boot/initramfs-linux-fallback.img ]; then
   entry "Arch Linux (fallback)" "Fallback image (mkinitcpio), passphrase unlock" \
