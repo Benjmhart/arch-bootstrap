@@ -9,7 +9,7 @@
 # ORDER MATTERS: a package depending on another AUR package comes after it (e.g. a lib before the app that needs it).
 # First pins 2026-10-17: the newest version then installed anywhere in the fleet (carbon unreachable).
 bemoji                               90ed093966261043a7b0045b8fc0c8f339013e61
-claude-desktop                       469c733381ffecf88413fba593ca28b6168f5e32
+claude-desktop                       c9133379864d23d003ad36bb102396994ad889fe
 dracula-gtk-theme                    3f4c6f263e23a97a63e5be911474541053946456
 espanso-x11                          f66257bbb59116dea6d002ab486be930c06c6d19 espanso
 google-chrome                        a3cd9ff99d3a9adf2682a80d07102769e46ef8a1
