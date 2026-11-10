@@ -7,7 +7,9 @@
 #   PROBLEM  unreachable, failed units (system or user), a filesystem >= 90 %, CPU >= 85 C in the last day, kernel
 #            memory errors (EDAC/MCE) in the last day, the last fpush apply rc != 0
 #   NOTE     reboot pending (running kernel's modules gone), the last fpush's age, journal errors in the last day,
-#            tailnet address moves yesterday, SMART not watched (no smartd)
+#            tailnet address moves yesterday
+#   PROBLEM  (fleet 17) smartd not running, or it warned in the last day; (fleet 20) a tailnet node key expiring in
+#            30 days or less, read from micro's own `tailscale status`
 #   NEWS     Arch news newer than the fleet's pinned repo-date: manual interventions are announced there, so read
 #            them before the next fpush moves the date (Ben 2026-11-10: "put it in the fleet health report")
 set -uo pipefail
@@ -34,7 +36,10 @@ echo "journal-errors $(journalctl -p err --since -1d -q --no-pager 2>/dev/null |
 [ -d "/usr/lib/modules/$(uname -r)" ] || echo "reboot-pending $(uname -r)"
 [ -f ~/.local/state/fleet/applied ] && echo "applied $(cut -d' ' -f4,5 ~/.local/state/fleet/applied)"
 [ -f "$ops/$h-tailnet-paths.log" ] && echo "tailnet $(grep '^== ' "$ops/$h-tailnet-paths.log" | tail -1 | sed 's/^== //')"
-systemctl is-active --quiet smartd 2>/dev/null || echo "no-smartd"
+# smartd logs a failing disk (health, pending/reallocated sectors, self-test errors) at warning or worse (fleet 17)
+if systemctl is-active --quiet smartd 2>/dev/null; then
+  echo "smart $(journalctl -u smartd --since -1d -p warning -q --no-pager -o cat 2>/dev/null | awk '{n++; l=$0} END {print n+0, substr(l, 1, 160)}')"
+else echo "no-smartd"; fi
 P
 }
 
@@ -57,10 +62,19 @@ for h in $hosts; do
                       [[ $2 == rc=0 ]] || echo "PROBLEM $h: last fpush apply ${2} ($1)"
                       echo "NOTE    $h: last fpush applied $1 ($(( ( $(date +%s) - $(date -d "$1" +%s) ) / 86400 )) days ago)" ;;
       tailnet)        echo "NOTE    $h: tailnet $v" ;;
-      no-smartd)      echo "NOTE    $h: SMART not watched (no smartd)" ;;
+      no-smartd)      echo "PROBLEM $h: SMART not watched (smartd not running)" ;;
+      smart)          (( ${v%% *} > 0 )) && echo "PROBLEM $h: smartd warned ${v%% *} times in the last day, last: ${v#* }" ;;
     esac
   done <<<"$r"
 done
+
+# Node keys: an expired key drops the node off the tailnet (ssh, backups, fpush). Expiry is turned off per machine
+# in the admin console (fleet 20); this catches any machine where it is still on, or a newly added one.
+echo "== tailnet node keys"
+tailscale status --json 2>/dev/null | jq -r --argjson now "$(date +%s)" '
+  [.Self] + [.Peer[]] | .[] | select(.KeyExpiry) | (.KeyExpiry | sub("\\.[0-9]+"; "") | fromdateiso8601) as $t |
+  if $t - $now < 30*86400 then "PROBLEM \(.HostName): tailnet key expires \(.KeyExpiry[:10])"
+  else "NOTE    \(.HostName): tailnet key expires \(.KeyExpiry[:10])" end'
 
 # Arch news newer than the pinned date of the last approved snapshot (what the fleet runs).
 snaps=${FLEET_SNAPSHOTS:-$HOME/.local/state/fleet/snapshots}

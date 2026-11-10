@@ -3474,6 +3474,7 @@ SYSTEM_UNITS=(
   "docker|docker.service|container runtime"
   "clamav|clamav-freshclam-once.timer|ClamAV signature updates for chores/virus-scan; a timer, no resident daemon"
   "earlyoom|earlyoom.service|kills a memory hog before the box livelocks"
+  "smartmontools|smartd.service|watches the disks' SMART health; chores/fleet-health reports its warnings (fleet 17); skips itself in a VM"
   "tailscale|tailscaled.service|mesh VPN; joining a tailnet is a separate manual step"
   "openssh|sshd.service|remote shell; harden_sshd() writes the config it needs"
   "pacman-contrib|paccache.timer|weekly: keeps 1 version per package in /var/cache/pacman (root filesystem); see install_system_dropins"
@@ -5089,6 +5090,18 @@ EARLYOOM_ARGS=\"$EARLYOOM_ARGS\"" "earlyoom thresholds"; then
   return 0
 }
 
+# smartd (station-maintenance fleet 17): every disk it can read, with -n standby so a spun-down disk (media-center's USB
+# drives) is skipped rather than woken every 30 minutes. It logs to the journal; chores/fleet-health on micro reports
+# any warning from the last day. No mail: the fleet has no mailer.
+configure_smartd() {
+  pacman -Qq smartmontools >/dev/null 2>&1 || return 0
+  if put_etc_file /etc/smartd.conf "# Written by arch-bootstrap (configure_smartd). Not edited by hand.
+DEVICESCAN -a -n standby,q" "smartd: all disks, spun-down ones left asleep"; then
+    systemctl is-active --quiet smartd && run sudo systemctl reload smartd
+  fi
+  return 0
+}
+
 # ClamAV on access (station-maintenance beast-arch 131; Cyber Essentials A8.2 wants files scanned when opened or
 # downloaded, which the weekly chores/virus-scan alone is not). clamd holds the signatures; clamonacc watches $HOME
 # through fanotify and hands each opened file to clamd (--fdpass: clamd runs as clamav and cannot open ben's files).
@@ -5885,6 +5898,7 @@ stage_services() {
   setup_media_drives
   setup_castiron
   configure_earlyoom
+  configure_smartd
   setup_clamav_onaccess
 
   # ---- login keyring auto-unlock (added 2026-08-23) ---------------------------

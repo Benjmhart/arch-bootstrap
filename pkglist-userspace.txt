@@ -121,6 +121,7 @@ shellcheck
 shfmt
 signal-desktop
 slurp
+smartmontools
 squashfs-tools
 stack
 stalonetray
