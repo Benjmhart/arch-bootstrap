@@ -317,6 +317,20 @@ show_holds() {  # every held package on every machine: installed, what the pinne
   local newer; newer=$(grep -c 'NEWER now' "$PKGDIR/holds.txt")
   SUMMARY+=("holds     $(wc -l < "$PKGDIR/holds") held package(s)$( (( newer )) && echo ", $newer NEWER now: try them"); l lists them")
 }
+# The KVM host's nightly VM canary (chores/canary; station-maintenance fleet 11): did these heads already run in a
+# fleet-like guest? Read-only; a host that does not answer only makes the line say so. A date bump made in this push
+# came after the canary, so it shows as untested.
+canary_line() {
+  local h=${FLEET_CANARY_HOST:-beast-arch} c cab cdot ct cres _ hab hdot
+  c=$(on "$h" canary 2>/dev/null | tail -1)
+  if ! read -r cab cdot ct cres _ <<<"$c" || [[ ! $cab =~ ^[0-9a-f]{40}$ ]]; then
+    SUMMARY+=("canary    no result from $h${c:+ ($c)}"); return 0; fi
+  gitr dot fetch -q origin 2>/dev/null   # arch-bootstrap was fetched by bump_date; the dotfiles not yet
+  hab=$(gitr ab rev-parse origin/main 2>/dev/null); hdot=$(gitr dot rev-parse origin/master 2>/dev/null)
+  if [[ $cab == "$hab" && $cdot == "$hdot" ]]; then SUMMARY+=("canary    $cres at ${ct:0:16} for exactly these heads (${cab:0:7} / ${cdot:0:7})")
+  else SUMMARY+=("canary    $cres at ${ct:0:16} for ${cab:0:7} / ${cdot:0:7}, NOT the heads under review (${hab:0:7} / ${hdot:0:7}): untested"); fi
+}
+
 show_holds_list() {
   local h p broke why have
   echo; echo "=== held packages (kept at their installed version; the date $date has the version shown)"
@@ -501,7 +515,7 @@ push)
   else SUMMARY+=("secrets   every machine's own commits are pushed"); fi
 
   # 2. The weekly package date, if it is time (its commit then shows in the review), and every hold.
-  bump_date; show_holds
+  bump_date; show_holds; canary_line
 
   # 3. Review against the last approved snapshot (the first time: what micro has checked out).
   if [[ -s $SNAPS ]]; then read -r _ b_ab b_dot b_sec _ < <(tail -1 "$SNAPS")

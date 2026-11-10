@@ -222,9 +222,10 @@ case ${req[0]:-} in
                   echo "hold $p $(pacman -Q "$p" 2>/dev/null | cut -d' ' -f2) repo"; done
                 cat "$STATE/applied" 2>/dev/null || echo "none"; exit 0 ;;
   secrets-push) secrets_push; exit 0 ;;
+  canary)       cat "$STATE/canary" 2>/dev/null || echo none; exit 0 ;;   # the KVM host's last VM canary (fleet 11)
   repos)        repo_report; exit 0 ;;
   apply)        ;;
-  *)            die "request must be: status | repos | secrets-push | apply <ab> <dot> <sec> [stage ...|keys]" ;;
+  *)            die "request must be: status | repos | secrets-push | canary | apply <ab> <dot> <sec> [stage ...|keys]" ;;
 esac
 ab=${req[1]:-} dot=${req[2]:-} sec=${req[3]:-}
 for s in "$ab" "$dot" "$sec"; do

@@ -3893,6 +3893,7 @@ install_chores() {
     run systemctl --user disable --now chore-backup.timer
     did "chore backup off here: micro backs this machine up over its tunnel"
   fi
+  [[ $(uname -n) == "${FLEET_CANARY_HOST:-beast-arch}" ]] && extra+=" canary"   # the KVM host: the nightly VM canary (fleet 11)
   for c in low-disk virus-scan repo-hygiene clipboard-wipe vivaldi-theme claude-restart boot-time reminders tailnet-paths cpu-temp $extra $CHORES; do
     [[ -f $d/$c/chore-$c.timer ]] || { warn "CHORES names '$c', but there is no chores/$c/chore-$c.timer"; continue; }
     if systemctl --user is-enabled --quiet "chore-$c.timer" 2>/dev/null; then

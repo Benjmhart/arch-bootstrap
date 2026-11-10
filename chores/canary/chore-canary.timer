@@ -1,0 +1,10 @@
+[Unit]
+Description=Nightly on the KVM host: the VM canary on origin's heads (arch-bootstrap chores/canary)
+
+[Timer]
+OnCalendar=*-*-* 03:10
+Persistent=true
+Unit=chore@canary.service
+
+[Install]
+WantedBy=timers.target
