@@ -39,6 +39,16 @@ boot again (ROLLBACK=after), check tree is gone (beast-arch 76).
 Work files (a sparse 70 GiB disk) live in ~/.cache/vm-rehearsal/<fw>-<bus>, on disk, because
 /tmp can be RAM. Passwords are throwaway; the disk is never used for anything real.
 
+VM canary (station-maintenance fleet 11): a fleet-like guest to try a push on before the fleet gets it.
+  AB=<sha> DOT=<sha> tests/rehearse-install provision   once, on an installed disk: the fleet's current
+      approved commits (arch-bootstrap, dotfiles), bootstrap.sh in the guest (no ssh, hardware, secrets,
+      obsidian, tailnet: stage 15 is interactive and detects real hardware), then fleet-apply at those commits; its verify FAILs are the baseline.
+  AB=<sha> DOT=<sha> tests/rehearse-install canary      the candidate: fleet-apply apply AB DOT, as fpush
+      runs it, on a throwaway copy of that disk (QEMU -snapshot). Passes when it moves to AB/DOT, every stage but
+      verify completes, and verify FAILs nothing the baseline did not (verify itself always fails in a guest). The guest gets both repos as git bundles over local HTTP (made from
+      AB_REPO, default ~/projects/arch-bootstrap, and ~/.dot, after a fetch), so it holds no keys; ~/secrets
+      is an empty local repo and sudo is passwordless (both rehearsal-only).
+
 First run, 2026-10-01: found the 0700 /etc that killed dbus (install.sh eeb2714)."""
 import functools, glob, http.server, os, re, shutil, socket, subprocess, sys, tempfile, threading, time
 
@@ -61,6 +71,9 @@ GUEST_DISK = {"virtio": "/dev/vda", "nvme": "/dev/nvme0n1", "sata": "/dev/sda"}.
 if FW not in ("uefi", "bios") or not GUEST_DISK:
     sys.exit("FIRMWARE must be uefi|bios, DISK_BUS virtio|nvme|sata")
 SHAPE = os.environ.get("SHAPE", "")
+AB, DOT = os.environ.get("AB", ""), os.environ.get("DOT", "")   # provision, canary: the commits
+if PHASE in ("provision", "canary") and not all(re.fullmatch(r"[0-9a-f]{40}", x) for x in (AB, DOT)):
+    sys.exit("provision/canary need AB and DOT: full commit ids of arch-bootstrap and the dotfiles")
 INSTALL_ARGS = os.environ.get("INSTALL_ARGS", "")
 WORK = os.path.expanduser(f"~/.cache/vm-rehearsal/{FW}-{BUS}" + (f"-{SHAPE}" if SHAPE else ""))
 REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
@@ -85,7 +98,8 @@ LOG = open(f"{WORK}/{PHASE}.log", "ab", buffering=0)
 PW = "rehearsal-not-secret"
 ANSI = re.compile(rb"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)|\x1bP[^\x1b]*\x1b\\|\r")
 
-qemu = ["qemu-system-x86_64", "-machine", "q35", "-enable-kvm", "-cpu", "host", "-m", "4096", "-smp", "4",
+qemu = ["qemu-system-x86_64", "-machine", "q35", "-enable-kvm", "-cpu", "host",
+        "-m", os.environ.get("VM_MEM", "4096"), "-smp", os.environ.get("VM_CPUS", "4"),
         "-display", "none", "-monitor", "none", "-no-reboot",
         "-serial", f"unix:{SOCK},server=on,wait=off",
         "-nic", "user,model=virtio-net-pci"]
@@ -97,6 +111,8 @@ if BUS == "virtio":
 else:              # sata: an AHCI port clear of the CD's; the guest still names it sda
     qemu += ["-drive", f"file={DISK},format=raw,if=none,id=d0",
              "-device", "nvme,drive=d0,serial=rehearsal" if BUS == "nvme" else "ide-hd,drive=d0,bus=ide.2"]
+if PHASE == "canary":   # writes go to a temp file (in WORK, not /var/tmp's root fs) and are dropped at exit
+    qemu += ["-snapshot"]; os.environ["TMPDIR"] = WORK
 if PHASE in ("install", "convert"):
     k = f"{WORK}/vmlinuz"; i = f"{WORK}/initrd"
     opts = subprocess.run(["bsdtar", "-xOf", ISO, "loader/entries/01-archiso-linux.conf"],
@@ -133,11 +149,19 @@ arch-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg
 cat /mnt/etc/kernel/cmdline /mnt/etc/crypttab; ls -l /mnt/boot/EFI/Linux
 """
 HOST = ""
-if (PHASE in ("install", "convert") and SHAPE) or URL == "local" or ROLLBACK not in ("", "after"):
+if (PHASE in ("install", "convert") and SHAPE) or URL == "local" or ROLLBACK not in ("", "after") or AB:
     serve = tempfile.mkdtemp()   # the WORKING TREE's files, for the guest
     for f in ("tools/encrypt-root-in-place", "tools/root-rollback", "install.sh"):
         shutil.copy(f"{REPO}/{f}", serve)
     open(f"{serve}/shape.sh", "w").write(SHAPE_SH)
+    for name, src, br, sha in (("ab", os.path.expanduser(os.environ.get("AB_REPO", "~/projects/arch-bootstrap")), "main", AB),
+                               ("dot", os.path.expanduser("~/.dot"), "master", DOT)):
+        if not sha: continue
+        g = f"{serve}/{name}.git"   # a bare repo holding exactly <sha> as <br>: the bundle carries nothing else
+        subprocess.run(["git", "-C", src, "fetch", "-q", "origin"], check=True)
+        subprocess.run(["git", "init", "-q", "--bare", g], check=True)
+        subprocess.run(["git", "-C", g, "fetch", "-q", src, f"{sha}:refs/heads/{br}"], check=True)
+        subprocess.run(["git", "-C", g, "bundle", "create", "-q", f"{serve}/{name}.bundle", br], check=True)
     class Quiet(http.server.SimpleHTTPRequestHandler):
         def log_message(self, *a): pass
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(Quiet, directory=serve))
@@ -239,6 +263,46 @@ elif PHASE == "convert":
         send("ENCRYPT" if "ENCRYPT" in a else "YES" if "capital" in a else PW)
     run("cat /proc/mounts | grep -c eri; lsblk -f")
     send("poweroff"); wait_exit()
+
+elif PHASE in ("provision", "canary"):
+    expect(r"[Pp]assphrase|password is required", 240); time.sleep(1); send(PW)
+    expect(r"rehearsal login:", 240); send("ben"); expect(r"Password:", 30); send(PW)
+    # bootstrap makes zsh the login shell, with its own prompt: plain bash for the driving.
+    time.sleep(8); send("exec bash --norc --noprofile"); time.sleep(1)
+    send("export TERM=dumb PS1='$ '"); expect(r"\$ $", 60)
+    get = f"mkdir -p ~/canary && cd ~/canary && curl -fsSO {HOST}/ab.bundle && curl -fsSO {HOST}/dot.bundle; r=$?; cd; (exit $r)"
+    # What fpush runs on each machine; then its verify's FAIL lines, sorted, for the comparison.
+    # What fpush runs on each machine, through zsh as sshd would (its .zshenv puts ~/.local/bin on PATH; plain bash
+    # did not, and verify then failed "herdr installed"). Then its verify's FAIL lines, sorted, for the comparison.
+    apply = (f"sec=$(git -C ~/secrets rev-parse HEAD) && echo {PW} | zsh -c '~/projects/arch-bootstrap/tools/fleet-apply apply {AB} {DOT} '$sec"
+             " > ~/canary/apply.out 2>&1; r=$?; cat ~/canary/apply.out; sed 's/\\x1b\\[[0-9;]*m//g' ~/.local/state/fleet/last.log"
+             " > ~/canary/last.txt; grep -- '-- FAILED' ~/canary/last.txt | sed 's/^ *warn *//' | sort -u > ~/canary/fails; (exit $r)")
+    if PHASE == "provision":
+        step("passwordless sudo (rehearsal only)", run(
+            f"echo {PW} | sudo -S -p '' sh -c 'echo \"ben ALL=(ALL) NOPASSWD: ALL\" > /etc/sudoers.d/99-rehearsal; chmod 440 /etc/sudoers.d/99-rehearsal'"))
+        step("bundles of the baseline commits", run(get, 300))
+        # Rerunnable on the same disk: a second provision moves the checkout to the new AB and bootstrap resumes.
+        step("arch-bootstrap from its bundle, at AB", run(
+            "{ [ -d ~/projects/arch-bootstrap ] || git clone -q -b main ~/canary/ab.bundle ~/projects/arch-bootstrap; } && "
+            f"git -C ~/projects/arch-bootstrap fetch -q origin && git -C ~/projects/arch-bootstrap reset -q --hard {AB}"))
+        step("~/secrets: an empty stand-in with an origin", run(
+            "[ -d ~/secrets ] || { git init -q --bare -b master ~/canary/secrets.git && git init -q -b master ~/secrets && "
+            "git -C ~/secrets -c user.name=canary -c user.email=canary@rehearsal commit -q --allow-empty -m canary && "
+            "git -C ~/secrets remote add origin ~/canary/secrets.git && git -C ~/secrets push -q -u origin master; }"))
+        step("bootstrap.conf: dotfiles from the bundle",
+             run("printf 'DOTFILES_REMOTE=%s\\nLOGIN_SHELL=zsh\\n' ~/canary/dot.bundle > ~/projects/arch-bootstrap/bootstrap.conf"))
+        step("bootstrap.sh, all but ssh, hardware, secrets, obsidian, tailnet, manual", run(
+            "(cd ~/projects/arch-bootstrap && ./bootstrap.sh --yes --skip ssh,hardware,secrets,obsidian,tailnet,manual </dev/null)", 4 * 3600))
+        step("fleet-apply at the baseline commits", run(apply, 3 * 3600))
+        run("cp ~/canary/fails ~/canary/fails.base; echo baseline verify FAILs:; cat ~/canary/fails.base")
+    else:
+        step("bundles of the candidate commits", run(get, 300))
+        # fleet-apply's rc is no test here: verify always fails in a guest (no YubiKey, origin not SSH): baseline FAILs.
+        run(apply, 3 * 3600)
+        step("fleet-apply moved to AB and DOT", run(f"[ $(git -C ~/projects/arch-bootstrap rev-parse HEAD) = {AB} ] && [ $(git --git-dir=$HOME/.dot rev-parse HEAD) = {DOT} ]"))
+        step("every stage but verify completed", run("! grep 'did not complete cleanly' ~/canary/last.txt | grep -v \"stage 'verify'\""))
+        step("verify FAILs nothing the baseline did not", run("! comm -13 ~/canary/fails.base ~/canary/fails | sed 's/^/NEW  /' | grep ."))
+    send("sudo poweroff"); wait_exit()
 
 else:  # boot
     def unlock_login():
