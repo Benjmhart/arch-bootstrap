@@ -1,0 +1,10 @@
+[Unit]
+Description=Weekly on micro: restore random files from every machine's backup and verify them (arch-bootstrap chores/restore-test)
+
+[Timer]
+OnCalendar=Sun *-*-* 11:00
+Persistent=true
+Unit=chore@restore-test.service
+
+[Install]
+WantedBy=timers.target

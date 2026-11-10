@@ -3882,7 +3882,7 @@ install_chores() {
   # backs up every machine through an append-only tunnel (station-maintenance beast-arch 92, decision 4), so
   # a dirty machine's own timer, enabled by earlier runs, is switched off here.
   local extra=""
-  if [[ $(uname -n) == "${FLEET_SELF_HOST:-micro}" ]]; then extra="fleet-due backup fleet-health"   # fleet-health: fleet 14
+  if [[ $(uname -n) == "${FLEET_SELF_HOST:-micro}" ]]; then extra="fleet-due backup fleet-health restore-test"   # fleet-health: fleet 14; restore-test: fleet 19
   elif systemctl --user is-enabled --quiet chore-backup.timer 2>/dev/null; then
     run systemctl --user disable --now chore-backup.timer
     did "chore backup off here: micro backs this machine up over its tunnel"
