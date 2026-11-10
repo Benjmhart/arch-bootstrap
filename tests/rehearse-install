@@ -302,6 +302,10 @@ elif PHASE in ("provision", "canary"):
         step("GRUB: skip the menu at the next boot", run("sudo grub-editenv /boot/grub/grubenv set skip_menu=1"))
     else:
         step("bundles of the candidate commits", run(get, 300))
+        # A machine fpush reaches has been up for hours; this one booted a minute ago. verify checks NTP sync, and a
+        # run before timesyncd's first sync failed it as "new" (2026-11-10).
+        step("clock NTP-synchronised, as on a running machine", run(
+            "timeout 180 sh -c 'until [ $(timedatectl show -p NTPSynchronized --value) = yes ]; do sleep 2; done'", 200))
         # fleet-apply's rc is no test here: verify always fails in a guest (no YubiKey, origin not SSH): baseline FAILs.
         run(apply, 3 * 3600)
         step("fleet-apply moved to AB and DOT", run(f"[ $(git -C ~/projects/arch-bootstrap rev-parse HEAD) = {AB} ] && [ $(git --git-dir=$HOME/.dot rev-parse HEAD) = {DOT} ]"))
