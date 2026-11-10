@@ -10,12 +10,22 @@
 # A quiet-ok file in chores/NAME/ skips the notification when the chore is ok.
 # bootstrap.conf (beside chores/) is sourced into the chore's environment.
 set -uo pipefail
-name=${1:?usage: chore-run NAME}
+name=${1:?usage: chore-run NAME | --resend}
 here="$(dirname "$(readlink -f "$0")")"
+state="${XDG_STATE_HOME:-$HOME/.local/state}/chores"
+# A notification no daemon could show (no display yet: boot, or surfboard's Steam session) waits in unsent/ for
+# .xinitrc's `chore-run --resend` (station-maintenance fleet 18). One per chore: a newer outcome replaces it.
+if [[ $name == --resend ]]; then
+  for f in "$state"/unsent/*; do
+    [[ -f $f ]] || continue
+    mapfile -t a < "$f"
+    notify-send -u "${a[0]}" -a chores "${a[1]}" "${a[2]}" && rm -f "$f"
+  done
+  exit 0
+fi
 script="$here/$name/run.sh"
 [[ -x $script ]] || { echo "no such chore: $name ($script)" >&2; exit 2; }
-state="${XDG_STATE_HOME:-$HOME/.local/state}/chores"
-mkdir -p "$state"
+mkdir -p "$state/unsent"
 started=$(date -Is)
 
 ( set -a; [[ -f $here/../bootstrap.conf ]] && . "$here/../bootstrap.conf"; set +a
@@ -33,6 +43,8 @@ jq -n --arg n "$name" --arg s "$started" --arg f "$(date -Is)" --argjson rc "$rc
       --arg st "$status" --arg m "$summary" \
   '{name:$n, started:$s, finished:$f, rc:$rc, status:$st, summary:$m}' > "$state/$name.json"
 # A chore with a quiet-ok file (low-disk, hourly) notifies only when it is not ok.
-[[ $rc -eq 0 && -e $here/$name/quiet-ok ]] ||
-  notify-send -u "$urgency" -a chores "chore $name: $status" "$summary" 2>/dev/null || true
+if [[ $rc -eq 0 && -e $here/$name/quiet-ok ]]; then rm -f "$state/unsent/$name"
+elif notify-send -u "$urgency" -a chores "chore $name: $status" "$summary" 2>/dev/null; then rm -f "$state/unsent/$name"
+else printf '%s\n' "$urgency" "chore $name: $status" "${summary//$'\n'/ }" > "$state/unsent/$name"
+fi
 exit "$rc"

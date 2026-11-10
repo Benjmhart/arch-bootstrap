@@ -293,6 +293,8 @@ if [[ -d $DOTDIR ]]; then
   # running Handy only on a change (fleet 9). PipeWire, fcitx5, dunst, stalonetray and picom read their config at start
   # or when told. xmobar never rereads ~/.xmobarrc: an xmonad restart replaces its bars (micro 18). A running
   # wallpaper-rotate is the old script until restarted.
+  # systemd keeps the old user units (and drop-ins: dunst's display check, fleet 18) until told.
+  reload user-units   '' .config/systemd/user 'systemctl --user daemon-reload' 'user units changed: systemd reloaded'
   reload herdr        '[[ -n $herdr ]] && pgrep -x herdr' .config/herdr '"$herdr" server reload-config >/dev/null' 'herdr config reloaded'
   reload theme-gsettings '[[ -x ~/bin/theme-gsettings ]]' '' '~/bin/theme-gsettings >/dev/null' 'theme gsettings applied'
   reload handy-settings '[[ -x ~/.local/bin/handy-settings ]]' '' '~/.local/bin/handy-settings' 'handy'
