@@ -74,7 +74,7 @@ cat > "$t/bin/pgrep" <<STUB
 exit 1
 STUB
 printf '#!/bin/sh\necho "xmonad: $* DISPLAY=$DISPLAY" >> "$HOME/xmonad.calls"\n' > "$t/bin/xmonad"   # stub: restarts nothing
-printf '#!/bin/sh\necho "dunstctl: $*" >> "$HOME/dunst.calls"\n' > "$t/bin/dunstctl"; chmod +x "$t/bin/dunstctl"
+printf '#!/bin/sh\necho "dunstctl: $*" >> "$HOME/dunst.calls"\n[ ! -e "$HOME/dunst.fail" ] || { echo "no bus" >&2; exit 1; }\n' > "$t/bin/dunstctl"; chmod +x "$t/bin/dunstctl"
 printf '#!/bin/sh\necho "fcitx5-remote: $*" >> "$HOME/fcitx.calls"\n' > "$t/bin/fcitx5-remote"; chmod +x "$t/bin/fcitx5-remote"
 cat > "$t/bin/systemctl" <<STUB
 #!/bin/bash
@@ -159,6 +159,10 @@ out=$(echo pw-ok | fa self apply "$ab2" "$dot9" "$sec2" keys 2>&1)
 check "dunstrc changed, dunst running: reloaded"            'grep -qx "dunstctl: reload" "$H/dunst.calls" && grep -q "dunst config reloaded" <<<"$out"'
 rm -f "$H/dunst.calls"; echo pw-ok | fa self apply "$ab2" "$dot10" "$sec2" keys >/dev/null 2>&1
 check "...dunstrc unchanged: no reload"                     '[[ ! -e $H/dunst.calls ]]'
+dot9b=$(commit "$t/dot-seed" .config/dunst/dunstrc d9b "dunst again"); touch "$H/dunst.fail"
+out=$(echo pw-ok | fa self apply "$ab2" "$dot9b" "$sec2" keys 2>&1); rc=$?
+check "a reload that fails is a note, and the apply goes on (fleet 16)" '[[ $rc == 0 ]] && grep -q "note  dunst: reload failed (no bus)" <<<"$out" && grep -q "done  rc=0" <<<"$out"'
+rm -f "$H/dunst.fail" "$H/dunst.calls"
 rm "$t/dunst.on"
 dot11=$(commit "$t/dot-seed" .config/pipewire/pipewire.conf.d/50-louder.conf l11 "louder"); dot12=$(commit "$t/dot-seed" .zshrc rc12 "dot twelve"); touch "$t/pw.on"
 out=$(echo pw-ok | fa self apply "$ab2" "$dot11" "$sec2" keys 2>&1)

@@ -266,79 +266,47 @@ fi
 if [[ -d $DOTDIR ]]; then
   dot_was=$(git --git-dir="$DOTDIR" rev-parse HEAD)
   move dotfiles "${FLEET_DOT_BRANCH:-master}" "$dot" 0 git --git-dir="$DOTDIR" --work-tree="$HOME"
-  # A running herdr server keeps its old config until told (station-maintenance beast-arch 143, 2026-11-04).
+  # What runs on after its dotfiles change, told to reload (station-maintenance fleet 16: one table, Ben 2026-11-10).
+  # reload <what> <only if: a command, '' = always> <dotfiles paths, '' = every apply> <command> [ok text]
+  # A failed reload is a note, never fatal (fleet-apply runs under set -e: a pkill that matched nothing killed the
+  # 2026-11-08 fpush on micro, Ben -1). Commands run on xmonad's display ($xenv) and the session bus ($bus).
+  xenv=
+  if xpid=$(pgrep -u "$USER" -o -x xmonad-x86_64-l); then
+    xenv=$(tr '\0' '\n' < "/proc/$xpid/environ" | grep -E '^(DISPLAY|XAUTHORITY)=' | tr '\n' ' ') || xenv=
+  fi
+  bus=DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-unix:path=/run/user/$(id -u)/bus}
   herdr=$(PATH=$HOME/.local/bin:$PATH command -v herdr || true)
-  if [[ -n $herdr ]] && pgrep -x herdr >/dev/null \
-     && ! git --git-dir="$DOTDIR" --work-tree="$HOME" diff --quiet "$dot_was" "$dot" -- ':/.config/herdr'; then
-    if "$herdr" server reload-config >/dev/null; then echo "ok    herdr config reloaded"
-    else echo "note  herdr: reload-config failed; run \`herdr server reload-config\`"; fi
-  fi
-  # The theme keys in gsettings, which apps read through the portal (station-maintenance fleet 7): set on every apply,
-  # so a change reaches the machine without Ben logging in on it (Ben 2026-11-08). Idempotent; no session needed.
-  if [[ -x $HOME/bin/theme-gsettings ]]; then
-    if "$HOME/bin/theme-gsettings" >/dev/null 2>&1; then echo "ok    theme gsettings applied"
-    else echo "note  theme gsettings failed: run ~/bin/theme-gsettings"; fi
-  fi
-  # Handy the same everywhere: Parakeet, dictation on super+s (Ben 2026-11-09; station-maintenance fleet 9). Fetches the
-  # model once if missing, restarts a running Handy only when it changed something. Idempotent.
-  if [[ -x $HOME/.local/bin/handy-settings ]]; then
-    if hs=$("$HOME/.local/bin/handy-settings" 2>&1); then echo "ok    ${hs//$'\n'/; }"
-    else echo "note  handy-settings failed: ${hs//$'\n'/; }"; fi
-  fi
-  # PipeWire reads its drop-ins only at start (the louder filter, Ben 2026-11-08): restart it, and what rides on it.
-  if systemctl --user --quiet is-active pipewire.service 2>/dev/null \
-     && ! git --git-dir="$DOTDIR" --work-tree="$HOME" diff --quiet "$dot_was" "$dot" -- ':/.config/pipewire'; then
-    if systemctl --user restart pipewire.service pipewire-pulse.service wireplumber.service
-    then echo "ok    pipewire config changed: pipewire restarted"; else echo "note  pipewire: restart failed; run \`systemctl --user restart pipewire pipewire-pulse wireplumber\`"; fi
-  fi
-  # fcitx5 rereads its config only when told (the tray label colours, Ben 2026-11-08).
-  if pgrep -u "$USER" -x fcitx5 >/dev/null \
-     && ! git --git-dir="$DOTDIR" --work-tree="$HOME" diff --quiet "$dot_was" "$dot" -- ':/.config/fcitx5'; then
-    if DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-unix:path=/run/user/$(id -u)/bus} fcitx5-remote -r >/dev/null 2>&1
-    then echo "ok    fcitx5 config reloaded"; else echo "note  fcitx5: reload failed; run \`fcitx5-remote -r\`"; fi
-  fi
-  # dunst keeps its old settings until told; dunstctl reaches it on the session bus, which an ssh shell may not name.
-  if pgrep -u "$USER" -x dunst >/dev/null \
-     && ! git --git-dir="$DOTDIR" --work-tree="$HOME" diff --quiet "$dot_was" "$dot" -- ':/.config/dunst'; then
-    if DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-unix:path=/run/user/$(id -u)/bus} dunstctl reload >/dev/null 2>&1
-    then echo "ok    dunst config reloaded"; else echo "note  dunst: reload failed; run \`dunstctl reload\`"; fi
-  fi
-  # xmobar never rereads ~/.xmobarrc; an xmonad restart replaces its bars (dynamicSBs). Windows and layouts survive.
-  # As bootstrap's xmonad_restart_running, on xmonad's own display (station-maintenance micro 18, 2026-11-06).
-  if xpid=$(pgrep -u "$USER" -o -x xmonad-x86_64-l) \
-     && ! git --git-dir="$DOTDIR" --work-tree="$HOME" diff --quiet "$dot_was" "$dot" -- ':/.xmobarrc'; then
-    if xenv=$(tr '\0' '\n' < "/proc/$xpid/environ" | grep -E '^(DISPLAY|XAUTHORITY)=') \
-       && env $xenv xmonad --restart; then echo "ok    xmobar config changed: xmonad restarted, bars reloaded"
-    else echo "note  xmobar config changed but xmonad was not restarted: press mod-q"; fi
-  fi
-  # stalonetray reads ~/.stalonetrayrc only at start; the tray apps dock again in the new one (tested on micro 2026-11-08).
-  if xpid=$(pgrep -u "$USER" -o -x xmonad-x86_64-l) && pgrep -u "$USER" -x stalonetray >/dev/null \
-     && ! git --git-dir="$DOTDIR" --work-tree="$HOME" diff --quiet "$dot_was" "$dot" -- ':/.stalonetrayrc'; then
-    if xenv=$(tr '\0' '\n' < "/proc/$xpid/environ" | grep -E '^(DISPLAY|XAUTHORITY)=') && pkill -u "$USER" -x stalonetray \
-       && sleep 0.5 && env $xenv setsid -f "$HOME/bin/stalonetray-start" >/dev/null 2>&1 </dev/null
-    then echo "ok    tray config changed: stalonetray restarted"; else echo "note  stalonetray not restarted: run ~/bin/stalonetray-start"; fi
-  fi
-  # picom rereads nothing it was started with, so a change to its setup restarts it on xmonad's display (Ben 2026-11-07).
-  if xpid=$(pgrep -u "$USER" -o -x xmonad-x86_64-l) && [[ -x $HOME/bin/compositor-start ]] \
-     && ! git --git-dir="$DOTDIR" --work-tree="$HOME" diff --quiet "$dot_was" "$dot" -- \
-          ':/.config/picom.conf' ':/bin/compositor-start' ':/.xinitrc'; then
-    if xenv=$(tr '\0' '\n' < "/proc/$xpid/environ" | grep -E '^(DISPLAY|XAUTHORITY)=') \
-       && env $xenv "$HOME/bin/compositor-start"; then echo "ok    picom setup changed: picom restarted"
-    else echo "note  picom setup changed but picom was not restarted: run ~/bin/compositor-start"; fi
-  fi
-  # A running wallpaper-rotate is the old script until restarted: a change to it restarts it on xmonad's display, so a
-  # new rotation reaches the desktop without a login (Ben 2026-11-08: the Dracula photos, wallpapers/dracula). It finds
-  # its folders at every pick, so wallpapers pulled later in stage 60 join at the next change.
-  if xpid=$(pgrep -u "$USER" -o -x xmonad-x86_64-l) && [[ -x $HOME/.local/bin/wallpaper-rotate ]] \
-     && ! git --git-dir="$DOTDIR" --work-tree="$HOME" diff --quiet "$dot_was" "$dot" -- ':/.local/bin/wallpaper-rotate'; then
-    # || true: fleet-apply runs under set -e and pkill exits 1 when nothing matches. micro runs no rotation, so the
-    # first apply of this block died there (fpush 2026-11-08 ~20:59, Ben -1).
-    pkill -u "$USER" -f '^(/bin/)?sh .*/\.local/bin/wallpaper-rotate$' || true
-    if xenv=$(tr '\0' '\n' < "/proc/$xpid/environ" | grep -E '^(DISPLAY|XAUTHORITY)=') \
-       && env $xenv setsid -f "$HOME/.local/bin/wallpaper-rotate" >/dev/null 2>&1 </dev/null
-    then echo "ok    wallpaper rotation restarted (new wallpaper now)"
-    else echo "note  wallpaper rotation not restarted: run ~/.local/bin/wallpaper-rotate &"; fi
-  fi
+  reload() {
+    local what=$1 when=$2 paths=$3 cmd=$4 done=${5:-$1 reloaded} p out; local -a a=()
+    [[ -z $when ]] || eval "$when" >/dev/null 2>&1 || return 0
+    if [[ -n $paths ]]; then
+      for p in $paths; do a+=(":/$p"); done
+      git --git-dir="$DOTDIR" --work-tree="$HOME" diff --quiet "$dot_was" "$dot" -- "${a[@]}" && return 0
+    fi
+    if out=$(eval "$cmd" 2>&1); then echo "ok    $done${out:+: ${out//$'\n'/; }}"
+    else echo "note  $what: reload failed${out:+ (${out//$'\n'/; })}"; fi
+  }
+  X='[[ -n $xenv ]]'
+  # A running herdr server keeps its old config until told (beast-arch 143). theme-gsettings: the theme keys apps read
+  # through the portal, every apply (fleet 7). handy-settings: Parakeet on super+s, fetches the model once, restarts a
+  # running Handy only on a change (fleet 9). PipeWire, fcitx5, dunst, stalonetray and picom read their config at start
+  # or when told. xmobar never rereads ~/.xmobarrc: an xmonad restart replaces its bars (micro 18). A running
+  # wallpaper-rotate is the old script until restarted.
+  reload herdr        '[[ -n $herdr ]] && pgrep -x herdr' .config/herdr '"$herdr" server reload-config >/dev/null' 'herdr config reloaded'
+  reload theme-gsettings '[[ -x ~/bin/theme-gsettings ]]' '' '~/bin/theme-gsettings >/dev/null' 'theme gsettings applied'
+  reload handy-settings '[[ -x ~/.local/bin/handy-settings ]]' '' '~/.local/bin/handy-settings' 'handy'
+  reload pipewire     'systemctl --user --quiet is-active pipewire.service' .config/pipewire \
+    'systemctl --user restart pipewire.service pipewire-pulse.service wireplumber.service' 'pipewire config changed: pipewire restarted'
+  reload fcitx5       'pgrep -u "$USER" -x fcitx5' .config/fcitx5 'env $bus fcitx5-remote -r >/dev/null' 'fcitx5 config reloaded'
+  reload dunst        'pgrep -u "$USER" -x dunst' .config/dunst 'env $bus dunstctl reload >/dev/null' 'dunst config reloaded'
+  reload xmobar       "$X" .xmobarrc 'env $xenv xmonad --restart' 'xmobar config changed: xmonad restarted, bars reloaded'
+  reload stalonetray  "$X"' && pgrep -u "$USER" -x stalonetray' .stalonetrayrc \
+    'pkill -u "$USER" -x stalonetray; sleep 0.5; env $xenv setsid -f ~/bin/stalonetray-start >/dev/null 2>&1 </dev/null' 'tray config changed: stalonetray restarted'
+  reload picom        "$X"' && [[ -x ~/bin/compositor-start ]]' '.config/picom.conf bin/compositor-start .xinitrc' \
+    'env $xenv ~/bin/compositor-start' 'picom setup changed: picom restarted'
+  reload wallpaper-rotate "$X"' && [[ -x ~/.local/bin/wallpaper-rotate ]]' .local/bin/wallpaper-rotate \
+    "pkill -u \"\$USER\" -f '^(/bin/)?sh .*/\\.local/bin/wallpaper-rotate\$'; env \$xenv setsid -f ~/.local/bin/wallpaper-rotate >/dev/null 2>&1 </dev/null" \
+    'wallpaper rotation restarted (new wallpaper now)'
 fi
 move secrets "${FLEET_SEC_BRANCH:-master}" "$sec" 1 git -C "$SECRETS"
 # git writes a changed file with the umask (644), so the vault turned world-readable on beast-arch when 19a3c2e was
