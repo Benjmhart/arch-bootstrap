@@ -112,7 +112,7 @@ else:              # sata: an AHCI port clear of the CD's; the guest still names
     qemu += ["-drive", f"file={DISK},format=raw,if=none,id=d0",
              "-device", "nvme,drive=d0,serial=rehearsal" if BUS == "nvme" else "ide-hd,drive=d0,bus=ide.2"]
 if PHASE == "canary":   # writes go to a temp file (in WORK, not /var/tmp's root fs) and are dropped at exit
-    qemu += ["-snapshot"]; os.environ["TMPDIR"] = WORK
+    qemu += ["-snapshot"]
 if PHASE in ("install", "convert"):
     k = f"{WORK}/vmlinuz"; i = f"{WORK}/initrd"
     opts = subprocess.run(["bsdtar", "-xOf", ISO, "loader/entries/01-archiso-linux.conf"],
@@ -169,7 +169,7 @@ if (PHASE in ("install", "convert") and SHAPE) or URL == "local" or ROLLBACK not
     HOST = f"http://10.0.2.2:{srv.server_port}"   # QEMU user networking's view of the host
 
 if os.path.exists(SOCK): os.unlink(SOCK)
-vm = subprocess.Popen(qemu, stdout=LOG, stderr=LOG)
+vm = subprocess.Popen(qemu, stdout=LOG, stderr=LOG, env={**os.environ, "TMPDIR": WORK})
 # A crash here must not leave the guest running: it would hold the disk's write lock
 # and the next phase's QEMU would refuse to start ("Failed to get write lock").
 import atexit; atexit.register(lambda: vm.poll() is None and vm.kill())
@@ -246,7 +246,8 @@ if PHASE == "install":
              run(f"curl -fsS {HOST}/shape.sh | sh", 600))
     elif rc == 0:
         step("console=ttyS0 into the installed GRUB (rehearsal-only change)",
-             run("arch-chroot /mnt sh -c \"sed -i 's/^GRUB_CMDLINE_LINUX=\\\"/&console=ttyS0 /' "
+             # both lines: bootstrap's GRUB 10_arch builds its entries from _DEFAULT (fleet 11, 2026-11-10)
+             run("arch-chroot /mnt sh -c \"sed -i -E 's/^(GRUB_CMDLINE_LINUX(_DEFAULT)?=\\\")/\\1console=ttyS0 /' "
                  "/etc/default/grub && grub-mkconfig -o /boot/grub/grub.cfg >/dev/null 2>&1\"", 120))
     send("poweroff"); wait_exit()
 
