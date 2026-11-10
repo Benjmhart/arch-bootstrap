@@ -14,7 +14,7 @@ work=$HOME/.cache/vm-rehearsal
   || { echo "canary: no provisioned guest in $work/uefi-virtio (tests/rehearse-install install, then provision)"; exit 75; }
 git -C "$repo" fetch -q origin && git --git-dir="$HOME/.dot" fetch -q origin || { echo "canary: fetch failed"; exit 1; }
 ab=$(git -C "$repo" rev-parse origin/main) dot=$(git --git-dir="$HOME/.dot" rev-parse origin/master)
-if read -r lab ldot lt lres _ < "$state" 2>/dev/null && [[ $lab == "$ab" && $ldot == "$dot" ]]; then
+if [[ -f $state ]] && read -r lab ldot lt lres _ < "$state" && [[ $lab == "$ab" && $ldot == "$dot" ]]; then
   echo "canary: nothing new since $lt ($lres for ${ab:0:7} / ${dot:0:7})"; exit 0
 fi
 mkdir -p "$OPS" "$(dirname "$state")"
