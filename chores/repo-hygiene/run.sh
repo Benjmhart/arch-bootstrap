@@ -42,8 +42,11 @@ for d in "$HOME"/projects/*/; do
       out "PUSHED $p: $b ($ahead commit(s)) -> $u, now $("${g[@]}" rev-parse --short "$b")"; (( pushed++ ))
     else out "FAILED $p: push of $b -> $u: ${err//$'\n'/ }"; (( attention++ )); fi
   done < <("${g[@]}" for-each-ref --format='%(refname:short) %(upstream:short)' refs/heads)
-  n=$("${g[@]}" ls-files -o --exclude-standard --directory | wc -l)
-  (( n )) && { out "SUGGEST $p: $n untracked path(s), not ignored -- track or .gitignore: $("${g[@]}" ls-files -o --exclude-standard --directory | head -5 | tr '\n' ' ')"; (( suggest++ )); need[$d]+="$n untracked path(s); "; }
+  # git status, not `ls-files -o --directory`: that lists a directory whose only files are ignored (station-maintenance
+  # .claude/ holding the ignored scheduled_tasks.lock, flagged 2026-11-11).
+  untracked=$("${g[@]}" status --porcelain -unormal | sed -n 's/^?? //p')
+  n=$(grep -c . <<<"$untracked")
+  (( n )) && { out "SUGGEST $p: $n untracked path(s), not ignored -- track or .gitignore: $(head -5 <<<"$untracked" | tr '\n' ' ')"; (( suggest++ )); need[$d]+="$n untracked path(s); "; }
   n=$("${g[@]}" status --porcelain -uno | wc -l)
   (( n )) && { out "SUGGEST $p: $n tracked file(s) changed, not committed -- commit or discard: $("${g[@]}" status --porcelain -uno | head -5 | cut -c4- | tr '\n' ' ')"; (( suggest++ )); need[$d]+="$n changed file(s) not committed; "; }
 done
