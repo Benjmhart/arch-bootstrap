@@ -7,6 +7,10 @@ the image lives in Vivaldi's own thumbnail store, not in Preferences, so it cann
 translucency are. The theme is added to vivaldi.themes.user if missing (matched by id) and set as
 vivaldi.theme.schedule.o_s.dark, the theme Vivaldi uses while the system is dark. Nothing else is touched.
 
+2026-11-11 (Ben: the active tab is not highlighted): the official theme gives the window (tab bar) the same colour as the
+accent (active tab and toolbar), #6272a4. This copy darkens the window to Dracula's #191a21, so the active tab stands out.
+It has its own id and no update url, so Vivaldi's theme updates cannot put the old colours back.
+
 VIVALDI MUST BE CLOSED: it rewrites Preferences from memory on exit, so an edit made while it runs is lost. A running
 Vivaldi makes this exit 3 without writing. Exit: 0 written or nothing to do (or no profile), 1 error, 3 Vivaldi running.
 """
@@ -16,10 +20,10 @@ THEME = {
     "accentFromPage": False, "accentOnWindow": False, "accentSaturationLimit": 1, "alpha": 0.87,
     "backgroundImage": "", "backgroundPosition": "stretch", "blur": 10,
     "colorAccentBg": "#6272a4", "colorBg": "#282a36", "colorFg": "#f8f8f2", "colorHighlightBg": "#6590fd",
-    "colorPosition": "", "colorWindowBg": "#6272a4", "contrast": 5, "dimBlurred": True, "engineVersion": 1,
-    "id": "84ab4b62-f96f-42bf-8dba-07a9cb2329cf", "name": "Dracula Official", "preferSystemAccent": False, "radius": 9,
+    "colorPosition": "", "colorWindowBg": "#191a21", "contrast": 5, "dimBlurred": True, "engineVersion": 1,
+    "id": "3f1c6a52-8e0d-4b7e-a2c4-6b1d0f9e7a11", "name": "Dracula (fleet)", "preferSystemAccent": False, "radius": 9,
     "simpleScrollbar": False, "transparencyTabBar": True, "transparencyTabs": False,
-    "url": "https://themes.vivaldi.net/themes/zwnlM3eJO0d/status.json", "version": 4,
+    "url": "", "version": 4,
 }
 
 
