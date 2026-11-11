@@ -254,3 +254,10 @@ man-pages
 maim                  # screenshots for agents checking GUI changes on the real screen (tools/shot; Ben 2026-11-08)
 grim                  # the same under sway
 playerctl             # the play/next/previous keys (dotfiles bin/volume and xmonad/sway keys; fleet 5, Ben 2026-11-09)
+# Moved from pkglist-hardware.txt 2026-11-11: that list is the reference box's, which stage 15 only reports on and never
+# installs, so none of these reached any host between 2026-11-08 and 2026-11-11 (station-maintenance fleet 9/5).
+libva-intel-driver    # video decode on the GPU, older Intel (Ivy Bridge, Haswell) (Ben 2026-11-08) # only: micro,media-center
+intel-media-driver    # video decode on the GPU, Intel Broadwell and newer (Ben 2026-11-08) # only: carbon,surfboard
+libva-utils           # vainfo: check what the GPU decodes
+tlp                   # laptop power saving (Ben 2026-11-08) # only: micro,carbon,surfboard
+tlp-pd                # power profiles over D-Bus (tlpctl), for bin/battery-saver # only: micro,carbon,surfboard
