@@ -1658,56 +1658,20 @@ stage_aur() {
 
   if [[ " ${want[*]} " == *" rambox-pro-bin "* ]]; then
     install_rambox_perms_hook
-    install_rambox_ctrlk_hook
   fi
+  remove_rambox_ctrlk_hook   # every host: micro dropped Rambox but kept the hook files
 }
 
-# Rambox 3.1.0 hard-codes ctrl+k to its Rambox-wide command palette, and forwards
-# every modified keypress from an app's webview to its own window first, so Slack's
-# ctrl+k (jump to conversation) never works. Settings > Shortcuts can only switch
-# shortcut groups on or off, not rebind them. A same-length byte patch of app.asar
-# moves the palette to alt+k (asar is uncompressed; Linux Electron does not check
-# its integrity). Every upgrade replaces app.asar, so a pacman hook re-applies it.
-# Ben, 2026-10-20; station-maintenance beast-arch 110. If a new Rambox no longer
-# has exactly one ["ctrl+k"], the script says so and leaves the file alone. Rambox 3.1.2
-# (2026-10-31) has no +k shortcut at all, so there the script does nothing, silently.
-RAMBOX_CTRLK=/etc/pacman.d/rambox-ctrlk.py
-install_rambox_ctrlk_hook() {
-  put_etc_file "$RAMBOX_CTRLK" "$(cat <<'EOF'
-# Installed by arch-bootstrap (install_rambox_ctrlk_hook); run by hooks/rambox-ctrlk.hook.
-import os, sys
-p = "/opt/rambox/resources/app.asar"
-old, new = b'["ctrl+k"]', b'["alt+k"] '
-try:
-    s = open(p, "rb").read()
-except OSError as e:
-    sys.exit(print("rambox-ctrlk:", e))
-if old not in s:  # already patched, or a Rambox without the palette on ctrl+k (3.1.2 dropped it; 2026-11-11)
-    sys.exit()
-if s.count(old) != 1:
-    sys.exit(print(f"rambox-ctrlk: expected one {old!r}, found {s.count(old)}; app.asar left alone"))
-with open(p + ".tmp", "wb") as f:
-    f.write(s.replace(old, new))
-os.chmod(p + ".tmp", 0o644)
-os.replace(p + ".tmp", p)
-print("rambox-ctrlk: command palette moved from ctrl+k to alt+k")
-EOF
-)" "Rambox ctrl+k patch" || true   # 1 = already in place, not an error (put_etc_file); unguarded it ended stage aur
-  put_etc_file /etc/pacman.d/hooks/rambox-ctrlk.hook "$(cat <<EOF
-[Trigger]
-Operation = Install
-Operation = Upgrade
-Type = Package
-Target = rambox-pro-bin
-
-[Action]
-Description = Giving ctrl+k back to the apps in Rambox (palette on alt+k)
-When = PostTransaction
-Exec = /usr/bin/python3 -I $RAMBOX_CTRLK
-EOF
-)" "Rambox ctrl+k hook" || true
-  # The hook fires on the NEXT transaction; patch the Rambox installed now.
-  [[ -f /opt/rambox/resources/app.asar ]] && run sudo python3 -I "$RAMBOX_CTRLK"
+# Rambox ctrl+k patch, retired 2026-11-11. Rambox 3.1.0 took ctrl+k for its own command palette, so Slack's ctrl+k
+# never worked, and a pacman hook byte-patched app.asar to move the palette to alt+k (Ben 2026-10-20; station-maintenance
+# beast-arch 110). Rambox 3.1.2 (2026-10-31) dropped that palette, and Slack's ctrl+k works unpatched (Ben 2026-11-11).
+# This removes the hook, its script and the 3.1.0 app.asar backup (app.asar.orig) wherever they are left.
+remove_rambox_ctrlk_hook() {
+  local f
+  for f in /etc/pacman.d/hooks/rambox-ctrlk.hook /etc/pacman.d/rambox-ctrlk.py /opt/rambox/resources/app.asar.orig; do
+    [[ -e $f ]] || continue
+    if run sudo rm -f "$f"; then did "removed $f (Rambox ctrl+k patch retired)"; fi
+  done
   return 0
 }
 
