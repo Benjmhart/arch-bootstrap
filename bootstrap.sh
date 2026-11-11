@@ -1669,7 +1669,8 @@ stage_aur() {
 # moves the palette to alt+k (asar is uncompressed; Linux Electron does not check
 # its integrity). Every upgrade replaces app.asar, so a pacman hook re-applies it.
 # Ben, 2026-10-20; station-maintenance beast-arch 110. If a new Rambox no longer
-# has exactly one ["ctrl+k"], the script says so and leaves the file alone.
+# has exactly one ["ctrl+k"], the script says so and leaves the file alone. Rambox 3.1.2
+# (2026-10-31) has no +k shortcut at all, so there the script does nothing, silently.
 RAMBOX_CTRLK=/etc/pacman.d/rambox-ctrlk.py
 install_rambox_ctrlk_hook() {
   put_etc_file "$RAMBOX_CTRLK" "$(cat <<'EOF'
@@ -1681,7 +1682,7 @@ try:
     s = open(p, "rb").read()
 except OSError as e:
     sys.exit(print("rambox-ctrlk:", e))
-if new in s and old not in s:
+if old not in s:  # already patched, or a Rambox without the palette on ctrl+k (3.1.2 dropped it; 2026-11-11)
     sys.exit()
 if s.count(old) != 1:
     sys.exit(print(f"rambox-ctrlk: expected one {old!r}, found {s.count(old)}; app.asar left alone"))
