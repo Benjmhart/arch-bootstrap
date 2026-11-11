@@ -38,7 +38,10 @@ echo "journal-errors $(journalctl -p err --since -1d -q --no-pager 2>/dev/null |
 [ -f "$ops/$h-tailnet-paths.log" ] && echo "tailnet $(grep '^== ' "$ops/$h-tailnet-paths.log" | tail -1 | sed 's/^== //')"
 # smartd logs a failing disk (health, pending/reallocated sectors, self-test errors) at warning or worse (fleet 17)
 if systemctl is-active --quiet smartd 2>/dev/null; then
-  echo "smart $(journalctl -u smartd --since -1d -p warning -q --no-pager -o cat 2>/dev/null | awk '{n++; l=$0} END {print n+0, substr(l, 1, 160)}')"
+  # The distinct warnings, not how often: smartd repeats the same "8 pending sectors" every 30 min, so a count changed
+  # daily and notified every morning (surfboard sdb, 2026-11-11). Same counts = same line = quiet; growth = a new line.
+  w=$(journalctl -u smartd --since -1d -p warning -q --no-pager -o cat 2>/dev/null | sed 's/^Device: //' | sort -u)
+  echo "smart $(grep -c . <<<"$w") $(head -4 <<<"$w" | paste -sd ';' | cut -c1-240)"
 else echo "no-smartd"; fi
 P
 }
@@ -63,7 +66,7 @@ for h in $hosts; do
                       echo "NOTE    $h: last fpush applied $1 ($(( ( $(date +%s) - $(date -d "$1" +%s) ) / 86400 )) days ago)" ;;
       tailnet)        echo "NOTE    $h: tailnet $v" ;;
       no-smartd)      echo "PROBLEM $h: SMART not watched (smartd not running)" ;;
-      smart)          (( ${v%% *} > 0 )) && echo "PROBLEM $h: smartd warned ${v%% *} times in the last day, last: ${v#* }" ;;
+      smart)          (( ${v%% *} > 0 )) && echo "PROBLEM $h: smartd warnings in the last day: ${v#* }" ;;
     esac
   done <<<"$r"
 done
