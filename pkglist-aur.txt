@@ -39,3 +39,7 @@ zoom                                 b5fd0c07c9c69c95928445d69d9d616b1039a3f6   
 # (keymapp depends on it; its rules use group plugdev, so setup_zsa adds a uaccess rule for the seat user instead).
 zsa-udev                             513a62cd8768773ed7ba0b7c3cf0a4ddadd7d3f7   # only: beast-arch
 zsa-keymapp-bin                      a2cddd725473d7becea6291e5aebacc8e8a254cc   # only: beast-arch
+# RTK (Rust Token Killer; Ben 2026-11-11, station-maintenance fleet 21): compresses build/test output before Claude Code
+# sees it, through a PreToolUse hook in the dotfiles' ~/.claude/settings.json. The release binary needs AVX2: on micro
+# (i3-3227U) it dies with SIGILL, so micro has none and the hook passes commands through there.
+rtk-bin                              fc236bf35a183fd7c6619b5d137929900ed1a8f4   # not: micro
