@@ -4244,6 +4244,10 @@ install_browser_search_policy() {
     # chromium-personal too (same browser, other profile).
     put_etc_file "$d/policies/managed/no-password-saving.json" '{ "PasswordManagerEnabled": false }' \
       "no save-password prompts" || true
+    # No "show notifications?" prompts (Ben 2026-11-11: "block all website notifications prompts in vivaldi and
+    # chromium on all machines"). 2 = no site may show notifications and none may ask; locked in the UI.
+    put_etc_file "$d/policies/managed/no-notifications.json" '{ "DefaultNotificationsSetting": 2 }' \
+      "no notification prompts" || true
   done
   # Vimium in Vivaldi, fetched from Google's update service by the browser itself on
   # its next start -- no Web Store visit (task 22). normal_installed: installed and
