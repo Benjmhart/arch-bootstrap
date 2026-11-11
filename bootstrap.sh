@@ -1191,6 +1191,16 @@ CacheDir = $dir/" "pacman cache on /home"; then :; fi
     run sudo sed -i "/^\[options\]/a Include = $f" /etc/pacman.conf || return 1
     did "pacman.conf includes $f"
   fi
+  # paccache.service ships ProtectHome=yes, which hides this cache: "cachedir '/home/pacman-cache/' does not exist", so
+  # the weekly trim failed on every small-root host (micro, media-center, 2026-11-09; station-maintenance fleet 18).
+  # Show it just this directory.
+  if put_etc_file /etc/systemd/system/paccache.service.d/cache-on-home.conf "# Written by arch-bootstrap (pacman_cache_on_home).
+[Service]
+ProtectHome=tmpfs
+BindPaths=$dir" "paccache can see $dir"; then
+    run sudo systemctl daemon-reload || true
+    run sudo systemctl reset-failed paccache.service 2>/dev/null || true
+  fi
   (( DRY_RUN )) && return 0
   # What is still in the old place: packages move over; download-* are leftovers of interrupted downloads.
   if sudo find "$old" -mindepth 1 -maxdepth 1 \( -type f -o -name 'download-*' \) -print -quit | grep -q .; then
@@ -3150,6 +3160,9 @@ handy_restart_running() {
   pid=$(pgrep -u "$USER" -o -x handy) || return 0
   env=$(tr '\0' '\n' < "/proc/$pid/environ" | grep -E '^(DISPLAY|XAUTHORITY|WAYLAND_DISPLAY|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS)=') \
     || { warn "Handy pid $pid has no DISPLAY -- restart it by hand"; return 0; }
+  # Its WebKit children first: left behind when Handy goes, they abort (SIGABRT), and on micro the two core dumps
+  # outran systemd-coredump's 5 minutes, failing two units (2026-11-10 23:49; station-maintenance fleet 18).
+  pkill -TERM -P "$pid" 2>/dev/null || true
   kill "$pid" 2>/dev/null || true
   while kill -0 "$pid" 2>/dev/null && (( i++ < 50 )); do sleep 0.1; done
   sleep 1  # xmonad --restart re-execs; let the new one take its grabs first
