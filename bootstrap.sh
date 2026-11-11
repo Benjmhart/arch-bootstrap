@@ -4702,6 +4702,22 @@ MatchDMIModalias=dmi:*svnLENOVO:*pvrThinkPadX131e:*
 AttrPressureRange=56:54" "touchpad pressure threshold for the ThinkPad X131e (next X/sway start)" || true
 }
 
+# micro's ThinkPad X131e: F8/F9 carry the brightness icons but send plain F8/F9 (Fn+F8/F9 send nothing; 2026-11-08).
+# .xinitrc remapped them with xmodmap, but a keyboard plugged in later (a YubiKey is one) resets the X keymap, and F8
+# typed "~" in the terminal (Ben 2026-11-11). Remapped in the kernel's keymap instead: scancodes 0x42/0x43 become
+# KEY_BRIGHTNESSDOWN/UP for the built-in keyboard, so X, sway and the console all see brightness keys and no hotplug can
+# undo it. Inert on any other model. Applied at once (hwdb update + a change event on the input devices).
+setup_x131e_brightness_keys() {
+  if put_etc_file /etc/udev/hwdb.d/90-x131e-brightness.hwdb \
+"# Written by arch-bootstrap (setup_x131e_brightness_keys). Edit bootstrap.sh, not this file.
+evdev:atkbd:dmi:bvn*:bvr*:bd*:svnLENOVO*:pn*:pvrThinkPadX131e:*
+ KEYBOARD_KEY_42=brightnessdown
+ KEYBOARD_KEY_43=brightnessup" "F8/F9 as brightness keys on the ThinkPad X131e" && (( ! DRY_RUN )); then
+    run sudo systemd-hwdb update || warn "systemd-hwdb update failed"
+    run sudo udevadm trigger --subsystem-match=input --action=change || warn "udevadm trigger failed"
+  fi
+}
+
 # Host firewall (beast-arch task 76, 2026-10-03): none was active on beast-arch,
 # carbon or micro. Inbound is dropped except loopback, the tailnet (tailscale0 --
 # the tailnet policy is the access control there), docker's bridges, ICMP,
@@ -5924,6 +5940,7 @@ stage_services() {
   setup_tlp
   setup_caps_escape
   setup_touchpad_quirks
+  setup_x131e_brightness_keys
   setup_firewall
   disable_llmnr
   set_wireless_regdom
