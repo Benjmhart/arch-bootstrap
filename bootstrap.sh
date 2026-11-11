@@ -4931,6 +4931,21 @@ setup_encrypted_swap() {
 # bootstrap never encrypts a drive; it only writes the line when header and key are there.
 # They are backed up, age -p encrypted, in $SECRETS_DIR/luks/<host>.tar.gz.age as volume keys
 # plus restore.sh, which rebuilds the headers (steps in $SECRETS_DIR/luks/README).
+# FlareSolverr for Jackett's Cloudflare-protected indexers (profile media-center; Jackett points at 127.0.0.1:8191).
+# The official container, not the PyInstaller bundle: that one shipped its own NSS libraries, which clashed with the
+# system's nss and made its Chrome abort ~50 times a day (station-maintenance media-center 9, 2026-11-10). The container
+# was first started by hand on 2026-11-10 (:latest = v3.5.2); this recreates it on a rebuild and leaves an existing one
+# alone. Docker restarts it at boot (unless-stopped).
+FLARESOLVERR_IMAGE=ghcr.io/flaresolverr/flaresolverr:v3.5.2
+setup_flaresolverr() {
+  profile_on media-center && have docker || return 0
+  if docker inspect flaresolverr >/dev/null 2>&1; then ok "flaresolverr container present"; return 0; fi
+  if (( DRY_RUN )); then info "(dry run) would start the flaresolverr container ($FLARESOLVERR_IMAGE)"; return 0; fi
+  if run docker run -d --name flaresolverr --restart unless-stopped -p 127.0.0.1:8191:8191 -e LOG_LEVEL=info \
+       "$FLARESOLVERR_IMAGE" >/dev/null; then did "flaresolverr container started on 127.0.0.1:8191"
+  else warn "flaresolverr container did not start"; fi
+}
+
 setup_media_drives() {
   [[ -n $MEDIA_DRIVES ]] || return 0
   [[ -r /etc/fstab ]] || { warn "/etc/fstab is not readable -- media drives not added"; return 0; }
@@ -5947,6 +5962,7 @@ stage_services() {
   set_wireless_regdom
   setup_encrypted_swap
   setup_media_drives
+  setup_flaresolverr
   setup_castiron
   configure_earlyoom
   configure_smartd
