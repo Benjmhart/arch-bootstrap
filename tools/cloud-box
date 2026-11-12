@@ -342,15 +342,27 @@ create() {
   wait_action "$(api POST "servers/$sid/actions/poweron" | jq -r .action.id)"
   printf 'cloud-box-%s-initramfs %s\n' "$name" "$ik" > "$ct/kh"
   echo "first boot of $name: unlocking its disk (the passphrase is typed for you)"
-  UNLOCK_ADDR=$ip UNLOCK_KNOWN_HOSTS=$ct/kh UNLOCK_DISK=$pass UNLOCK_KEY=${extra%.pub} "$here/unlock" "$name" \
-    || echo "WARN: the unlock session ended with an error; checking whether $name came up anyway"
+  # Up to 3 tries: a slow PIN or touch lets the initramfs drop the login, and with no record yet `cloud-box unlock` cannot
+  # retry later (lukstest, 2026-11-11). Only the initramfs key answering, 15 s on, means it is still at its disk prompt.
+  local try
+  for try in 1 2 3; do
+    UNLOCK_ADDR=$ip UNLOCK_KNOWN_HOSTS=$ct/kh UNLOCK_DISK=$pass UNLOCK_KEY=${extra%.pub} "$here/unlock" "$name" && break
+    sleep 15
+    [[ $(ssh-keyscan -T 5 -t ed25519 "$ip" 2>/dev/null | awk '$1 !~ /^#/ {print $2, $3}') == "$ik" ]] || break
+    (( try < 3 )) && echo "WARN: $name is still at its disk prompt (try $try of 3): again -- PIN and touch promptly"
+  done
   unset pass volpass
 
   echo "waiting for $name's own ssh host keys..."
   # The host keys as seen now, pinned from here on (cloud-init makes them before sshd starts; checked again below).
   # The initramfs's key is not one of them: it may still answer for a moment after the unlock.
   hk=""; for _ in $(seq 60); do hk=$(ssh-keyscan -T 5 "$ip" 2>/dev/null | awk '$1 !~ /^#/ && NF == 3 {print "hostkey", $2, $3}' | sort -u | grep -vxF "hostkey $ik" || true); [[ -n $hk ]] && break; sleep 5; done
-  [[ -n $hk ]] || die "no ssh host key from $ip in 5 min (still at its disk prompt? cloud-box unlock needs its record); server $name ($sid) and volume $vol stay: cloud-box delete $name"
+  if [[ -z $hk ]]; then
+    # At its disk prompt nothing is mounted, and the initramfs ignores an ACPI shutdown, so `delete` (which has no record
+    # to recognise the prompt by) would time out: power it off here.
+    wait_action "$(api POST "servers/$sid/actions/poweroff" | jq -r .action.id)" || true
+    die "no ssh host key from $ip in 5 min (left at its disk prompt; powered off); server $name ($sid) and volume $vol stay: cloud-box delete $name; cloud-box delete-volume $vol"
+  fi
   out=$rec/$name; [[ $(uname -n) == micro ]] && out=$(mktemp)
   mkdir -p "${out%/*}"
   printf '%s\n' "# cloud-box record (arch-bootstrap tools/cloud-box). bootstrap.sh stage services writes ~/.ssh/config from it." \
