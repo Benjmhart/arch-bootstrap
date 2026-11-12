@@ -50,12 +50,15 @@ run=(); if [[ -n $disk ]]; then export UNLOCK_DISK=$disk; run=(python3 -c "$inje
 if [[ -n ${UNLOCK_ADDR:-} || -f $cbrec ]]; then
   addr=${UNLOCK_ADDR:-$(awk '$1 == "ipv4" {print $2; exit}' "$cbrec")}
   echo "waiting for $host's initramfs at $addr ..."
+  kh=${UNLOCK_KNOWN_HOSTS:-$HOME/.ssh/known_hosts.cloud-box}
+  # Wait for the pinned initramfs key itself, not just an open :22: right after `sudo systemctl reboot` the box's own
+  # sshd still answers, and connecting then fails host-key verification (lukstest, 2026-11-11).
+  ik=$(ssh-keygen -F "cloud-box-$host-initramfs" -f "$kh" 2>/dev/null | awk '$1 !~ /^#/ {print $2, $3; exit}')
   deadline=$(( SECONDS + ${UNLOCK_WAIT:-180} )); while (( SECONDS < deadline )); do
-    if timeout 3 bash -c "</dev/tcp/$addr/22" 2>/dev/null; then
+    if [[ -n $ik && $(ssh-keyscan -T 3 -t "${ik%% *}" "$addr" 2>/dev/null | awk '$1 !~ /^#/ {print $2, $3; exit}') == "$ik" ]]; then
       echo "connecting to $host's initramfs ($addr): touch your YubiKey when it blinks"
       exec "${run[@]}" ssh -F /dev/null -t "${keys[@]}" -o IdentitiesOnly=yes -o IdentityAgent=none -o ConnectTimeout=10 \
-        -o HostKeyAlias="cloud-box-$host-initramfs" -o StrictHostKeyChecking=yes \
-        -o UserKnownHostsFile="${UNLOCK_KNOWN_HOSTS:-$HOME/.ssh/known_hosts.cloud-box}" "root@$addr"
+        -o HostKeyAlias="cloud-box-$host-initramfs" -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$kh" "root@$addr"
     fi
     sleep 2
   done
