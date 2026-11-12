@@ -266,6 +266,7 @@ tlp-pd                # power profiles over D-Bus (tlpctl), for bin/battery-save
 asciiquarium
 nyancat
 cmatrix
+astroterm             # the starfield toy (Ben 2026-11-12)
 kitty
 wezterm
 ghostty               # needs OpenGL 4.3: micro's Ivy Bridge HD 4000 has 4.2 # not: micro
