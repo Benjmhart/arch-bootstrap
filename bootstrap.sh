@@ -1752,6 +1752,14 @@ stage_toolchains() {
       run rustup default stable
       did "rust: default set to stable"
     fi
+    # rust-analyzer for Claude Code's rust-analyzer-lsp plugin (dotfiles .claude/settings.json; Ben 2026-11-11).
+    if rustup component list --installed 2>/dev/null | grep -q '^rust-analyzer'; then
+      ok "rust: rust-analyzer present"
+    elif run rustup component add rust-analyzer; then
+      did "rust: rust-analyzer added to the default toolchain"
+    else
+      warn "rust: rust-analyzer could not be added"
+    fi
   else
     warn "rustup missing -- did stage 10 run?"
   fi
