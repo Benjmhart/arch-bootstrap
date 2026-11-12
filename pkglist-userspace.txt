@@ -261,3 +261,14 @@ intel-media-driver    # video decode on the GPU, Intel Broadwell and newer (Ben 
 libva-utils           # vainfo: check what the GPU decodes
 tlp                   # laptop power saving (Ben 2026-11-08) # only: micro,carbon,surfboard
 tlp-pd                # power profiles over D-Bus (tlpctl), for bin/battery-saver # only: micro,carbon,surfboard
+# The showcase's rotating toy pane (rice-show; cbonsai is in pkglist-aur.txt) and terminals/TUIs to try, none of them
+# the default terminal (Ben 2026-11-12, station-maintenance fleet 9).
+asciiquarium
+nyancat
+cmatrix
+kitty
+wezterm
+ghostty               # needs OpenGL 4.3: micro's Ivy Bridge HD 4000 has 4.2 # not: micro
+catimg                # images as terminal colour blocks
+kew                   # local music player in the terminal
+spotify-player        # Spotify in the terminal (spotify-tui is abandoned; needs Premium)
