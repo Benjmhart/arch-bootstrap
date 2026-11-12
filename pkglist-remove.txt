@@ -12,8 +12,9 @@ mpv-shim-default-shaders
 python-pystray
 # Off micro only (Ben 2026-11-06, station-maintenance micro 17: its 32G root); pkglist-aur.txt has them "# not: micro".
 zoom          # only: micro
-lightworks    # only: micro
+lightworks    # unused (Ben 2026-11-12); off micro since 2026-11-06
 rambox-pro-bin   # only: micro
 # plymouth: tried as the boot screen 2026-11-07, retired the same day (station-maintenance carbon 12).
 plymouth
 cbatticon             # battery on xmobar instead (dotfiles 6a1cdd0; Ben 2026-11-08)
+i3lock-color          # xsecurelock is the lock on every machine since 2026-11-04 (Ben 2026-11-12)

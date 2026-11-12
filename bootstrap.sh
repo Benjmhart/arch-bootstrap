@@ -1139,7 +1139,7 @@ ${pkgs:+IgnorePkg = $pkgs}"
 
 # host_pkgs FILE...: the package names in package lists, minus lines ending "# only: host[,host]" that do
 # not name this machine (steam and the Stream Deck: beast-arch alone), and lines ending "# not: host[,host]" that do
-# (zoom, lightworks, rambox: not on micro, Ben 2026-11-06).
+# (zoom, rambox: not on micro, Ben 2026-11-06).
 host_pkgs() {
   awk -v h="$(uname -n)" '!/^[[:space:]]*(#|$)/ {
       if (match($0, /# *only: *[^#]*/)) { n = split(substr($0, RSTART, RLENGTH), w, /[:, \t]+/); ok = 0
@@ -1622,13 +1622,8 @@ stage_aur() {
     [[ " ${want[*]} " == *" $name "* ]] || continue
     # Already moved with another package of its build (aur_build_pinned installs the siblings together).
     if [[ $(pacman -Q "$name" 2>/dev/null | cut -d' ' -f2) == "$ver" ]]; then ok "$name $ver (installed with its build)"; n=$((n + 1)); continue; fi
-    # i3lock-color replaces i3lock (station-maintenance beast-arch 88). Both own /usr/bin/i3lock, and
-    # pacman -U --noconfirm answers the "remove i3lock?" conflict No, so remove it first. Its
-    # /etc/pam.d/i3lock goes with it (.pacsave); stage 60's setup_yubikey re-adds pam_u2f to the new one.
-    if [[ $name == i3lock-color ]] && pacman -Q i3lock >/dev/null 2>&1; then
-      run sudo pacman -Rdd --noconfirm i3lock
-    fi
-    # Same for surfboard's legacy NVIDIA driver: stage 10's nvidia-prime depends on nvidia-utils, so pacman pulls
+    # pacman -U --noconfirm answers a "remove <conflicting package>?" question No, so remove it first.
+    # Surfboard's legacy NVIDIA driver: stage 10's nvidia-prime depends on nvidia-utils, so pacman pulls
     # the current 615 build, which conflicts with nvidia-580xx-utils (fpush 2026-10-23 18:14). The 580xx package
     # provides nvidia-utils, vulkan-driver, opengl-driver and nvidia-libgl, so every dependent stays satisfied.
     if [[ $name == nvidia-580xx-utils && $(pacman -Qq nvidia-utils 2>/dev/null) == nvidia-utils ]]; then   # -Q also matches providers
@@ -3755,7 +3750,7 @@ theme_launcher_icons() {
     done
   done
   mkdir -p "$apps"
-  for pair in lightworks:lightworks xgps:gpsd-logo xgpsspeed:gpsd-logo streamdeck-ui:input-tablet wiremix:pavucontrol \
+  for pair in xgps:gpsd-logo xgpsspeed:gpsd-logo streamdeck-ui:input-tablet wiremix:pavucontrol \
               xdvi:okular; do
     name=${pair%%:*} target=${pair#*:} f=/usr/share/applications/${pair%%:*}.desktop
     [[ -f $f ]] && grep -v '^Icon=' "$f" | sed "/^\[Desktop Entry\]/a Icon=$target" >"$apps/$name.desktop"
@@ -5216,7 +5211,7 @@ ACTION=="add|change", SUBSYSTEM=="usb|hidraw", ATTRS{idVendor}=="3297", TAG+="ua
 #    No PIN: whoever reaches sudo is already logged in. A guard skips the key, straight to the
 #    password, when sudo reads a pipe (sudo -S: fleet push, scripts) or runs under ssh, where
 #    the key is at the other end; otherwise it would wait out a touch nobody can give.
-#  - screen lock (i3lock) by touch: Enter, then touch; the password when no key is plugged in.
+#  - screen lock (xsecurelock) by touch: Enter, then touch; the password when no key is plugged in.
 #  - tty login: the password only since 2026-11-07 (touch OR password from 11-01, beast-arch 133). A touch login
 #    left gnome-keyring locked, since it unlocks from the typed password.
 #  - sudo over ssh by a touch at the CLIENT (beast-arch 133): micro, beast-arch and carbon run a second ssh-agent
@@ -5316,10 +5311,7 @@ auth		sufficient	$u2f
 auth		include		system-local-login
 account		include		system-local-login" "xsecurelock: YubiKey touch, password fallback" || true
   fi
-  # Screen lock (Ben, 2026-10-16): Enter then touch; with no key plugged in pam_u2f fails at once and
-  # the typed password is checked. No guard: i3lock is always local.
-  [[ -f /etc/pam.d/i3lock ]] && pam_prepend /etc/pam.d/i3lock "screen lock: YubiKey touch, password fallback" "auth\t\tsufficient\t$u2f"
-  # The same for swaylock, the sway session's locker (station-maintenance beast-arch 44).
+  # Touch or password for swaylock, the sway session's locker (station-maintenance beast-arch 44).
   [[ -f /etc/pam.d/swaylock ]] && pam_prepend /etc/pam.d/swaylock "sway screen lock: YubiKey touch, password fallback" "auth\t\tsufficient\t$u2f"
   return 0
 }
