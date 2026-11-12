@@ -23,6 +23,8 @@ out "# repo-hygiene $host $(date -Is). PUSHED/HELD/DIVERGED/FAILED = acted on; S
 # 1. ~/projects/*: push what is ahead; suggest repos, upstreams, tracking.
 for d in "$HOME"/projects/*/; do
   d=${d%/}; p=${d/#$HOME/\~}
+  # A folder Ben keeps out of git on purpose carries a .not-a-repo marker (beast-arch 134, 2026-11-11).
+  [[ ! -e $d/.git && -e $d/.not-a-repo ]] && continue
   if [[ ! -e $d/.git ]]; then
     out "SUGGEST $p: not a git repository ($(du -sh "$d" 2>/dev/null | cut -f1), last change $(find "$d" -type f -printf '%TY-%Tm-%Td\n' 2>/dev/null | sort | tail -1)) -- make it a repo, or move it out of ~/projects"
     (( suggest++ )); continue
