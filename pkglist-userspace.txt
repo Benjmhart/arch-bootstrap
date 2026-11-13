@@ -243,6 +243,9 @@ libretro-melonds           # only: surfboard
 # adb/fastboot + udev rules, beast-arch only: phones are flashed from here (station-maintenance beast-arch 112).
 android-tools         # only: beast-arch
 android-udev          # only: beast-arch
+# zsa-udev from extra, not the AUR: the AUR pin (1-1) is older than extra's, so every -Syu upgraded it and the AUR
+# stage downgraded it back, a udev reload each fpush since 2026-11-01. Rules use group plugdev; setup_zsa adds uaccess.
+zsa-udev              # only: beast-arch
 # scrcpy: the Pixel 5 as a microphone (station-maintenance beast-arch 115).
 scrcpy                # only: beast-arch
 hyperfine             # command timing (Ben 2026-11-08)
