@@ -1578,9 +1578,30 @@ espanso_wayland_install() {  # <espanso-wayland .pkg.tar.zst> <version>
   did "espanso Wayland build $2 at $ESPANSO_WL/espanso"
 }
 
+# ascii-rain (`rain`, a toy in dotfiles rice-show; Ben 2026-11-12), built from one pinned upstream commit into
+# ~/.local/bin. Not the AUR's ascii-rain-git: a -git PKGBUILD builds upstream HEAD and names the version after it
+# (r11.39396de), so it never matched its pin (r4.72ad7b3) and failed stage aur on micro's first fpush with it.
+# rain.c read at this commit: curses and signals only, no file, network or process calls.
+ASCII_RAIN_URL=https://github.com/nkleemann/ascii-rain.git
+ASCII_RAIN_COMMIT=39396dea0a84b4580f0ee5f46de9de4468566ed0
+setup_ascii_rain() {
+  local bin=$HOME/.local/bin/rain stamp=$HOME/.local/share/ascii-rain.commit tmp
+  if [[ -x $bin && $(cat "$stamp" 2>/dev/null) == "$ASCII_RAIN_COMMIT" ]]; then ok "ascii-rain at ${ASCII_RAIN_COMMIT:0:7}"; return 0; fi
+  if (( DRY_RUN )); then info "(dry run) would build ascii-rain ${ASCII_RAIN_COMMIT:0:7} into $bin"; return 0; fi
+  tmp=$(mktemp -d)
+  if git clone -q "$ASCII_RAIN_URL" "$tmp" && git -C "$tmp" checkout -q "$ASCII_RAIN_COMMIT" && mkdir -p "${bin%/*}" "${stamp%/*}" \
+     && gcc -O2 -o "$bin" "$tmp/rain.c" -lncurses; then
+    echo "$ASCII_RAIN_COMMIT" > "$stamp"; did "ascii-rain ${ASCII_RAIN_COMMIT:0:7} built into $bin"
+  else
+    warn "ascii-rain did not build"
+  fi
+  rm -rf "$tmp"
+}
+
 stage_aur() {
   stage_banner "20 aur"
   ensure_root_space
+  setup_ascii_rain
 
   # makepkg needs base-devel (fakeroot, debugedit). It is in pkglist-userspace.txt
   # since 2026-09-30; before that the script assumed pacstrap had installed it, and
