@@ -39,6 +39,20 @@ bar() {
 # bar_clear: wipe the bar's line before printing something else mid-wait.
 bar_clear() { { printf '\r\e[K' >/dev/tty; } 2>/dev/null; }
 
+# ci_idle_wait: call before restarting docker or rebooting a machine with CI runners (beast-arch, surfboard). It
+# waits while a job runs here: a GitHub Actions job (Runner.Worker) or a GitLab one (docker container runner-*). A
+# docker restart SIGKILLs the job's container 10 s later (exit 137): trstn's tests job on surfboard, 2026-11-14 08:31,
+# from $OPS/surfboard-kernel-modules-20261114.sh. ponytail: no lock, so a job picked up between the check and the
+# restart can still die; stop the runner services first if that ever bites.
+ci_idle_wait() {
+  local waited=0
+  while pgrep -x Runner.Worker >/dev/null || [[ -n $(docker ps -q --filter name=^runner- 2>/dev/null) ]]; do
+    (( waited++ )) || attn "a CI job is running on $(uname -n): waiting for it to finish (checked every 10 s)"
+    sleep "${CI_IDLE_POLL:-10}"
+  done
+  (( waited )) && ok "no CI job running on $(uname -n) any more"; return 0
+}
+
 # --- 1. the names ---------------------------------------------------------------------------------------------------
 declare -A SECRET_NAMES=(
   [login]="login password (user ben: sudo and the keyring; the same on every machine)"

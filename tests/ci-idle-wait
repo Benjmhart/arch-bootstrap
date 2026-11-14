@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# tests/ci-idle-wait: lib/ops.sh ci_idle_wait waits while a CI job runs (a stub pgrep says Runner.Worker runs for the
+# first 2 checks, a stub docker lists a runner-* container on the 3rd), then returns.
+set -u
+t=$(mktemp -d); trap 'rm -rf "$t"' EXIT; mkdir "$t/bin"; echo 0 > "$t/n"
+printf '#!/bin/bash\nn=$(<%s/n); echo $((n+1)) > %s/n; ((n < 2))\n' "$t" "$t" > "$t/bin/pgrep"
+printf '#!/bin/bash\n(( $(<%s/n) == 3 )) && echo abc123; true\n' "$t" > "$t/bin/docker"
+chmod +x "$t/bin/"*
+out=$(PATH=$t/bin:$PATH CI_IDLE_POLL=0 bash -c '. lib/ops.sh; ci_idle_wait' 2>&1); rc=$?
+n=$(<"$t/n")
+[[ $rc == 0 && $n == 4 && $out == *"waiting for it to finish"* && $out == *"no CI job running"* ]] \
+  && echo "ok: waited through 3 busy checks, returned on the 4th" || { echo "FAIL: rc=$rc checks=$n"; echo "$out"; exit 1; }
+out=$(PATH=$t/bin:$PATH bash -c '. lib/ops.sh; ci_idle_wait' 2>&1)
+[[ -z $out ]] && echo "ok: idle machine, silent" || { echo "FAIL idle: $out"; exit 1; }
