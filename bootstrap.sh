@@ -2231,24 +2231,58 @@ install_npm_globals() {
 # their upstream and updated in place. Installing them here rather than committing
 # them to a dotfiles repo keeps a self-updating binary from leaving the repo
 # permanently dirty, and keeps the repo from carrying a large blob per version.
+# herdr older than the pin (station-maintenance fleet 26, Ben 2026-11-13: "update herdr everywhere with the next
+# fpush with any graceful handling you need"). With a server running: wait until no agent is working (up to 5 min),
+# then `herdr update --handoff`, which carries panes and their processes to the new server (rehearsed on beast-arch
+# and surfboard; agents keep running). Still busy after 5 min: left for the next run. herdr finds its servers by user,
+# not $HOME, so this acts on every running session of this user.
+herdr_update() {
+  local cur=$1 ver=$2 busy=0 i
+  if ! herdr status server 2>/dev/null | grep -q '^status: running'; then
+    run herdr update && did "herdr $cur -> $(herdr --version 2>/dev/null | awk '{print $2}')"
+    return 0
+  fi
+  for (( i = 0; i < 30; i++ )); do
+    busy=$(herdr agent list 2>/dev/null | python3 -c 'import json,sys; print(sum(a.get("agent_status") == "working" for a in json.load(sys.stdin)["result"]["agents"]))' 2>/dev/null || echo 0)
+    (( busy == 0 || DRY_RUN )) && break
+    (( i )) || info "herdr $cur -> $ver: waiting for $busy working agent(s) to finish (up to 5 min)"
+    sleep 10
+  done
+  if (( busy && ! DRY_RUN )); then
+    warn "herdr $cur -> $ver: $busy agent(s) still working after 5 min -- not updated; next run, or 'herdr update --handoff'"
+    return 0
+  fi
+  if run herdr update --handoff; then
+    did "herdr $cur -> $(herdr --version 2>/dev/null | awk '{print $2}'), live handoff (reattach clients with 'herdr')"
+  else
+    warn "herdr update --handoff failed -- left at $cur"
+  fi
+  return 0
+}
+
 install_self_distributed_binaries() {
   # herdr -- terminal multiplexer. Referenced by xmonad's startup hook
   # (spawnOnOnce "2" "alacritty -e herdr"), so a machine without it fails at login
   # with "command not found".
   # Pinned: the release publishes no checksum or attestation, so the sha256 here is
-  # the only integrity check (task 76). Bump both together; `herdr update` moves an
-  # installed copy past this pin, which only governs the first install.
-  local ver=0.9.3 arch sum asset
+  # the only integrity check (task 76). Bump both together. An installed copy older
+  # than the pin is brought up to herdr's latest by herdr_update below (fleet 26);
+  # `herdr update` may also move it past the pin at any time.
+  local ver=0.9.5 arch sum asset
   case "$(uname -m)" in
-    x86_64)         arch=linux-x86_64;  sum=18a8dc65f1c2fa485884344356dea1cfd911c6f06cf46fa78e193f4087f4dba7 ;;
-    aarch64|arm64)  arch=linux-aarch64; sum=4de7aa3e25678812e92960de64f7c2aaa1bca1f0f80a3c5e559837e231e1f5c0 ;;
+    x86_64)         arch=linux-x86_64;  sum=14d9e8bc8b4a9e0118d77c32266f76d461f09b40342eb23752960bd89f59929d ;;
+    aarch64|arm64)  arch=linux-aarch64; sum=17d7536f2da50859523680ef279dffcac8e4a235f4e46fe8da6c2ec44141897c ;;
     *) warn "no herdr build for $(uname -m) -- skipping"; return 0 ;;
   esac
   asset="https://github.com/herdrdev/herdr/releases/download/v$ver/herdr-$arch"
 
   if have herdr; then
-    ok "herdr present ($(herdr --version 2>/dev/null | head -1))"
-    info "it self-updates: run 'herdr update' when you want a newer build"
+    local cur; cur=$(herdr --version 2>/dev/null | awk '{print $2}')
+    if [[ -n $cur && $(printf '%s\n' "$ver" "$cur" | sort -V | head -1) == "$ver" ]]; then
+      ok "herdr $cur (pin $ver)"
+    else
+      herdr_update "$cur" "$ver"
+    fi
     return 0
   fi
 
