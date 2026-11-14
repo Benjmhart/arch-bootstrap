@@ -2991,6 +2991,15 @@ stage_tailnet() {
       attention "deploy key for ${dk_line%%:*} doesn't work on $(uname -n) (GitHub hasn't accepted it): tools/deploy-keys register on beast-arch"
     done <<<"$dk_out"
   fi
+  # Only GITHUB_ACCOUNT_HOSTS may reach GitHub as the account; every other machine pushes with per-repo deploy keys
+  # (Ben 2026-11-14: "only beast and micro should have account keys (carbon can have one for gitlab)").
+  if [[ " ${GITHUB_ACCOUNT_HOSTS:-beast-arch micro} " != *" $(uname -n) "* ]]; then
+    local gh_who
+    gh_who=$(ssh -o BatchMode=yes -o ConnectTimeout=8 -T git@github.com 2>&1 | grep -o 'Hi [^!]*' | cut -c4-) || true
+    if [[ -n $gh_who && $gh_who != */* ]]; then
+      attention "$(uname -n) reaches GitHub as the account ($gh_who): only ${GITHUB_ACCOUNT_HOSTS:-beast-arch micro} may; take its key off github.com (per-repo deploy keys only)"
+    fi
+  fi
 
   # 3b. Publish this machine's public key to the secrets repo, for the others to read.
   # The peer key only. A changed key is swapped into every peer's tracked file in place (from= kept), so their
