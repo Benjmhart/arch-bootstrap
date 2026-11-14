@@ -1560,7 +1560,19 @@ aur_build_pinned() {
   # PACMAN_AUTH=sudo: makepkg's default is `sudo -k`, which throws the cached credential away, so every
   # package with missing dependencies asked for the password again. Unanswered, each prompt timed out after
   # 5 minutes and three tripped faillock (surfboard, 2026-10-22, journal: `sudo -k /usr/bin/pacman --asdeps`).
-  if ( cd "$tmp/$base" && PACMAN_AUTH=sudo makepkg -s --noconfirm ); then
+  # A signed source (validpgpkeys: eww's git commit, Ben 2026-11-14) is verified, never skipped: the keys the pinned
+  # PKGBUILD names are fetched by fingerprint into a keyring of their own (not the user's), kept between builds.
+  local gh="" k; local -a fprs=()
+  mapfile -t fprs < <(cd "$tmp/$base" && makepkg --printsrcinfo 2>/dev/null | awk '$1 == "validpgpkeys" {print $3}')
+  if (( ${#fprs[@]} )); then
+    gh="${XDG_CACHE_HOME:-$HOME/.cache}/aur-pin/gnupg"; mkdir -p "$gh"; chmod 700 "$gh"
+    for k in "${fprs[@]}"; do
+      GNUPGHOME=$gh gpg -q --list-keys "$k" >/dev/null 2>&1 \
+        || GNUPGHOME=$gh gpg -q --keyserver hkps://keyserver.ubuntu.com --recv-keys "$k" \
+        || warn "$name: cannot fetch PGP key $k (makepkg will refuse the source)"
+    done
+  fi
+  if ( cd "$tmp/$base" && env ${gh:+GNUPGHOME="$gh"} PACMAN_AUTH=sudo makepkg -s --noconfirm ); then
     # <name>, plus every package of the same build that is already installed: a split pkgbase whose halves pin each
     # other's exact version (nvidia-580xx-utils/-dkms) can only move in one transaction. Alone, each broke the
     # other's dependency and surfboard kept 580.178 beside a 580.196 lib32 (fpush 2026-10-31).
