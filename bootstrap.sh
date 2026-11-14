@@ -1987,9 +1987,11 @@ install_herdr_integrations() {
 # Benjmhart/herdr-folders (Ben's own, published 2026-11-01): python3 only, but rides the cargo gate below with navigator.
 # Benjmhart/herdr-queues (Ben's own, 2026-11-13, station-maintenance fleet 25; was herdr-streams until 2026-11-14):
 # python3 only, same. Its jumps across machines also need `herdr-queues watch` (dotfiles, started by xmonad/sway).
+# Benjmhart/herdr-theoldinout (Ben's own, 2026-11-14, station-maintenance fleet 29): python3 only, same. vim's jump list
+# across machines; its daemon is `herdr-oldinout` (dotfiles, started by xmonad/sway).
 # kryptamine/herdr-auto-title (Ben 2026-11-13: "auto title tab names are ok for now, get them on the other machines";
 # fleet 24): names tabs and panes after what runs in them. Its build step downloads the release binary and checks its sha256.
-HERDR_PLUGINS="${HERDR_PLUGINS:-thanhdat77/herdr-navigator Benjmhart/herdr-folders Benjmhart/herdr-queues kryptamine/herdr-auto-title}"
+HERDR_PLUGINS="${HERDR_PLUGINS:-thanhdat77/herdr-navigator Benjmhart/herdr-folders Benjmhart/herdr-queues Benjmhart/herdr-theoldinout kryptamine/herdr-auto-title}"
 YAZI_PLUGINS="${YAZI_PLUGINS:-yazi-rs/plugins:smart-enter ndtoan96/ouch Rolv-Apneseth/starship yazi-rs/flavors:dracula}"
 install_tui_plugins() {
   local repo tag p
