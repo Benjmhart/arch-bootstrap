@@ -294,6 +294,8 @@ stage_banner() {
 ok()    { printf '%s  ok  %s %s\n' "$C_GRN" "$C_RESET" "$*"; }
 info()  { printf '%s  --  %s %s\n' "$C_DIM" "$C_RESET" "$*"; }
 warn()  { printf '%s warn %s %s\n' "$C_YEL" "$C_RESET" "$*" >&2; }
+# attention: a problem only Ben can clear. fpush lists every one at the end of its run, even on a machine that succeeded.
+attention() { printf '%s!!   ⚠️  ATTENTION: %s%s\n' "$C_YEL" "$*" "$C_RESET" >&2; }
 die()   { printf '%s FAIL %s %s\n' "$C_RED" "$C_RESET" "$*" >&2; exit 1; }
 todo()  { printf '%s  >>  %s %s\n' "$C_BOLD$C_YEL" "$C_RESET" "$*"; }
 
@@ -2979,8 +2981,15 @@ stage_tailnet() {
   if [[ -n $DEPLOY_REPOS && -d $SECRETS_DIR ]]; then
     DEPLOY_REPOS=$DEPLOY_REPOS SECRETS_DIR=$SECRETS_DIR "$SCRIPT_DIR/tools/deploy-keys" setup \
       || warn "deploy-keys setup failed -- see above"
-    DEPLOY_REPOS=$DEPLOY_REPOS SECRETS_DIR=$SECRETS_DIR "$SCRIPT_DIR/tools/deploy-keys" switch \
-      || info "some repos still on the account key until their deploy keys are registered"
+    local dk_out dk_line
+    dk_out=$(DEPLOY_REPOS=$DEPLOY_REPOS SECRETS_DIR=$SECRETS_DIR "$SCRIPT_DIR/tools/deploy-keys" switch 2>&1) || true
+    printf '%s\n' "$dk_out"
+    # A key GitHub doesn't accept leaves that repo unpushable from here; only Ben can register it.
+    while IFS= read -r dk_line; do
+      [[ $dk_line == wait* || $dk_line == *"(auth via "*": no)" ]] || continue
+      dk_line=${dk_line#*  }
+      attention "deploy key for ${dk_line%%:*} doesn't work on $(uname -n) (GitHub hasn't accepted it): tools/deploy-keys register on beast-arch"
+    done <<<"$dk_out"
   fi
 
   # 3b. Publish this machine's public key to the secrets repo, for the others to read.

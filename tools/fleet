@@ -472,6 +472,22 @@ repos_report() {
   return 0
 }
 
+# attention_report: every "ATTENTION:" line the bootstrap printed on each machine this run, failed or not. A machine that
+# succeeds shows nothing else, so a problem it can only report (a deploy key GitHub never took, beast-arch 2026-10-21 to
+# 11-14) went unseen (Ben 2026-11-14: "i should have been alerted").
+attention_report() {
+  local h lines any=0
+  echo; echo "=== needs you (ATTENTION lines from each machine's run)"
+  for h in "$SELF" "${hosts[@]}"; do
+    [[ -f $STATE/apply-$h.log ]] || continue
+    lines=$(sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' "$STATE/apply-$h.log" | grep -o 'ATTENTION: .*' | sort -u)
+    [[ -n $lines ]] || continue
+    any=1; while IFS= read -r l; do attn "$h: ${l#ATTENTION: }"; done <<<"$lines"
+  done
+  (( any )) || echo "nothing"
+  return 0
+}
+
 table() {  # print results; nonzero if anything failed
   local h bad=0; echo; echo "=== $1"
   local r e
@@ -569,6 +585,7 @@ push)
   fi
   unset pw; forget_secrets
   repos_report
+  attention_report
   table "fleet push: arch-bootstrap ${ab:0:7}  dotfiles ${dot:0:7}  secrets ${sec:0:7}"; rc=$?
   echo
   if (( rc == 0 )); then finish "FPUSH OK -- every machine is at this snapshot"
