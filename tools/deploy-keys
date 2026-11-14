@@ -72,6 +72,7 @@ register)
   # access to arch-bootstrap is code fpush runs as root everywhere, to secrets the vault's repo. Its secrets commits
   # (rare: peer keys) are made from micro instead.
   ro_keys=${DEPLOY_READONLY:-"media-center/secrets media-center/arch-bootstrap"}
+  refused=0
   for pub in "$reg"/*/*.pub; do
     h=$(basename "$(dirname "$pub")"); name=$(basename "$pub" .pub)
     r=$(awk '{print $NF}' "$pub")            # comment is "<host> deploy <owner/repo>"
@@ -85,10 +86,17 @@ register)
     fi
     # GitHub cannot change a key's access in place, and refuses a key it already has: delete, then add.
     [[ -n $have ]] && gh api -X DELETE "repos/$r/keys/${have%% *}" >/dev/null
-    gh api -X POST "repos/$r/keys" -f title="$h (arch-bootstrap deploy-keys$([[ $ro == true ]] && echo ', read-only'))" \
-      -f key="$(awk '{print $1, $2}' "$pub")" -F read_only=$ro >/dev/null
-    echo "did   $r: registered $h's key (read_only=$ro)"
+    # One refused key doesn't stop the rest (beast-arch's keybind-find key, refused since 2026-10-21, blocked every key
+    # after it). GitHub's reason ("key is already in use": the same key on another repo or the account) is shown.
+    if err=$(gh api -X POST "repos/$r/keys" -f title="$h (arch-bootstrap deploy-keys$([[ $ro == true ]] && echo ', read-only'))" \
+        -f key="$(awk '{print $1, $2}' "$pub")" -F read_only=$ro 2>&1); then
+      echo "did   $r: registered $h's key (read_only=$ro)"
+    else
+      echo "FAIL  $r: GitHub refused $h's key ($pub): $(grep -o '"message":"[^"]*"' <<<"$err" | tail -1 || true) ${err##*$'\n'}"
+      refused=$((refused + 1))
+    fi
   done
+  (( refused == 0 )) || die "$refused key(s) refused (above): those repos stay unpushable from those machines"
   ;;
 switch|status)
   need_repos
