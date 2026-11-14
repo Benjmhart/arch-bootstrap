@@ -46,6 +46,8 @@ bar_clear() { { printf '\r\e[K' >/dev/tty; } 2>/dev/null; }
 # restart can still die; stop the runner services first if that ever bites.
 ci_idle_wait() {
   local waited=0
+  if command -v docker >/dev/null && ! docker ps -q >/dev/null 2>&1; then
+    fail "ci_idle_wait: can't list docker containers as $USER, so a GitLab job could be missed (run it as root)"; fi
   while pgrep -x Runner.Worker >/dev/null || [[ -n $(docker ps -q --filter name=^runner- 2>/dev/null) ]]; do
     (( waited++ )) || attn "a CI job is running on $(uname -n): waiting for it to finish (checked every 10 s)"
     sleep "${CI_IDLE_POLL:-10}"

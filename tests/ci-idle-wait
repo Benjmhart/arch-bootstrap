@@ -12,3 +12,6 @@ n=$(<"$t/n")
   && echo "ok: waited through 3 busy checks, returned on the 4th" || { echo "FAIL: rc=$rc checks=$n"; echo "$out"; exit 1; }
 out=$(PATH=$t/bin:$PATH bash -c '. lib/ops.sh; ci_idle_wait' 2>&1)
 [[ -z $out ]] && echo "ok: idle machine, silent" || { echo "FAIL idle: $out"; exit 1; }
+printf '#!/bin/bash\nexit 1\n' > "$t/bin/docker"
+out=$(PATH=$t/bin:$PATH bash -c '. lib/ops.sh; ci_idle_wait' 2>&1); rc=$?
+[[ $rc != 0 && $out == *"can't list docker"* ]] && echo "ok: no docker access refuses" || { echo "FAIL no-access: rc=$rc $out"; exit 1; }
