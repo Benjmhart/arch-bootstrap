@@ -6111,6 +6111,11 @@ stage_services() {
   # which runs AFTER this one and only under X -- a unit for a vault that is not
   # bound yet would just crash-loop.
 
+  # herdr's update (graceful, live handoff) and its integrations, machines and skill: also here, since toolchains is
+  # not an fpush stage and the 0.9.5 update would never have reached a host (station-maintenance fleet 26). Before the
+  # plugins, which may need the newer herdr. Both are idempotent, so a full bootstrap running them twice only says ok.
+  install_self_distributed_binaries
+  install_herdr_integrations
   # Here, not in toolchains: fpush runs this stage by default, so plugins follow their releases (beast-arch 118/119).
   install_tui_plugins
   install_keybind_find
