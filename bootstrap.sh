@@ -1985,13 +1985,16 @@ install_herdr_integrations() {
 # a plugin is arbitrary code (herdr-navigator v0.3.6 and smart-enter were read on 2026-10-18), Ben's accepted trade-off.
 # Keys and settings stay in the dotfiles; plugin code and yazi's package.toml live only on each machine.
 # Benjmhart/herdr-folders (Ben's own, published 2026-11-01): python3 only, but rides the cargo gate below with navigator.
-HERDR_PLUGINS="${HERDR_PLUGINS:-thanhdat77/herdr-navigator Benjmhart/herdr-folders}"
+# Benjmhart/herdr-streams (Ben's own, 2026-11-13, station-maintenance fleet 25): python3 only, same. Until it is published
+# with a v* tag the loop warns "no release tag found" and moves on.
+HERDR_PLUGINS="${HERDR_PLUGINS:-thanhdat77/herdr-navigator Benjmhart/herdr-folders Benjmhart/herdr-streams}"
 YAZI_PLUGINS="${YAZI_PLUGINS:-yazi-rs/plugins:smart-enter ndtoan96/ouch Rolv-Apneseth/starship yazi-rs/flavors:dracula}"
 install_tui_plugins() {
   local repo tag p
   if have herdr && have cargo; then
     for repo in $HERDR_PLUGINS; do
-      tag=$(git ls-remote --tags --refs "https://github.com/$repo" 'v*' 2>/dev/null | sed 's#.*/##' | sort -V | tail -1)
+      # A repo not (yet) public makes GitHub ask for a username: no prompt, no askpass window, just no tag.
+      tag=$(GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=true git ls-remote --tags --refs "https://github.com/$repo" 'v*' 2>/dev/null </dev/null | sed 's#.*/##' | sort -V | tail -1)
       [[ -n $tag ]] || { warn "herdr plugin $repo: no release tag found -- left as is"; continue; }
       # Reinstalling at the newer tag is also how the plugin's own updater upgrades.
       # The list shows "[github:<repo>@<tag>]"; `grep -w 0.3.6` never matched "@v0.3.6", so every fpush rebuilt it.
