@@ -1987,7 +1987,9 @@ install_herdr_integrations() {
 # Benjmhart/herdr-folders (Ben's own, published 2026-11-01): python3 only, but rides the cargo gate below with navigator.
 # Benjmhart/herdr-streams (Ben's own, 2026-11-13, station-maintenance fleet 25): python3 only, same. Until it is published
 # with a v* tag the loop warns "no release tag found" and moves on.
-HERDR_PLUGINS="${HERDR_PLUGINS:-thanhdat77/herdr-navigator Benjmhart/herdr-folders Benjmhart/herdr-streams}"
+# kryptamine/herdr-auto-title (Ben 2026-11-13: "auto title tab names are ok for now, get them on the other machines";
+# fleet 24): names tabs and panes after what runs in them. Its build step downloads the release binary and checks its sha256.
+HERDR_PLUGINS="${HERDR_PLUGINS:-thanhdat77/herdr-navigator Benjmhart/herdr-folders Benjmhart/herdr-streams kryptamine/herdr-auto-title}"
 YAZI_PLUGINS="${YAZI_PLUGINS:-yazi-rs/plugins:smart-enter ndtoan96/ouch Rolv-Apneseth/starship yazi-rs/flavors:dracula}"
 install_tui_plugins() {
   local repo tag p
