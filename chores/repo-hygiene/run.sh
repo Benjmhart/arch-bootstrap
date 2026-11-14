@@ -109,6 +109,18 @@ for a in json.loads(sys.stdin.read())["result"]["agents"]:
   done
 fi
 
+# 6. The agent inbox (station-maintenance fleet 27): senders told at 3 days unread, ESCALATE lines at 7 for Ben.
+#    Not on micro, which runs no station-maintenance code and takes no mail.
+inbox=$HOME/projects/station-maintenance/bin/inbox
+if [[ $host != micro && -x $inbox ]] && grep -q cmd_escalate "$inbox"; then
+  if [[ -n ${REPO_HYGIENE_DRY:-} ]]; then "$inbox" stale --days 7 >> "$log" 2>&1
+  else
+    "$inbox" escalate >> "$log" 2>&1; rc=$?
+    (( rc == 75 )) && (( attention++ ))
+    (( rc != 0 && rc != 75 )) && { out "FAILED inbox escalate exited $rc"; (( attention++ )); }
+  fi
+fi
+
 summary="$pushed pushed, $prompted agent(s) prompted, $attention need a person, $suggest suggestion(s) -- $log"
 out "# $summary"
 echo "$summary"
