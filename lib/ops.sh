@@ -24,10 +24,15 @@ ops_log() { OPS_LOG=$OPS/$1.log; OPS_COLOR=1; _ops_colors; exec > >(tee -a "$OPS
 
 # bar CUR TOTAL [LABEL]: a progress bar redrawn in place on the terminal; the finished bar is printed as a normal line
 # (so the log keeps it). Without a terminal (tests, cron) only the finished line appears.
+# The line is fitted to the terminal's width each time: a line that wraps can't be redrawn in place (\r only goes back
+# to the start of the last row), so each redraw would pile up after the previous one (Ben, 2026-11-14).
 bar() {
-  local c=$1 n=$2 w=24 f a b s; (( n > 0 )) || n=1; (( c > n )) && c=$n; f=$(( c * w / n ))
-  printf -v a '%*s' "$f" ''; printf -v b '%*s' $(( w - f )) ''
-  s="${a// /█}${b// /░} $(( c * 100 / n ))%  $c/$n ${3:-}"
+  local c=$1 n=$2 cols w f a b t s; (( n > 0 )) || n=1; (( c > n )) && c=$n
+  cols=$( { stty size </dev/tty | cut -d' ' -f2; } 2>/dev/null ); [[ $cols =~ ^[0-9]+$ ]] && (( cols > 0 )) || cols=${COLUMNS:-80}
+  t=" $(( c * 100 / n ))%  $c/$n ${3:-}"
+  w=$(( cols - 1 - ${#t} )); (( w > 24 )) && w=24; (( w < 5 )) && w=5
+  f=$(( c * w / n )); printf -v a '%*s' "$f" ''; printf -v b '%*s' $(( w - f )) ''
+  s="${a// /█}${b// /░}$t"; s=${s:0:cols-1}
   { printf '\r\e[K%s' "$s" >/dev/tty; } 2>/dev/null
   if (( c >= n )); then { printf '\r\e[K' >/dev/tty; } 2>/dev/null; printf '%s📊 %s%s\n' "$_B" "$s" "$_0"; fi
 }
