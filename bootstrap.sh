@@ -5937,19 +5937,39 @@ single_dhcp_client() {
 setup_package_cache() {
   profile_on media-center || return 0
   have pacoloco || { warn "pacoloco not installed (pkglist-profile-media-center.txt)"; return 0; }
+  # The cache lives on the home drive (Ben 2026-11-13: / is 32G and filled to 4.2G free; /home has 120G). The unit
+  # waits for that mount; the old /var/cache/pacoloco is moved over once (station-maintenance fleet 6).
+  local cache=/home/pacoloco restart=0
+  if [[ -d $cache ]]; then ok "pacoloco cache dir $cache"
+  else run sudo install -d -o pacoloco -g pacoloco -m 755 "$cache" && did "pacoloco cache dir $cache"; fi
+  if [[ -d /var/cache/pacoloco/pkgs && ! -e $cache/pkgs ]]; then
+    run sudo systemctl stop pacoloco.service
+    run sudo mv /var/cache/pacoloco/pkgs "$cache/pkgs" && did "pacoloco cache moved to $cache ($(du -sh "$cache/pkgs" 2>/dev/null | cut -f1))"
+    restart=1
+  fi
+  if put_etc_file /etc/systemd/system/pacoloco.service.d/home.conf "# Written by arch-bootstrap (setup_package_cache): the cache is on /home.
+[Unit]
+RequiresMountsFor=$cache" "pacoloco waits for /home"; then
+    run sudo systemctl daemon-reload
+    restart=1
+  fi
   if put_etc_file /etc/pacoloco.yaml "# Written by arch-bootstrap (setup_package_cache, station-maintenance fleet 6).
-cache_dir: /var/cache/pacoloco
+cache_dir: $cache
 port: 9129
 download_timeout: 3600
 purge_files_after: 2592000
 repos:
   archive:
     url: https://archive.archlinux.org/repos" "pacoloco config (the archive, for the home machines)"; then
-    systemctl -q is-active pacoloco.service && run sudo systemctl restart pacoloco.service
+    restart=1
+  fi
+  if (( restart )); then
+    run sudo systemctl restart pacoloco.service && did "pacoloco restarted on $cache"
   fi
   if ! systemctl -q is-enabled pacoloco.service 2>/dev/null; then
     run sudo systemctl enable --now pacoloco.service && did "pacoloco serving the package cache on :9129"
   fi
+  return 0
 }
 
 stage_services() {
