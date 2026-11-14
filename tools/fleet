@@ -40,8 +40,9 @@
 #   fleet setup                   once, on micro: the fleet key (see below)
 #
 # Approved snapshots: ~/.local/state/fleet/snapshots, one line each, "<time> <ab> <dot> <sec> [note]".
-# Asks ONCE for the fleet key passphrase (a temporary agent) and ONCE for the shared sudo password
-# (stdin), checked here before anything is sent. Review answers come from the terminal.
+# Asks ONCE for the fleet key passphrase (a temporary agent) and ONCE for the login password (stdin; lib/ops.sh: checked
+# with unix_chkpwd, no lockout, asked again until right, and only then given to sudo), before anything is sent.
+# Review answers come from the terminal.
 #
 # Env: FLEET_ARCHIVE_URL, FLEET_TODAY (tests), FLEET_HOSTS (default: the other machines), FLEET_KEY, FLEET_SELF_HOST (micro),
 # FLEET_VAULT_HOST (beast-arch), FLEET_INPUT (review answers; default /dev/tty), FLEET_STATE,
@@ -58,7 +59,9 @@ SELF=${FLEET_SELF_HOST:-micro}
 VAULT_HOST=${FLEET_VAULT_HOST:-beast-arch}
 IN=${FLEET_INPUT:-/dev/tty}
 read -r -a hosts <<<"${FLEET_HOSTS:-beast-arch carbon media-center surfboard}"   # surfboard: its tailnet name must be "surfboard"
-die() { echo "FAIL  $*" >&2; exit 1; }
+. "$REPO/lib/ops.sh" || { echo "FAIL  no $REPO/lib/ops.sh"; exit 1; }
+OPS_SECRET_IN=/dev/stdin
+die() { fail "$*" >&2; }
 
 suffix() { tailscale status --json 2>/dev/null | jq -r '.MagicDNSSuffix // empty'; }
 # The fleet key only, never the peer key: a peer-key login would run the request as a shell
@@ -127,7 +130,7 @@ list_repo() {  # list_repo <repo> <base>: print its new commits; fills HEADS and
     # unflagged. The secrets repo is where they belong, so it is not scanned. --no-renames: a moved file's content
     # counts as added (the 2026-10-16 leak was a rename). Names the file and the kind, never the text.
     if [[ $r != sec ]]; then
-      while IFS= read -r t; do echo "        !! POSSIBLE SECRET  $t"; (( ++SECRET_HITS )); TAGS[$id]+=" SECRET?"; done \
+      while IFS= read -r t; do echo "        !! POSSIBLE SECRET  $t ⚠️"; (( ++SECRET_HITS )); TAGS[$id]+=" SECRET?"; done \
         < <(gitr "$r" show --no-renames --format= -p "$c" | "$here/secret-scan")
     fi
     # A moved AUR pin is code that will run as root on every machine: name each move with its versions.
@@ -348,13 +351,14 @@ show_holds_list() {
 apply_one() {
   local h=$1 log=$STATE/apply-$1.log t0=$SECONDS rc out
   printf '%s\n' "$pw" | on "$h" apply "$ab" "$dot" "$sec" "${stages[@]}" > "$log" 2>&1; rc=$?
-  if (( rc == 0 )); then echo ok > "$STATE/result-$h"; out="ok ($(( (SECONDS - t0) / 60 ))m$(( (SECONDS - t0) % 60 ))s)"
+  if (( rc == 0 )); then echo ok > "$STATE/result-$h"; out="ok ($(( (SECONDS - t0) / 60 ))m$(( (SECONDS - t0) % 60 ))s) ✅"
   else
     echo "FAILED rc=$rc -- $log" > "$STATE/result-$h"
     # what stopped it: the warnings and the stop line, colour codes stripped
     out="FAILED rc=$rc"$'\n'$(sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g; s/\x1b\][^\x07\x1b]*\(\x07\|\x1b\\\)//g' "$log" \
       | grep -E '(^| )(warn|FAIL|ERROR|error:|Stopped at)' | tail -6 | sed 's/^ */      /')
   fi
+  [[ $rc != 0 ]] && out="$_R${out/FAILED/!!! ❌ FAILED}$_0"
   printf '=== %-13s %s\n' "$h" "$out"
   return "$rc"
 }
@@ -375,11 +379,23 @@ apply_all() {
       apply_one "$h" || micro_ok=0
       result[$h]=$(< "$STATE/result-$h")
     else
-      par+=("$h"); apply_one "$h" &
+      par+=("$h"); rm -f "$STATE/block-$h"
+      { apply_one "$h" > "$STATE/block-$h.part"; mv "$STATE/block-$h.part" "$STATE/block-$h"; } &
     fi
   done
   (( ${#par[@]} )) || return 0
-  printf '=== applying in parallel: %s\n' "${par[*]}"
+  printf '=== 🚀 applying in parallel: %s\n' "${par[*]}"
+  # Each machine's block as it finishes, a progress bar between (the blocks go through files: a background job printing
+  # straight to the screen would land in the middle of the bar's line).
+  local -A shown=(); local done=0 t0=$SECONDS
+  while (( done < ${#par[@]} )); do
+    for h in "${par[@]}"; do
+      [[ -z ${shown[$h]:-} && -f $STATE/block-$h ]] || continue
+      bar_clear; cat "$STATE/block-$h"; rm -f "$STATE/block-$h"; shown[$h]=1; done=$((done + 1))
+    done
+    bar "$done" "${#par[@]}" "machines done · $(( (SECONDS - t0) / 60 ))m$(( (SECONDS - t0) % 60 ))s"
+    (( done < ${#par[@]} )) && sleep 1
+  done
   wait
   for h in "${par[@]}"; do [[ -f $STATE/result-$h ]] && result[$h]=$(< "$STATE/result-$h"); done
 }
@@ -387,7 +403,7 @@ apply_all() {
 unlock() {  # the fleet key (one passphrase) and the sudo password (stdin), both checked first
   SUFFIX=$(suffix); [[ -n $SUFFIX ]] || die "not on the tailnet"
   eval "$(ssh-agent -s)" >/dev/null
-  trap 'ssh-agent -k >/dev/null 2>&1' EXIT
+  trap 'ssh-agent -k >/dev/null 2>&1; forget_secrets' EXIT
   # A plugged-in YubiKey with a fleet key made for it (beast-arch 88), no passphrase. ONE touch per push:
   # a presence check signs with the touch key (~/.ssh/id_ed25519_sk_<serial>), then every machine is
   # reached with that YubiKey's no-touch key (id_ed25519_sk_nt_<serial>, authorized `no-touch-required`;
@@ -398,22 +414,23 @@ unlock() {  # the fleet key (one passphrase) and the sudo password (stdin), both
   if (( ${#sk[@]} )); then
     s=${sk[0]}; k=$HOME/.ssh/id_ed25519_sk_$s
     if [[ -f $HOME/.ssh/id_ed25519_sk_nt_$s ]]; then
-      echo "fleet key: YubiKey $s -- touch it once now"
+      echo "🔑 fleet key: YubiKey $s -- touch it once now"
       ssh-keygen -Y sign -q -f "$k" -n fleet-presence </dev/null >/dev/null || die "YubiKey not touched -- nothing sent anywhere"
       k=$HOME/.ssh/id_ed25519_sk_nt_$s
     else
-      echo "fleet key: YubiKey $s -- touch it once per machine when it blinks"
+      echo "🔑 fleet key: YubiKey $s -- touch it once per machine when it blinks"
     fi
     ssh-add -t 3600 "$k" || die "YubiKey fleet key not loaded"
     IDS=(-i "$k")
   else
     [[ -f $KEY ]] || die "no $KEY -- run: fleet setup"
+    echo "🔑 next, ssh-add asks for the ${SECRET_NAMES[fleetkey]} (a typo: it asks again)"
     ssh-add -t 3600 "$KEY" || die "fleet key not loaded"
   fi
   sudo_locked && die "sudo is locked here until $(sudo_locked) (pam_faillock, 3 failed tries) -- nothing sent anywhere"
-  IFS= read -r -s -p "sudo password (shared by every machine): " pw; echo
-  printf '%s\n' "$pw" | sudo -S -p '' -k -v 2>/dev/null || die "sudo password rejected here -- nothing sent anywhere.$(
+  sudo_login || die "no login password (or sudo refused it although it checked out) -- nothing sent anywhere.$(
     sudo_locked >/dev/null && echo " sudo is now LOCKED until $(sudo_locked) (pam_faillock)")"
+  pw=${_SECRET[login]}
 }
 
 # pam_faillock locks sudo for 10 min after 3 failures in 15 min, and a wrong password piped to `sudo -S` costs TWO
@@ -457,7 +474,10 @@ repos_report() {
 
 table() {  # print results; nonzero if anything failed
   local h bad=0; echo; echo "=== $1"
-  for h in "$SELF" "${hosts[@]}"; do printf '%-14s %s\n' "$h" "${result[$h]:-}"; [[ ${result[$h]:-} == ok || ${result[$h]:-} == skip* || ${result[$h]:-} == "not touched"* ]] || bad=1; done
+  local r e
+  for h in "$SELF" "${hosts[@]}"; do r=${result[$h]:-}
+    case $r in ok) e="✅" ;; skip*|"not touched"*) e="⏭️ " ;; *) e="$_R❌"; bad=1 ;; esac
+    printf '%-14s %s %s%s\n' "$h" "$e" "$r" "$_0"; done
   return $bad
 }
 
@@ -547,12 +567,12 @@ push)
     mkdir -p "$STATE"; last=$(tail -1 "$SNAPS" 2>/dev/null | cut -d' ' -f2-4)
     [[ $last == "$ab $dot $sec" ]] || echo "$(date -Iseconds) $ab $dot $sec" >> "$SNAPS"
   fi
-  unset pw
+  unset pw; forget_secrets
   repos_report
   table "fleet push: arch-bootstrap ${ab:0:7}  dotfiles ${dot:0:7}  secrets ${sec:0:7}"; rc=$?
   echo
-  if (( rc == 0 )); then echo "FPUSH OK -- every machine is at this snapshot"
-  else echo "FPUSH FAILED -- see the lines above; full logs: $STATE/apply-<machine>.log"; fi
+  if (( rc == 0 )); then finish "FPUSH OK -- every machine is at this snapshot"
+  else printf '%s!!!  ❌ FPUSH FAILED -- see the lines above; full logs: %s/apply-<machine>.log%s\n' "$_R" "$STATE" "$_0"; fi
   exit $rc
   ;;
 rollback)
@@ -565,12 +585,11 @@ rollback)
   IFS= read -r ans <&3; [[ $ans == y || $ans == Y ]] || die "not rolled back"
   declare -A result secrets_bad; stages=()
   if [[ $scope == all ]]; then unlock; targets=("$SELF" "${hosts[@]}")
-  else IFS= read -r -s -p "sudo password: " pw; echo
-       printf '%s\n' "$pw" | sudo -S -p '' -k -v 2>/dev/null || die "sudo password rejected"
+  else sudo_login || die "no login password (or sudo refused it although it checked out)"; pw=${_SECRET[login]}
        targets=("$SELF"); for h in "${hosts[@]}"; do result[$h]="not touched (rollback micro)"; done; fi
   apply_all "$ab" "$dot" "$sec" "${targets[@]}"
   [[ ${result[$SELF]} == ok ]] && echo "$(date -Iseconds) $ab $dot $sec rollback-of-$(tail -1 "$SNAPS" | cut -d' ' -f1)" >> "$SNAPS"
-  unset pw
+  unset pw; forget_secrets
   table "fleet rollback ($scope) to $t"
   ;;
 stick)

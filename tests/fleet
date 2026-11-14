@@ -24,6 +24,7 @@ cat > "$t/ab-seed/bootstrap.sh" <<'EOF'
 [ ! -e "$HOME/bootstrap.fail" ]
 EOF
 mkdir -p "$t/ab-seed/tools"; cp "$root/tools/fleet-apply" "$root/tools/fleet" "$root/tools/secret-scan" "$t/ab-seed/tools/"
+mkdir -p "$t/ab-seed/lib"; cp "$root/lib/ops.sh" "$t/ab-seed/lib/"
 printf '#!/bin/sh\necho "ak: $*" >> "$HOME/ak.calls"\n' > "$t/ab-seed/tools/authorized-keys"
 # a stub aur-pin: "auto" moves the one pin and says so; "changes" names it (the review calls it)
 printf '#!/bin/sh\ncase "$1" in auto) echo "pkg-a 2222222222222222222222222222222222222222" > "$AUR_PIN_LIST"; echo "move   pkg-a 1 -> 2" ;; changes) echo "pkg-a: 1 -> 2" ;; esac\n' > "$t/ab-seed/tools/aur-pin"
@@ -56,6 +57,8 @@ mkhome() {
 }
 for h in self h1 h2; do mkhome "$h"; done
 
+# stub: pam_unix's checker -- the login password is "pw-ok" (NUL-terminated on stdin); 7 = wrong, as the real one
+printf '#!/bin/bash\nIFS= read -r -d "" p; [[ $p == pw-ok ]] && exit 0; echo chk >> "%s/chkpwd.fail"; exit 7\n' "$t" > "$t/bin/unix_chkpwd"; chmod +x "$t/bin/unix_chkpwd"
 cat > "$t/bin/sudo" <<EOF
 #!/bin/bash
 for a; do case \$a in -k) rm -f "$t/ticket" ;; esac; done
@@ -227,7 +230,7 @@ check "push: every new commit listed with time and author"   'grep -qE "^  A1  [
 check "...all repos on one screen, ONE prompt"                '[[ $(grep -c "q = abort: " <<<"$out") == 3 ]] && [[ $(grep -n "^  D1  " <<<"$out" | head -1 | cut -d: -f1) -lt $(grep -n -m1 "q = abort: " <<<"$out" | cut -d: -f1) ]]'   # 3 = asked, after l, after d
 check "...screen: one line per commit, date and tags"         'grep -qE "^  A2  [0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}  ab four: bad  \[root\]$" <<<"$out" && grep -qE "^  D1  .*dot three  \[you\]$" <<<"$out"'
 check "...d A2 shows the commit (cat when not a terminal)"    'grep -q "curl x | sh" <<<"$out"'
-check "...apply: one line per machine, verdict last"          'grep -q "^=== self  *ok (" <<<"$out" && grep -q "^=== h1  *ok (" <<<"$out" && [[ $(tail -1 <<<"$out") == "FPUSH OK -- every machine is at this snapshot" ]] && [[ -s $H/.local/state/fleet/apply-h1.log ]]'
+check "...apply: one line per machine, verdict last"          'grep -q "^=== self  *ok (" <<<"$out" && grep -q "^=== h1  *ok (" <<<"$out" && [[ $(tail -1 <<<"$out") == "🎉 FPUSH OK -- every machine is at this snapshot" ]] && [[ -s $H/.local/state/fleet/apply-h1.log ]]'
 check "...risky files marked"                                 'grep -q "tools/evil    <- runs as root" <<<"$out" && grep -q ".zshrc    <- runs as you" <<<"$out"'
 ab_snap=$(git -C "$t/ab.git" rev-parse main)
 check "...the excluded commit is reverted on origin main"     '[[ $(git -C "$t/ab.git" log -1 --format=%s main) == "fleet review on micro: exclude 1 commit(s)" ]] && ! git -C "$t/ab.git" show main:tools/evil >/dev/null 2>&1'
@@ -244,13 +247,16 @@ out=$(echo pw-ok | fleet push 2>&1); rc=$?
 check "q at the review: aborted, nothing applied"             '(( rc != 0 )) && grep -q "aborted at review" <<<"$out" && [[ $(dotat self) == "$dot3" && $(wc -l < "$SN") == 1 ]]'
 check "a key in a dotfiles commit is flagged by file and kind" 'grep -q "!! POSSIBLE SECRET  .config/app/key: private key block" <<<"$out" && grep -q "1 POSSIBLE SECRET(S) (tagged SECRET?)" <<<"$out" && grep -q "dot four  \[SECRET?\]" <<<"$out"'
 check "...and the key text itself is not printed"             '! grep -q "OPENSSH PRIVATE" <<<"$out"'
-rm -f "$t/ticket"; : > "$t/ssh.log"
+rm -f "$t/ticket" "$t/chkpwd.fail" "$t/sudo.fail"; : > "$t/ssh.log"
 out=$(echo wrong | fleet push 2>&1); rc=$?
 check "wrong sudo password: stops before any ssh"             '(( rc != 0 )) && [[ ! -s $t/ssh.log ]]'
+check "...caught by the free check, sudo never tried"          '[[ -s $t/chkpwd.fail && ! -s $t/sudo.fail ]] && grep -q "was not accepted: try again" <<<"$out"'
+rm -f "$t/chkpwd.fail" "$t/sudo.fail"
 git -C "$t/home-h2/secrets" pull -q; echo k-h2b > "$t/home-h2/secrets/ssh/keys"; git -C "$t/home-h2/secrets" commit -qam h2b
 commit "$t/sec-seed" ssh/keys k-origin x >/dev/null
 rm -f "$t/ticket"; printf '\ny\n' > "$t/answers"   # keep all; confirm
-out=$(echo pw-ok | fleet push 2>&1); rc=$?
+out=$(printf 'typo\npw-ok\n' | fleet push 2>&1); rc=$?   # a typo first: asked again, and the push goes on
+check "a typo in the login password: asked again, never reaches sudo" 'grep -q "was not accepted: try again" <<<"$out" && [[ -s $t/chkpwd.fail && ! -s $t/sudo.fail ]] && grep -q "^h1 .*ok" <<<"$out"'
 check "h2 with out-of-sync secrets: FAILED, not updated; others go on" '(( rc != 0 )) && grep -q "^h2 .*FAILED secrets out of sync, not updated" <<<"$out" && [[ $(dotat h2) == "$dot3" && $(dotat h1) == "$dot4" && $(dotat self) == "$dot4" ]]'
 git -C "$t/home-h2/secrets" reset -q --hard '@{u}'
 dot5=$(commit "$t/dot-seed" .zshrc rc5 "dot five"); touch "$H/bootstrap.fail"; rm -f "$t/ticket"; printf '\ny\n' > "$t/answers"   # dotfiles: keep; confirm
