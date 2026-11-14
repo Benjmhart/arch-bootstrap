@@ -1924,6 +1924,7 @@ stage_toolchains() {
   fi
 
   install_npm_globals
+  install_pi_pinned
 
   # NOTE: no gems are installed by default (Ben, 2026-08-24). `ruby` is in the
   # package list and `gem` is only checked for presence. beast-arch carries a
@@ -2249,11 +2250,15 @@ install_npm_globals() {
   local installed
   # npm ls exits non-zero over any extraneous/invalid dependency; the listing is
   # still complete, and under pipefail + errexit that would kill the stage.
-  installed="$(npm ls -g --depth 0 --parseable 2>/dev/null | sed 's|.*/node_modules/||' || true)"
+  # "name@version" per line. A list entry "name@version" must match exactly (a pin: a different version is reinstalled
+  # at the pinned one); a bare "name" matches any version.
+  installed="$(npm ls -g --depth 0 --parseable --long 2>/dev/null | awk -F: 'NR > 1 { print $2 }' || true)"
 
-  local pkg
+  local pkg name
   for pkg in "${want[@]}"; do
-    if printf '%s\n' "$installed" | grep -qxF "$pkg"; then
+    name=${pkg%@*}; [[ -n $name ]] || name=$pkg   # "@scope/x" has no version; "@scope/x@1.2.3" does
+    if { [[ $name != "$pkg" ]] && printf '%s\n' "$installed" | grep -qxF "$pkg"; } ||
+       { [[ $name == "$pkg" ]] && printf '%s\n' "$installed" | awk -v n="$name@" 'index($0, n) == 1 { f = 1 } END { exit !f }'; }; then
       ok "npm: $pkg already installed"
     else
       missing+=("$pkg")
@@ -2268,6 +2273,39 @@ install_npm_globals() {
   info "npm: ${#missing[@]} missing: ${missing[*]}"
   run npm install -g "${missing[@]}"
   did "${#missing[@]} npm global(s) installed"
+}
+
+# pi from its pinned lockfile (npm/pi, written by tools/pi-pin): `npm ci` into ~/.local/share/pi/<version>, linked as
+# ~/.local/bin/pi, so pi and every dependency are exactly the hash-checked versions in this repo. Not `npm install -g`:
+# from 1.4 pi ships no npm-shrinkwrap.json, so a global install floats every dependency (Ben 2026-11-14: "pin the
+# versions"). Its plugins (@ollama/pi-web-search) stay npm globals: pi finds them through `npm root -g`.
+install_pi_pinned() {
+  local src=$SCRIPT_DIR/npm/pi v dir d
+  [[ -f $src/package-lock.json ]] || return 0
+  have npm || { warn "npm not on PATH -- pi not installed"; return 0; }
+  v=$(jq -r '.packages[""].dependencies["@earendil-works/pi-coding-agent"]' "$src/package-lock.json")
+  dir=$HOME/.local/share/pi/$v
+  if [[ -x $dir/node_modules/.bin/pi ]] && cmp -s "$src/package-lock.json" "$dir/package-lock.json"; then
+    ok "pi $v (pinned) already installed"
+  else
+    run rm -rf "$dir.new"
+    run mkdir -p "$dir.new"
+    run cp "$src/package.json" "$src/package-lock.json" "$dir.new/"
+    # --ignore-scripts as pi's own installer: no dependency runs code at install time
+    if ! (cd "$dir.new" && run npm ci --ignore-scripts --omit=dev --include=optional --no-fund --no-audit); then
+      warn "pi $v: npm ci failed -- the pi already here stays"; return 0
+    fi
+    run rm -rf "$dir"
+    run mv "$dir.new" "$dir"
+    did "pi $v installed from its lockfile"
+  fi
+  run mkdir -p "$HOME/.local/bin"
+  run ln -sfn "$dir/node_modules/.bin/pi" "$HOME/.local/bin/pi"
+  if npm ls -g --depth 0 @earendil-works/pi-coding-agent >/dev/null 2>&1; then
+    run npm uninstall -g @earendil-works/pi-coding-agent
+    did "the unpinned global pi removed (it came first on PATH)"
+  fi
+  for d in "$HOME"/.local/share/pi/*/; do [[ ${d%/} == "$dir" ]] || run rm -rf "${d%/}"; done
 }
 
 # Tools that are neither pacman, AUR, cargo nor npm: single binaries published by

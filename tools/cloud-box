@@ -233,12 +233,11 @@ umount -R $m; rm -rf "$in"; sync; udevadm settle 2>/dev/null || true
 cryptsetup close root 2>/dev/null || { sleep 3; cryptsetup close root; } || echo "rescue: root stays open (unmounted, synced)"
 echo "rescue: done"'
 
-ask_pass() {   # PROMPT [confirm]: the passphrase on stdout; from the terminal, or one line of stdin if that is no terminal (tests)
-  local a b
-  if [[ -t 0 ]]; then
-    IFS= read -rsp "$1: " a; echo >&2
-    if [[ ${2:-} == confirm ]]; then IFS= read -rsp "again: " b; echo >&2; [[ $a == "$b" ]] || die "the two passphrases differ"; fi
-  else IFS= read -r a || true; fi
+. "$(dirname "$(readlink -f "$0")")/../lib/ops.sh" || exit 1   # passwords by name, a new one typed twice (Ben 2026-11-14)
+OPS_SECRET_IN=/dev/tty; [[ -t 0 ]] || OPS_SECRET_IN=/dev/stdin   # tests: one line of stdin
+ask_pass() {   # PROMPT: an EXISTING passphrase on stdout; from the terminal, or one line of stdin if that is no terminal (tests)
+  local a
+  if [[ -t 0 ]]; then IFS= read -rsp "🔑 $1: " a; echo >&2; else IFS= read -r a || true; fi
   printf '%s' "$a"
 }
 
@@ -280,7 +279,8 @@ create() {
     mode=reattach
   fi
   # The passphrases, before anything is made. Kept in memory and, for the rescue system, in a 0700 dir on tmpfs.
-  pass=$(ask_pass "disk passphrase for $name (typed at each boot, here or in the web console)" confirm)
+  new_secret disk "$name (typed at each boot, here or in the web console)" || die "no disk passphrase given; nothing created"
+  pass=${_SECRET[disk]}
   (( ${#pass} >= 8 )) || die "the disk passphrase must have 8 characters or more; nothing created"
   volpass=$pass
   if [[ $mode == reattach ]]; then p=$(ask_pass "passphrase of the volume $vol (Enter: the same)"); [[ -z $p ]] || volpass=$p; fi
@@ -294,7 +294,7 @@ create() {
   fi
   dev=$(api GET "volumes/$vid" | jq -r .volume.linux_device)
 
-  trap create_cleanup EXIT
+  trap 'create_cleanup; forget_secrets' EXIT
   ct=$(umask 077; mktemp -d -p "${XDG_RUNTIME_DIR:-/tmp}"); mkdir -m 700 "$ct/in"
   printf '%s' "$pass" > "$ct/in/pass"; printf '%s' "$volpass" > "$ct/in/volpass"
   # The initramfs host key is made HERE, so the client pins it before the box ever boots (no trust on first use).

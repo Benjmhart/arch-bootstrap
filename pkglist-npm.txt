@@ -27,5 +27,8 @@
 # beast-arch task 39 still records it as UNVETTED. Shipping it to a second
 # machine is a deliberate acceptance of that, not an oversight -- and the key
 # lands on carbon too, so task 39's verdict now applies to two boxes.
-@earendil-works/pi-coding-agent
-@ollama/pi-web-search
+#
+# pi itself is NOT here since 2026-11-14: it installs from its pinned lockfile, npm/pi (tools/pi-pin VERSION;
+# install_pi_pinned), because from 1.4 a global install no longer pins pi's dependencies. Entries here can be pinned
+# as name@version (Ben 2026-11-14: "pin the versions"); pi-web-search has no dependencies, so its pin is complete.
+@ollama/pi-web-search@0.0.5

@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# pi-pin VERSION -- pin pi (@earendil-works/pi-coding-agent) at VERSION: writes npm/pi/package.json and
+# package-lock.json, which the bootstrap installs with `npm ci` (install_pi_pinned), so pi AND every dependency are the
+# exact, hash-checked versions in this repo, reviewed in fpush like any commit (Ben 2026-11-14: "pin the versions").
+# The two files are pi.dev's own (what its managed installer uses); its lockfile leaves pi's own packages without an
+# integrity hash, so those are filled in from the npm registry here, and anything not from the registry is refused.
+set -euo pipefail
+v=${1:?usage: pi-pin VERSION}
+dir=$(cd "$(dirname "$0")/.." && pwd)/npm/pi
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+for f in package.json package-lock.json; do curl -fsSL "https://pi.dev/api/installer/releases/$v/$f" -o "$tmp/$f"; done
+python3 - "$tmp" "$v" <<'EOF'
+import json, subprocess, sys
+tmp, v = sys.argv[1], sys.argv[2]
+p = f"{tmp}/package-lock.json"; l = json.load(open(p))
+assert l["lockfileVersion"] == 3 and l["packages"][""]["dependencies"] == {"@earendil-works/pi-coding-agent": v}, "lockfile root is not pi " + v
+for k, e in l["packages"].items():
+    if not k or e.get("link"): continue
+    r = e.get("resolved", "")
+    assert r.startswith("https://registry.npmjs.org/"), f"{k}: not from the npm registry ({r})"
+    name, ver = k.split("node_modules/")[-1], e["version"]
+    if "integrity" in e: continue   # npm ci checks these against the tarballs
+    reg = subprocess.run(["npm", "view", f"{name}@{ver}", "dist.integrity"], capture_output=True, text=True, check=True).stdout.strip()
+    assert reg.startswith("sha512-"), f"{name}@{ver}: no sha512 integrity on the registry"
+    e["integrity"] = reg; print(f"integrity filled from the registry: {name}@{ver}")
+json.dump(l, open(p, "w"), indent=2); open(p, "a").write("\n")
+print(f"pi {v}: {len(l['packages']) - 1} packages, every one with an integrity hash")
+EOF
+mkdir -p "$dir"; cp "$tmp"/package.json "$tmp"/package-lock.json "$dir/"
+echo "wrote $dir -- commit it; fpush installs it (npm ci) on every machine"

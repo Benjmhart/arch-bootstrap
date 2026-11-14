@@ -3,7 +3,7 @@
 #   . ~/.local/lib/ops.sh || exit 1
 # Ben's rules (2026-11-14), every script, always:
 #  1. Passwords have fixed names (SECRET_NAMES below) and every prompt uses that name, with what it is for.
-#  2. Each password is asked once per run and reused for every machine and step (ask_secret caches it).
+#  2. Each password is asked once per run (a NEW one, being set, is typed twice to confirm: new_secret) and reused for every machine and step (ask_secret caches it).
 #  3. A wrong password is caught and asked again, where that costs nothing. The login password is checked with
 #     unix_chkpwd (pam_unix's own helper: no pam_faillock count, unlimited tries) BEFORE it reaches sudo, whose
 #     failures lock it (3 in 15 min). The keyring unlock refuses a wrong one without any lockout too.
@@ -53,6 +53,21 @@ ask_secret() {
   [[ -n ${_SECRET[$n]:-} && -z $again ]] && return 0
   IFS= read -rsp "🔑 ${again:+(again) }${SECRET_NAMES[$n]}: " s <"${OPS_SECRET_IN:-/dev/tty}"; echo >&2
   _SECRET[$n]=$s
+}
+# new_secret NAME [FOR]: a password being SET (a new disk, a new key): typed twice, and when the two differ it is asked
+# again (empty gives up: exit 3). The result is in "${_SECRET[NAME]}". Without a terminal on $OPS_SECRET_IN (tests),
+# one line is read and there is no second entry.
+new_secret() {
+  local n=$1 for=${2:+ for $2} in=${OPS_SECRET_IN:-/dev/tty} a b
+  [[ -n ${SECRET_NAMES[$n]:-} ]] || fail "new_secret: unknown password name '$n' (add it to SECRET_NAMES)"
+  if ! test -t 0 <"$in"; then IFS= read -r a <"$in" || true; _SECRET[$n]=$a; [[ -n $a ]] && return 0; return 3; fi
+  while :; do
+    IFS= read -rsp "🔑 NEW ${SECRET_NAMES[$n]}$for: " a <"$in"; echo >&2
+    [[ -n $a ]] || { attn "no new ${SECRET_NAMES[$n]%% (*} given: skipped"; return 3; }
+    IFS= read -rsp "🔑 the same again, to confirm: " b <"$in"; echo >&2
+    [[ $a == "$b" ]] && { _SECRET[$n]=$a; return 0; }
+    attn "the two entries differ: once more, both times (empty to give up)"
+  done
 }
 forget_secrets() { local k; for k in "${!_SECRET[@]}"; do _SECRET[$k]=""; done; _SECRET=(); }
 trap forget_secrets EXIT
