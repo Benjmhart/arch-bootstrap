@@ -100,14 +100,14 @@ register)
   ;;
 switch|status)
   need_repos
-  read -r -a clones <<<"${DK_CLONES:-$HOME/.dot $SECRETS_DIR $(printf '%s ' "$HOME"/projects/*)}"
+  read -r -a clones <<<"${DK_CLONES:-$HOME/.dot $SECRETS_DIR $(printf '%s ' "$HOME"/projects/* "$HOME"/projects/*/*)}"
   rc=0
   for r in "${repos[@]}"; do
     a=$(alias_of "$r"); old="git@github.com:$r.git"; new="git@$a:$r.git"
     if authenticates "$r"; then auth=yes; else auth=no; rc=1; fi
     found=0
     for c in "${clones[@]}"; do
-      [[ -d $c/.git ]] && g=(git -C "$c") || g=(git --git-dir="$c")
+      [[ -e $c/.git ]] && g=(git -C "$c") || g=(git --git-dir="$c")
       url=$("${g[@]}" remote get-url origin 2>/dev/null) || continue
       [[ $url == "$old" || $url == "$new" ]] || continue
       found=1

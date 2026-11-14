@@ -7,13 +7,16 @@ tool=$(cd "$(dirname "$0")/.." && pwd)/tools/deploy-keys
 t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
 export HOME=$t/home SECRETS_DIR=$t/home/secrets DK_HOST=box DK_SSH_DIR=$t/home/.ssh
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
-export DEPLOY_REPOS="me/alpha me/beta" DK_CLONES="$t/home/.dot $t/home/secrets $t/home/projects/beta"
+export DEPLOY_REPOS="me/alpha me/beta" DK_CLONES="$t/home/.dot $t/home/secrets $t/home/projects/beta $t/home/projects/meta/sub"
 mkdir -p "$HOME/projects" "$t/bin" "$t/remote/me"
 for r in alpha beta secrets; do git init -q --bare "$t/remote/me/$r.git"; done
 git init -q "$SECRETS_DIR"; git -C "$SECRETS_DIR" commit -q --allow-empty -m init
 git -C "$SECRETS_DIR" remote add origin git@github.com:me/secrets.git
 git init -q --bare "$HOME/.dot"; git --git-dir="$HOME/.dot" remote add origin git@github.com:me/alpha.git
 git init -q "$HOME/projects/beta"; git -C "$HOME/projects/beta" remote add origin git@github.com:me/beta.git
+# a submodule-style clone: .git is a file pointing elsewhere (beast-arch keybind-find-meta/keybind-find, 2026-11-14)
+mkdir -p "$HOME/projects/meta"; git init -q --separate-git-dir "$HOME/projects/meta/.git-sub" "$HOME/projects/meta/sub"
+git -C "$HOME/projects/meta/sub" remote add origin git@github.com:me/alpha.git
 touch "$t/registered"
 
 cat > "$t/bin/ssh" <<EOF
@@ -71,6 +74,7 @@ check "...it is named with GitHub's reason, and register fails"  '(( rc != 0 )) 
 echo github-alpha > "$t/registered"            # only alpha registered on "GitHub"
 "$tool" switch > "$t/sw.out" 2>&1
 check "switch: alpha (bare dotfiles) moved"     '[[ $(git --git-dir=$HOME/.dot remote get-url origin) == git@github-alpha:me/alpha.git ]]'
+check "switch: a clone whose .git is a file (submodule) moved too" '[[ $(git -C $HOME/projects/meta/sub remote get-url origin) == git@github-alpha:me/alpha.git ]]'
 check "switch: beta waits (not authenticated)"  '[[ $(git -C $HOME/projects/beta remote get-url origin) == git@github.com:me/beta.git ]] && grep -q "wait  me/beta" $t/sw.out'
 check "switch: secrets untouched (not listed)"  '[[ $(git -C $SECRETS_DIR remote get-url origin) == git@github.com:me/secrets.git ]]'
 echo github-beta >> "$t/registered"
