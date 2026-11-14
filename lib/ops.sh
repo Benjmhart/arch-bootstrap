@@ -41,6 +41,7 @@ declare -A SECRET_NAMES=(
   [pin]="YubiKey PIN (FIDO2)"
   [fleetkey]="fleet key passphrase (fpush's ssh key, ~/.ssh/id_ed25519_fleet)"
   [vault]="KeePassXC master password (Passwords.kdbx)"
+  [gitlab]="GitLab API token for the trstn agents (scope api: they retry CI; kept on carbon)"
 )
 declare -A _SECRET=()
 
