@@ -1957,7 +1957,8 @@ install_herdr_integrations() {
   # herdr machines (Ben 2026-11-13): each host's herdr window also lists the other hosts' workspaces and agents. micro is
   # never added: it takes no ssh, by design (Ben: "a feature, not a bug"). </dev/null: with no terminal, herdr cannot be
   # told yes to stopping an incompatible remote server (that would kill its agents). Saved in ~/.local/state/herdr.
-  if have herdr; then
+  # Only the hosts Ben works at (micro, beast-arch, carbon); media-center and surfboard are viewed, not viewers.
+  if have herdr && [[ " ${HERDR_VIEWERS:-micro beast-arch carbon} " == *" $(uname -n) "* ]]; then
     local m saved
     saved=$(herdr machine list 2>/dev/null | awk '{print $3}')
     for m in ${HERDR_MACHINES:-beast-arch carbon media-center surfboard}; do
