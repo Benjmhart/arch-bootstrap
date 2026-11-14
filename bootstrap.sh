@@ -2343,7 +2343,7 @@ herdr_update() {
 
 install_self_distributed_binaries() {
   # herdr -- terminal multiplexer. Referenced by xmonad's startup hook
-  # (spawnOnOnce "2" "alacritty -e herdr"), so a machine without it fails at login
+  # (spawnOnOnce "2" "~/bin/term -e herdr"), so a machine without it fails at login
   # with "command not found".
   # Pinned: the release publishes no checksum or attestation, so the sha256 here is
   # the only integrity check (task 76). Bump both together. An installed copy older
