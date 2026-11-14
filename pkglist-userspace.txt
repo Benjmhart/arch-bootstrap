@@ -56,6 +56,7 @@ inotify-tools
 jq
 kdenlive
 keepassxc
+kernel-modules-hook   # keeps the running kernel's modules through a kernel upgrade (Ben 2026-11-14); see stage_packages
 kvantum
 kvantum-qt5
 less

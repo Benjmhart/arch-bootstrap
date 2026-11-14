@@ -1211,6 +1211,27 @@ BindPaths=$dir" "paccache can see $dir"; then
   return 0
 }
 
+# kernel-modules-hook (Ben 2026-11-14): its PreTransaction hook copies the running kernel's modules aside before a
+# kernel upgrade and puts them back after, so a module first needed after the upgrade (a USB device, a filesystem,
+# nftables) still loads before the reboot. Its own transaction, ahead of the -Su: a hook installed in the same
+# transaction as the kernel does not run for it. Old modules go to /usr/lib/modules/.old at boot
+# (linux-modules-cleanup.service, setup_kernel_modules_hook) and are deleted after 4 weeks (its tmpfiles rule).
+kernel_modules_hook_first() {
+  pacman -Qq kernel-modules-hook >/dev/null 2>&1 && return 0
+  run sudo pacman -S --needed --noconfirm kernel-modules-hook || return 1
+  did "kernel-modules-hook installed before the upgrade"
+}
+
+setup_kernel_modules_hook() {
+  pacman -Qq kernel-modules-hook >/dev/null 2>&1 || return 0
+  if systemctl is-enabled --quiet linux-modules-cleanup.service 2>/dev/null; then
+    ok "linux-modules-cleanup enabled"
+  else
+    run sudo systemctl enable linux-modules-cleanup.service || return 1
+    did "linux-modules-cleanup enabled (moves old kernels' modules aside at boot)"
+  fi
+}
+
 stage_packages() {
   stage_banner "10 packages -- user-space only"
 
@@ -1267,6 +1288,7 @@ stage_packages() {
     # packager key newer than the installed keyring otherwise fails "invalid or corrupted
     # package (PGP signature)".
     run sudo pacman -Syy --needed --noconfirm archlinux-keyring || return 1
+    kernel_modules_hook_first || return 1
     run sudo pacman -Suu --needed --noconfirm ${ignore:+--ignore "$ignore"} ${missing[@]+"${missing[@]}"} || return 1
     did "packages at the archive of $date${missing[0]:+; installed ${#missing[@]}: ${missing[*]}}"
   elif (( ${#missing[@]} == 0 )); then
@@ -1279,6 +1301,7 @@ stage_packages() {
     # mean a routine re-run silently upgraded the whole system. The keyring first, as above;
     # never on its own, since -Sy without the -Su would leave the trap for a later `pacman -S`.
     run sudo pacman -Sy --needed --noconfirm archlinux-keyring
+    kernel_modules_hook_first
     run sudo pacman -Syu --needed --noconfirm ${ignore:+--ignore "$ignore"} "${missing[@]}"
     did "${#missing[@]} user-space package(s) installed"
   fi
@@ -6032,6 +6055,7 @@ stage_services() {
   setup_lid
   setup_pointer
   setup_tlp
+  setup_kernel_modules_hook
   setup_caps_escape
   setup_touchpad_quirks
   setup_x131e_brightness_keys
