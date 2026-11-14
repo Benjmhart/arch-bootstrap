@@ -1954,6 +1954,12 @@ install_herdr_integrations() {
       did "herdr $agent integration installed"
     fi
   done
+  # The herdr skill for Claude (~/.claude/skills/herdr/SKILL.md), regenerated from the installed herdr by the dotfiles'
+  # hook (it also runs at every Claude SessionStart, since `herdr update` can happen at any time). Ben 2026-11-13.
+  if [[ -f $HOME/.claude/hooks/herdr-skill-sync.sh ]]; then
+    run bash "$HOME/.claude/hooks/herdr-skill-sync.sh"
+    ok "herdr skill for Claude in sync with $(herdr --version 2>/dev/null | head -1)"
+  fi
 }
 
 # Terminal-tool plugins, kept at their latest release on every run (Ben 2026-10-18: "this should also update by default.
