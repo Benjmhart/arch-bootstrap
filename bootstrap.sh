@@ -1954,6 +1954,23 @@ install_herdr_integrations() {
       did "herdr $agent integration installed"
     fi
   done
+  # herdr machines (Ben 2026-11-13): each host's herdr window also lists the other hosts' workspaces and agents. micro is
+  # never added: it takes no ssh, by design (Ben: "a feature, not a bug"). </dev/null: with no terminal, herdr cannot be
+  # told yes to stopping an incompatible remote server (that would kill its agents). Saved in ~/.local/state/herdr.
+  if have herdr; then
+    local m saved
+    saved=$(herdr machine list 2>/dev/null | awk '{print $3}')
+    for m in ${HERDR_MACHINES:-beast-arch carbon media-center surfboard}; do
+      [[ $m == "$(uname -n)" ]] && continue
+      if grep -qxF "$m" <<<"$saved"; then
+        ok "herdr machine $m saved"
+      elif run timeout 90 herdr machine add "$m" </dev/null >/dev/null 2>&1; then
+        did "herdr machine $m added"
+      else
+        warn "herdr machine $m: could not add (offline?); next run tries again"
+      fi
+    done
+  fi
   # The herdr skill for Claude (~/.claude/skills/herdr/SKILL.md), regenerated from the installed herdr by the dotfiles'
   # hook (it also runs at every Claude SessionStart, since `herdr update` can happen at any time). Ben 2026-11-13.
   if [[ -f $HOME/.claude/hooks/herdr-skill-sync.sh ]]; then
