@@ -1985,11 +1985,11 @@ install_herdr_integrations() {
 # a plugin is arbitrary code (herdr-navigator v0.3.6 and smart-enter were read on 2026-10-18), Ben's accepted trade-off.
 # Keys and settings stay in the dotfiles; plugin code and yazi's package.toml live only on each machine.
 # Benjmhart/herdr-folders (Ben's own, published 2026-11-01): python3 only, but rides the cargo gate below with navigator.
-# Benjmhart/herdr-streams (Ben's own, 2026-11-13, station-maintenance fleet 25): python3 only, same. Until it is published
-# with a v* tag the loop warns "no release tag found" and moves on.
+# Benjmhart/herdr-queues (Ben's own, 2026-11-13, station-maintenance fleet 25; was herdr-streams until 2026-11-14):
+# python3 only, same. Its jumps across machines also need `herdr-queues watch` (dotfiles, started by xmonad/sway).
 # kryptamine/herdr-auto-title (Ben 2026-11-13: "auto title tab names are ok for now, get them on the other machines";
 # fleet 24): names tabs and panes after what runs in them. Its build step downloads the release binary and checks its sha256.
-HERDR_PLUGINS="${HERDR_PLUGINS:-thanhdat77/herdr-navigator Benjmhart/herdr-folders Benjmhart/herdr-streams kryptamine/herdr-auto-title}"
+HERDR_PLUGINS="${HERDR_PLUGINS:-thanhdat77/herdr-navigator Benjmhart/herdr-folders Benjmhart/herdr-queues kryptamine/herdr-auto-title}"
 YAZI_PLUGINS="${YAZI_PLUGINS:-yazi-rs/plugins:smart-enter ndtoan96/ouch Rolv-Apneseth/starship yazi-rs/flavors:dracula}"
 install_tui_plugins() {
   local repo tag p
@@ -2006,6 +2006,10 @@ install_tui_plugins() {
         run herdr plugin install "$repo" --ref "$tag" --yes && did "herdr plugin ${repo#*/} at $tag"
       fi
     done
+  fi
+  # herdr-streams became herdr-queues (2026-11-14, fleet 25): the old id goes, its state is read by the new one.
+  if have herdr && herdr plugin list 2>/dev/null | grep -q '^- benjmhart.streams '; then
+    run herdr plugin uninstall benjmhart.streams >/dev/null && did "herdr plugin benjmhart.streams removed (now herdr-queues)"
   fi
   # The fold plugin lives in the dotfiles (~/.config/herdr/fold; Ben 2026-11-01), so it is linked, not installed: the
   # link points at the checkout, and an fpush moving the dotfiles updates it. No cargo needed.
