@@ -131,7 +131,13 @@ check_login() {
 # login_ok [HOST]: ask for the login password (once per run) until it checks out. Then "${_SECRET[login]}" is right.
 login_ok() { with_secret login 0 check_login "${1:-}"; }
 # sudo_login: the checked login password into sudo's ticket here (one try, it is already known to be right).
-sudo_login() { login_ok || return 3; printf '%s\n' "${_SECRET[login]}" | sudo -S -p '' -k -v 2>/dev/null; }
+# Not `sudo -k -v`: with -k, sudo checks the password but does NOT store a ticket, so the next sudo asked again (it timed
+# out unseen, or a YubiKey touch answered it; micro 2026-11-15, twice). -k alone first drops any old ticket.
+sudo_login() {
+  login_ok || return 3
+  sudo -k
+  printf '%s\n' "${_SECRET[login]}" | sudo -S -p '' -v 2>/dev/null && sudo -n true 2>/dev/null
+}
 
 # keyring_unlock HOST (secret on stdin): unlock HOST's login keyring through gnome-keyring's own D-Bus call (what a
 # desktop login does). Exit 0 unlocked (or already was), 3 wrong password, 1 other. No lockout: safe to retry.
