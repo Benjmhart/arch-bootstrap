@@ -1,0 +1,188 @@
+#!/usr/bin/env bash
+# fleet-reboot [--dry-run] [host...] -- reboot the fleet (default: every machine but this one) with nothing lost: the
+# /loop agents pause first, CI finishes, all reboot at once, each disk is unlocked from here (YubiKey touches), then
+# everything is checked, the keyrings unlocked and the loops restarted. Run on micro, in a real terminal. micro itself
+# is last and by hand: nobody would be left to unlock the others (station-maintenance fleet 30; the 2026-11-14 round,
+# $OPS/micro-fleet-reboot-20261114.log, is what this automates).
+#   --dry-run   every read-only step for real (gates, loops and their commands, CI, keyrings); prompts, reboots and
+#               resumes nothing, and asks no password.
+# Passwords (lib/ops.sh): login, asked once (sudo for the CI check where docker needs root; the keyrings after boot).
+set -uo pipefail
+shopt -s extglob
+here=$(cd "$(dirname "$0")" && pwd)
+. "$here/../lib/ops.sh" || { echo "FAIL  no $here/../lib/ops.sh"; exit 1; }
+DRY=0; [[ ${1:-} == --dry-run ]] && { DRY=1; shift; }
+HOSTS=("$@"); (( ${#HOSTS[@]} )) || read -r -a HOSTS <<<"${FLEET_HOSTS:-beast-arch carbon media-center surfboard}"
+for h in "${HOSTS[@]}"; do [[ $h != "$(uname -n)" ]] || fail "not $h: this machine reboots last, by hand"; done
+ops_log "$(uname -n)-fleet-reboot$( (( DRY )) && echo -dry)-$(date +%Y%m%d)"
+(( DRY )) && attn "DRY RUN: nothing is prompted, rebooted or resumed"
+r() { ssh -o BatchMode=yes -o ConnectTimeout=6 "$@"; }
+START=$(date -u +%FT%TZ)
+STATE=$OPS/fleet-reboot-loops.tsv   # host, cwd, session, loop command: what to resume (kept if this run dies midway)
+
+# The /loop agents on a host: for each Claude session, its transcript says whether a loop is running. A /loop command
+# starts one, ScheduleWakeup {prompt} keeps it going (that prompt is the command to restart it), {stop: true} ends it.
+LOOPS_PY='import glob, json, os, sys
+for ln in sys.stdin:
+    if ln.count("\t") != 2:  # no agents on that host: an empty line
+        continue
+    pane, sid, cwd = ln.rstrip("\n").split("\t")
+    f = glob.glob(os.path.expanduser(f"~/.claude/projects/*/{sid}.jsonl"))
+    if not f:
+        continue
+    on, cmd = False, ""
+    for raw in open(f[0], errors="replace"):
+        if "/loop" not in raw and "ScheduleWakeup" not in raw:
+            continue
+        try:
+            d = json.loads(raw)
+        except ValueError:
+            continue
+        c = (d.get("message") or {}).get("content")
+        if d.get("type") == "user" and isinstance(c, str) and "<command-name>/loop</command-name>" in c:
+            on, cmd = True, "/loop " + c.split("<command-args>", 1)[-1].split("</command-args>", 1)[0].strip()
+        elif d.get("type") == "assistant" and isinstance(c, list):
+            for b in c:
+                if b.get("type") == "tool_use" and b.get("name") == "ScheduleWakeup":
+                    i = b.get("input") or {}
+                    on, cmd = (False, cmd) if i.get("stop") else (True, i.get("prompt") or cmd)
+    if on:
+        print(pane, cwd, sid, cmd, sep="\t")'
+agents() { herdr --machine "$1" agent list 2>/dev/null | python3 -c 'import json,sys
+for a in json.load(sys.stdin)["result"]["agents"]:
+    s = (a.get("agent_session") or {}).get("value")
+    if a.get("agent") == "claude" and s:
+        print(a["pane_id"], s, a.get("cwd", ""), a.get("agent_status", ""), sep="\t")'; }
+status() { herdr --machine "$1" agent get "$2" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["agent"]["agent_status"])' 2>/dev/null || echo "?"; }
+# say HOST PANE TEXT: type it into a Claude pane and submit (Alt+Enter: Ben's keybindings make Enter a newline; the
+# dotfiles agent-prompt, across machines). True once the agent is working.
+say() {
+  herdr --machine "$1" agent prompt "$2" "$3" >/dev/null && herdr --machine "$1" agent send-keys "$2" alt+enter >/dev/null || return 1
+  local i; for i in $(seq 1 15); do [[ $(status "$1" "$2") == working ]] && return 0; sleep 1; done; return 1
+}
+
+step "gate: no fpush running, and each machine can reboot without a password"
+for p in /proc/[0-9]*; do c=$(tr '\0' ' ' <"$p/cmdline" 2>/dev/null) || continue
+  [[ $c == *"tools/fleet push"* || $c == *"tools/fleet-apply apply"* ]] && fail "an fpush is still running (pid ${p#/proc/})"
+done
+for h in "${HOSTS[@]}"; do
+  out=$(r "$h" 'pacman -Q kernel-modules-hook && sudo -n -l /usr/local/bin/reboot-to-unlock >/dev/null && echo READY' 2>&1)
+  [[ $out == *READY* ]] && ok "$h: $(head -1 <<<"$out"), reboot-to-unlock" || fail "$h: $out"
+  note "$h: kernel $(r "$h" 'echo "running $(uname -r), installed $(pacman -Q linux | cut -d" " -f2)"')"
+done
+(( DRY )) || login_ok || fail "no login password"   # checked now (no lockout): sudo for CI, the keyrings after boot
+
+step "loops: the /loop agents on each machine (from their transcripts)"
+declare -A BEFORE=()
+: >"$STATE.new"
+for h in "${HOSTS[@]}"; do
+  a=$(agents "$h"); BEFORE[$h]=$(grep -c . <<<"$a")
+  r "$h" "python3 -c $(printf '%q' "$LOOPS_PY")" <<<"$(cut -f1-3 <<<"$a")" | sed "s/^/$h\t/" >>"$STATE.new"
+  note "$h: ${BEFORE[$h]} Claude agent(s)"
+done
+mapfile -t LOOPS <"$STATE.new"
+for l in "${LOOPS[@]}"; do IFS=$'\t' read -r h p cwd sid cmd <<<"$l"; ok "$h $p ${cwd##*/}: $cmd"; done
+(( ${#LOOPS[@]} )) || note "no loop running"
+(( DRY )) || mv "$STATE.new" "$STATE"
+
+step "pause: each loop finishes its iteration (merging a green PR as it would), stops its wakeups, replies PAUSED:"
+PAUSE="Fleet reboot (station-maintenance fleet 30) starts when you are paused: finish this iteration, merge its PR if CI is green as your loop would, don't start another, call ScheduleWakeup with stop: true, then reply with one line that starts with the word PAUSED and a colon, and says what you'll do on resume."
+for l in "${LOOPS[@]}"; do IFS=$'\t' read -r h p cwd sid cmd <<<"$l"
+  if (( DRY )); then note "would prompt $h $p (${cwd##*/}), status now: $(status "$h" "$p")"; continue; fi
+  # A blocked agent is waiting on Ben's answer: typing over its question would answer it.
+  until [[ $(status "$h" "$p") != blocked ]]; do attn "$h $p (${cwd##*/}) is waiting on you: answer it there"; sleep 30; done
+  say "$h" "$p" "$PAUSE" && ok "$h $p: asked" || attn "$h $p: the prompt may be sitting unsent (herdr --machine $h agent read $p)"
+done
+if (( ! DRY )); then
+  for l in "${LOOPS[@]}"; do IFS=$'\t' read -r h p cwd sid cmd <<<"$l"; n=0
+    # Not this prompt's own words: they never spell the marker out, so only the agent's reply matches.
+    until [[ $(status "$h" "$p") == @(done|idle) ]] && herdr --machine "$h" agent read "$p" --source visible 2>/dev/null | grep -q 'PAUSED:'; do
+      n=$((n + 1)); bar_clear; bar $((n % 60)) 60 "waiting for $h $p (${cwd##*/}) to say PAUSED: ($((n / 6)) min)"; sleep 10
+      (( n == 360 )) && { read -rp "$h $p not paused after an hour: c = carry on anyway, q = stop " a </dev/tty; [[ $a == c ]] && break; fail "pause: $h $p"; }
+    done; bar_clear; ok "$h $p: PAUSED"
+  done
+fi
+
+step "agents: none still working (waits up to 15 min)"
+for i in $(seq 1 90); do busy=""
+  for h in "${HOSTS[@]}"; do b=$(agents "$h" | awk -F'\t' '$4 == "working" {printf "%s ", $1}'); [[ -n $b ]] && busy+="$h:[${b% }] "; done
+  [[ -z $busy ]] && { ok "none working"; break; }
+  (( DRY )) && { note "working now: $busy(the real run waits for them)"; break; }
+  bar "$i" 90 "working: $busy"; sleep 10
+  (( i == 90 )) && { read -rp "still working: $busy-- reboot anyway? [y/N] " a </dev/tty; [[ $a == y ]] || fail "agents busy: $busy"; }
+done
+
+step "CI: no job running on any machine (ci_idle_wait; as root where docker needs it)"
+CIFN="$(declare -f ok attn fail ci_jobs ci_idle_wait)"
+for h in "${HOSTS[@]}"; do
+  if (( DRY )); then
+    j=$(r "$h" "bash -c $(printf '%q' "$CIFN; ci_jobs")" 2>/dev/null); rc=$?
+    (( rc == 2 )) && j=$(r "$h" "sudo -n bash -c $(printf '%q' "$CIFN; ci_jobs")" 2>/dev/null) && rc=0
+    (( rc == 2 )) && { note "$h: docker needs root (the real run uses the login password); GitHub jobs: $(r "$h" 'pgrep -xc Runner.Worker')"; continue; }
+    [[ -n $j ]] && attn "$h: running now: $(tr '\n' ' ' <<<"$j")(the real run waits)" || ok "$h: idle"; continue
+  fi
+  r "$h" "bash -c $(printf '%q' "$CIFN; ci_jobs >/dev/null")" 2>/dev/null; rc=$?
+  if (( rc == 2 )); then printf '%s\n' "${_SECRET[login]}" | r "$h" "sudo -S -p '' bash -c $(printf '%q' "$CIFN; ci_idle_wait")"
+  else r "$h" "bash -c $(printf '%q' "$CIFN; ci_idle_wait")"; fi || fail "CI check on $h"
+  ok "$h: no CI job running"
+done
+
+if (( DRY )); then
+  step "would reboot ${HOSTS[*]} at once (reboot-to-unlock), unlock each from here (tools/unlock: YubiKey touches), verify, unlock keyrings, resume:"
+  for l in "${LOOPS[@]}"; do IFS=$'\t' read -r h p cwd sid cmd <<<"$l"; note "$h ${cwd##*/}: /clear, then $cmd"; done
+  for h in "${HOSTS[@]}"; do note "$h keyring locked now: $(keyring_locked "$h")"; done
+  finish "dry run done: nothing changed (log: $OPS_LOG)"; exit 0
+fi
+
+step "reboot: ${HOSTS[*]} at once (reboot-to-unlock skips the GRUB menu once)"
+for h in "${HOSTS[@]}"; do r "$h" 'sudo -n /usr/local/bin/reboot-to-unlock' >/dev/null 2>&1 & done; wait
+for h in "${HOSTS[@]}"; do down=0
+  for i in $(seq 1 40); do r "$h" true 2>/dev/null || { down=1; break; }; sleep 3; done
+  (( down )) && ok "$h went down" || fail "$h still up 2 min after the reboot command"
+done
+
+step "unlock: one machine at a time; touch the YubiKey when it blinks"
+for h in "${HOSTS[@]}"; do
+  until UNLOCK_WAIT=900 "$here/unlock" "$h"; do
+    read -rp "unlock $h failed: r = retry, s = skip (it stays at its prompt), q = stop [r/s/q] " a </dev/tty
+    case $a in s) attn "$h skipped: still locked"; continue 2 ;; q) fail "unlock $h: stopped by you" ;; esac
+  done; ok "$h unlocked"
+done
+
+step "verify: the installed kernel, its modules, no failed units, herdr and its agents back"
+for h in "${HOSTS[@]}"; do up=0
+  for i in $(seq 1 60); do r "$h" true 2>/dev/null && { up=1; break; }; sleep 5; done
+  (( up )) || { attn "$h not reachable 5 min after its unlock"; continue; }
+  r "$h" 'k=$(pacman -Q linux | cut -d" " -f2 | sed "s/\.arch/-arch/"); u=$(uname -r)
+    echo "kernel $u (installed $k): $([ "$u" = "$k" ] && echo OK || echo MISMATCH); modules: $([ -d /usr/lib/modules/$u ] && echo OK || echo MISSING)"
+    echo "failed units: system $(systemctl --failed --no-legend | wc -l), user $(systemctl --user --failed --no-legend | wc -l)"' | sed "s/^/     $h: /"
+  n=0; for i in $(seq 1 24); do n=$(agents "$h" | grep -c .); (( n >= BEFORE[$h] )) && break; sleep 5; done   # herdr restores its agents
+  (( n >= BEFORE[$h] )) && ok "$h: herdr up, $n Claude agent(s) (before: ${BEFORE[$h]})" || attn "$h: $n Claude agent(s) back of ${BEFORE[$h]}"
+done
+
+step "keyrings: unlocked (gh and the loops' credentials live there until someone logs in at the desk)"
+for h in "${HOSTS[@]}"; do
+  [[ $(keyring_locked "$h") == true ]] || { ok "$h: not locked"; continue; }
+  with_secret login 3 keyring_unlock "$h" && ok "$h: keyring unlocked" || attn "$h: keyring still locked: log in there"
+done
+
+step "resume: each paused loop starts fresh (/clear, then its own loop command)"
+for l in "${LOOPS[@]}"; do IFS=$'\t' read -r h p cwd sid cmd <<<"$l"
+  p=$(agents "$h" | awk -F'\t' -v c="$cwd" '$3 == c {print $1; exit}')   # pane ids can change: find it by its project
+  [[ -n $p ]] || { attn "$h ${cwd##*/}: no agent there now: start it by hand with $cmd"; continue; }
+  say "$h" "$p" "/clear"; sleep 5
+  say "$h" "$p" "$cmd" && ok "$h $p ${cwd##*/}: $cmd (working)" || attn "$h $p ${cwd##*/}: not working after $cmd (look at it)"
+done
+rm -f "$STATE"
+
+step "CI left red since $START (rerun what the reboot killed)"
+for l in "${LOOPS[@]}"; do IFS=$'\t' read -r h p cwd sid cmd <<<"$l"
+  url=$(r "$h" "git -C $(printf '%q' "$cwd") remote get-url origin" 2>/dev/null)
+  case $url in
+    *github*) red=$(r "$h" "cd $(printf '%q' "$cwd") && gh run list --status failure --created '>=$START' --json databaseId,name,headBranch -q '.[] | \"\(.databaseId) \(.name) \(.headBranch)\"'" 2>/dev/null)
+              [[ -n $red ]] && attn "$h ${cwd##*/}: red: $red (gh run rerun --failed <id>)" || ok "$h ${cwd##*/}: nothing red" ;;
+    *) note "$h ${cwd##*/}: $url: look at its pipelines (GitLab: Retry on a killed job)" ;;
+  esac
+done
+
+finish "fleet back up. Now reboot micro yourself (sudo reboot) and unlock it at its keyboard. (log: $OPS_LOG)"

@@ -44,11 +44,19 @@ bar_clear() { { printf '\r\e[K' >/dev/tty; } 2>/dev/null; }
 # docker restart SIGKILLs the job's container 10 s later (exit 137): trstn's tests job on surfboard, 2026-11-14 08:31,
 # from $OPS/surfboard-kernel-modules-20261114.sh. ponytail: no lock, so a job picked up between the check and the
 # restart can still die; stop the runner services first if that ever bites.
+# ci_jobs: the jobs running here now, one per line ("github <pid>" / "gitlab <container>"); empty = idle. Exit 2 when
+# docker is here but this user can't list it (a GitLab job could hide there: run it as root).
+ci_jobs() {
+  if command -v docker >/dev/null && ! docker ps -q >/dev/null 2>&1; then return 2; fi
+  pgrep -x Runner.Worker | sed 's/^/github /'
+  { docker ps --format '{{.Names}}' --filter name=^runner- 2>/dev/null || true; } | sed 's/^/gitlab /'
+  return 0
+}
 ci_idle_wait() {
   local waited=0
   if command -v docker >/dev/null && ! docker ps -q >/dev/null 2>&1; then
     fail "ci_idle_wait: can't list docker containers as $USER, so a GitLab job could be missed (run it as root)"; fi
-  while pgrep -x Runner.Worker >/dev/null || [[ -n $(docker ps -q --filter name=^runner- 2>/dev/null) ]]; do
+  while [[ -n $(ci_jobs) ]]; do
     (( waited++ )) || attn "a CI job is running on $(uname -n): waiting for it to finish (checked every 10 s)"
     sleep "${CI_IDLE_POLL:-10}"
   done

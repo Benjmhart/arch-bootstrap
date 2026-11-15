@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# tests/fleet-reboot-loops: tools/fleet-reboot's loop finder reads a Claude transcript the way the 2026-11-14 round did
+# by hand: a /loop command starts a loop, ScheduleWakeup {prompt} keeps it (the command to resume), {stop: true} ends it.
+set -u
+t=$(mktemp -d); trap 'rm -rf "$t"' EXIT; d=$t/.claude/projects/-p; mkdir -p "$d"
+py=$(sed -n "/^LOOPS_PY='/,/sep=\"\\\\t\")'\$/p" "$(dirname "$0")/../tools/fleet-reboot" | sed "1s/^LOOPS_PY='//; \$s/'\$//")
+u() { printf '{"type":"user","message":{"content":"<command-name>/loop</command-name>\\n<command-args>%s</command-args>"}}\n' "$1"; }
+w() { printf '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"ScheduleWakeup","input":%s}]}}\n' "$1"; }
+{ u "/next-story:bmad-pony"; w '{"delaySeconds":60,"prompt":"/loop /next-story:bmad-pony x"}'; } >"$d/a.jsonl"      # running
+{ u "/next-story:bmad-pony"; w '{"stop":true}'; } >"$d/b.jsonl"                                                  # stopped
+{ u "/old"; w '{"stop":true}'; u "/new arg"; } >"$d/c.jsonl"                                                     # restarted
+printf '{"type":"user","message":{"content":"hello"}}\n' >"$d/e.jsonl"                                          # no loop
+out=$(printf 'p1\ta\t/x/a\np2\tb\t/x/b\np3\tc\t/x/c\n\np5\te\t/x/e\np6\tnone\t/x/f\n' | HOME=$t python3 -c "$py")
+want=$(printf 'p1\t/x/a\ta\t/loop /next-story:bmad-pony x\np3\t/x/c\tc\t/loop /new arg')
+[[ $out == "$want" ]] && echo "ok: running and restarted loops found, stopped and loop-less ones skipped" \
+  || { echo "FAIL"; echo "got:"; echo "$out"; echo "want:"; echo "$want"; exit 1; }
