@@ -27,6 +27,8 @@
 #                                    nothing else is touched
 #                                 "keys" = move to the snapshot and install authorized_keys only
 #                                 (an urgent revocation); no bootstrap stages.
+#   fleet verify                  every machine now, one line each: at the approved snapshot, herdr + plugins
+#                                 alike, kernel, desk helpers, / free, failed units (also the end of a push)
 #   fleet rollback [all]          re-apply the previous approved snapshot: micro only, or every
 #                                 machine. Code, dotfiles AND packages go back (the repo-date of that
 #                                 commit; pacman -Syuu downgrades); secrets never do (the vault).
@@ -497,6 +499,70 @@ table() {  # print results; nonzero if anything failed
   return $bad
 }
 
+# verify: every machine's state after a push, one line each (Ben 2026-11-14, station-maintenance fleet 35): at the
+# approved snapshot, herdr and its plugins alike everywhere, no failed units, the running kernel the installed one, the
+# desk helpers running where there is a display, / above the bootstrap's gate. Read-only, over micro's own ssh (no fleet
+# key, no passphrase), so it also runs alone: `fleet verify`.
+PROBE='export PATH=$HOME/.local/bin:$PATH
+# AB DOT SEC: the approved snapshot, set in front of this text. "same", "ahead <sha>" (commits made here since: the
+# vault on beast-arch), "other <sha>" (anything else).
+at() { local h; h=$(git --git-dir="$1" rev-parse HEAD 2>/dev/null) || { echo "other none"; return; }
+  [[ $h == "$2" ]] && echo same && return
+  git --git-dir="$1" merge-base --is-ancestor "$2" "$h" 2>/dev/null && echo "ahead ${h:0:7}" || echo "other ${h:0:7}"; }
+echo "ab=$(at ~/projects/arch-bootstrap/.git "$AB")"
+echo "dot=$(at ~/.dot "$DOT")"
+echo "sec=$(at ~/secrets/.git "$SEC")"
+echo "herdr=$(herdr --version 2>/dev/null | awk "{print \$NF}")"
+echo "plugins=$(herdr plugin list 2>/dev/null | grep -o "github:[^]]*" | sed "s|^github:[^/]*/||" | sort | tr "\n" " ")"
+echo "kernel=$(uname -r)"
+echo "installed=$(pacman -Q linux 2>/dev/null | awk "{print \$2}" | sed "s/\.arch/-arch/")"
+echo "failed=$(systemctl --failed --plain --no-legend 2>/dev/null | awk "{print \$1}" | tr "\n" " ")$(systemctl --user --failed --plain --no-legend 2>/dev/null | awk "{print \"user:\" \$1}" | tr "\n" " ")"
+echo "x=$(pgrep -x "xmonad.*|sway" >/dev/null && echo 1 || echo 0)"   # a desk: the WM starts the helpers (surfboard runs X for Steam only)
+echo "watch=$(pgrep -f "[q]ueues.py watch" >/dev/null && echo 1 || echo 0)"
+echo "oio=$(pgrep -f "[o]ldinout.py daemon" >/dev/null && echo 1 || echo 0)"
+echo "free=$(df --output=avail -BG / | tail -1 | tr -dc 0-9)"'
+verify() {
+  local h k v a="" d="" s="" out probe bad=0 up=0; local -a notes=(); local -A P=() herdrs=() plug=()
+  [[ -s $SNAPS ]] && read -r _ a d s _ < <(tail -1 "$SNAPS")
+  probe="AB=$a DOT=$d SEC=$s
+$PROBE"
+  note_() { notes+=("$1"); bad=1; }
+  echo; echo "=== verify: every machine now (approved snapshot ${a:0:7} ${d:0:7} ${s:0:7}; + = ahead of it, ! = elsewhere; kernel* = reboot pending)"
+  printf '%-13s %-12s %-7s %-16s %-5s %-5s %s\n' host snapshot herdr kernel desk "/" failed
+  for h in "$SELF" "${hosts[@]}"; do
+    if [[ $h == "$SELF" ]]; then out=$(bash -s <<<"$probe" 2>/dev/null)
+    else out=$(ssh -o BatchMode=yes -o ConnectTimeout=8 "$h" bash -s <<<"$probe" 2>/dev/null); fi
+    [[ $out == *"free="* ]] || { printf '%-13s offline (skipped)\n' "$h"; continue; }
+    while IFS='=' read -r k v; do P[$h.$k]=$v; done <<<"$out"
+    local sn="" desk=- kern=${P[$h.kernel]} r
+    if [[ -n $a ]]; then for r in ab dot sec; do case ${P[$h.$r]} in
+      same) ;;
+      ahead*) sn+="$r+ " ;;   # ahead: commits made on this machine since; repos_report shows if they are unpushed
+      *) sn+="$r! "; note_ "$h: $r is not at the approved snapshot (has ${P[$h.$r]#other })" ;;
+    esac; done; fi
+    sn=${sn% }; sn=${sn:-ok}
+    [[ $kern == "${P[$h.installed]}" ]] || { notes+=("$h: running kernel $kern, installed ${P[$h.installed]}: reboot pending"); kern+="*"; }
+    if [[ ${P[$h.x]} == 1 ]]; then desk=ok
+      [[ ${P[$h.watch]} == 1 ]] || { desk=NO; note_ "$h: herdr-queues watcher not running"; }
+      [[ ${P[$h.oio]} == 1 ]] || { desk=NO; note_ "$h: oldinout daemon not running"; }
+    fi
+    (( ${P[$h.free]:-0} >= 5 )) || note_ "$h: / has ${P[$h.free]}G free (bootstrap gate: 5G)"
+    [[ -z ${P[$h.failed]// } ]] || note_ "$h: failed units: ${P[$h.failed]}"
+    printf '%-13s %-12s %-7s %-16s %-5s %-5s %s\n' "$h" "$sn" "${P[$h.herdr]:-none}" "$kern" "$desk" "${P[$h.free]}G" "${P[$h.failed]:--}"
+    herdrs[${P[$h.herdr]:-none}]+="$h "
+    for v in ${P[$h.plugins]}; do plug[${v%@*}]+="$h=${v#*@} "; done
+    up=$((up + 1))
+  done
+  (( ${#herdrs[@]} <= 1 )) || for v in "${!herdrs[@]}"; do note_ "herdr $v on: ${herdrs[$v]}"; done
+  for k in "${!plug[@]}"; do   # a plugin missing on a machine, or not at one version everywhere
+    v=$(tr ' ' '\n' <<<"${plug[$k]}" | sed -n 's/.*=//p' | sort -u | wc -l)
+    (( $(wc -w <<<"${plug[$k]}") == up && v == 1 )) || note_ "plugin $k differs: ${plug[$k]}"
+  done
+  for v in "${notes[@]}"; do attn "$v"; done
+  (( bad )) && return 1
+  ok "verify: every reachable machine as expected"
+}
+
 cmd=${1:-status}; shift || true
 case $cmd in
 setup)
@@ -586,6 +652,7 @@ push)
   unset pw; forget_secrets
   repos_report
   attention_report
+  verify || true   # each machine as it is now (fleet 35); informs, never changes the push's result
   table "fleet push: arch-bootstrap ${ab:0:7}  dotfiles ${dot:0:7}  secrets ${sec:0:7}"; rc=$?
   echo
   if (( rc == 0 )); then finish "FPUSH OK -- every machine is at this snapshot"
@@ -645,5 +712,6 @@ stick)
   gitr ab worktree add -q --detach "$wt" "$ab" || die "worktree at ${ab:0:7} failed"
   RESCUE_USB_DISK=$disk FLEET_SNAPSHOTS=$SNAPS SECRETS_DIR=$SECRETS "$wt/chores/rescue-usb/run.sh"
   ;;
-*) die "usage: fleet status | push [stage ...|keys] | rollback [all] | stick | setup" ;;
+verify) verify ;;
+*) die "usage: fleet status | push [stage ...|keys] | verify | rollback [all] | stick | setup" ;;
 esac
