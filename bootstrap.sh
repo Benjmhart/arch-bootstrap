@@ -2133,6 +2133,20 @@ set_default_pdf_viewer() {
   fi
 }
 
+# qutebrowser is the default browser on a lean host (Ben 2026-11-15, micro: "qutebrowser default on micro - yes";
+# Vivaldi was, and is lighter only by not autostarting there). xdg-settings sets text/html and the http(s) handlers in
+# ~/.config/mimeapps.list. Other hosts keep their own choice.
+set_default_browser_lean() {
+  profile_on lean && have qutebrowser || return 0
+  local app=org.qutebrowser.qutebrowser.desktop
+  if [[ $(xdg-settings get default-web-browser 2>/dev/null) == "$app" ]]; then
+    ok "default browser: qutebrowser"
+  else
+    run xdg-settings set default-web-browser "$app" && did "default browser: qutebrowser" \
+      || warn "xdg-settings could not make qutebrowser the default browser"
+  fi
+}
+
 # Claude Code. Ben's call 2026-08-24 to install it, unlike nono and zed which are
 # reported only.
 #
@@ -6243,6 +6257,7 @@ stage_services() {
   install_tui_plugins
   install_keybind_find
   set_default_pdf_viewer
+  set_default_browser_lean
   keep_obsidian_sync_running
 }
 
