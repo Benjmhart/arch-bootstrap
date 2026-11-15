@@ -21,7 +21,9 @@ START=$(date -u +%FT%TZ)
 STATE=$OPS/fleet-reboot-loops.tsv   # host, cwd, session, loop command: what to resume (kept if this run dies midway)
 
 # The /loop agents on a host: for each Claude session, its transcript says whether a loop is running. A /loop command
-# starts one, ScheduleWakeup {prompt} keeps it going (that prompt is the command to restart it), {stop: true} ends it.
+# starts one; without an interval it runs on ScheduleWakeup ({prompt} keeps it going and is the command to restart it,
+# {stop: true} ends it), with one on CronCreate (CronDelete of that job ends it). A recurring CronCreate the agent made
+# by itself is a loop too: session-only, so it dies with the reboot and is resumed by asking the agent to make it again.
 LOOPS_PY='import glob, json, os, sys
 for ln in sys.stdin:
     if ln.count("\t") != 2:  # no agents on that host: an empty line
@@ -30,9 +32,9 @@ for ln in sys.stdin:
     f = glob.glob(os.path.expanduser(f"~/.claude/projects/*/{sid}.jsonl"))
     if not f:
         continue
-    on, cmd = False, ""
+    on, cmd, mode, loopjob, crons = False, "", None, None, {}  # crons: tool_use id -> [input, result text]
     for raw in open(f[0], errors="replace"):
-        if "/loop" not in raw and "ScheduleWakeup" not in raw:
+        if "/loop" not in raw and "ScheduleWakeup" not in raw and "Cron" not in raw and not (crons and "tool_result" in raw):
             continue
         try:
             d = json.loads(raw)
@@ -40,12 +42,32 @@ for ln in sys.stdin:
             continue
         c = (d.get("message") or {}).get("content")
         if d.get("type") == "user" and isinstance(c, str) and "<command-name>/loop</command-name>" in c:
-            on, cmd = True, "/loop " + c.split("<command-args>", 1)[-1].split("</command-args>", 1)[0].strip()
+            on, mode = True, None
+            cmd = "/loop " + c.split("<command-args>", 1)[-1].split("</command-args>", 1)[0].strip()
+        elif d.get("type") == "user" and isinstance(c, list):
+            for b in c:
+                if b.get("type") == "tool_result" and b.get("tool_use_id") in crons:
+                    crons[b["tool_use_id"]][1] = json.dumps(b.get("content"))
         elif d.get("type") == "assistant" and isinstance(c, list):
             for b in c:
-                if b.get("type") == "tool_use" and b.get("name") == "ScheduleWakeup":
-                    i = b.get("input") or {}
+                if b.get("type") != "tool_use":
+                    continue
+                i = b.get("input") or {}
+                if b.get("name") == "ScheduleWakeup":
+                    mode = "wake"
                     on, cmd = (False, cmd) if i.get("stop") else (True, i.get("prompt") or cmd)
+                elif b.get("name") == "CronCreate" and i.get("recurring", True) is not False:
+                    crons[b.get("id")] = [i, ""]
+                    if on and mode is None:  # the /loop just started runs on this job
+                        mode, loopjob = "cron", b.get("id")
+                elif b.get("name") == "CronDelete" and i.get("id"):
+                    for k in [k for k, (_, res) in crons.items() if str(i["id"]) in res]:
+                        del crons[k]
+    if mode == "cron":
+        on = loopjob in crons
+    own = [ci for k, (ci, _) in crons.items() if k != loopjob]
+    if not on and own:  # ponytail: a /loop and an agent-made job in one session resume as the /loop only
+        on, cmd = True, "Your recurring job ended with a reboot (session-only). Make it again: CronCreate " + json.dumps(own[-1])
     if on:
         print(pane, cwd, sid, cmd, sep="\t")'
 agents() { herdr --machine "$1" agent list 2>/dev/null | python3 -c 'import json,sys
@@ -86,7 +108,7 @@ for l in "${LOOPS[@]}"; do IFS=$'\t' read -r h p cwd sid cmd <<<"$l"; ok "$h $p 
 (( DRY )) || mv "$STATE.new" "$STATE"
 
 step "pause: each loop finishes its iteration (merging a green PR as it would), stops its wakeups, replies PAUSED:"
-PAUSE="Fleet reboot (station-maintenance fleet 30) starts when you are paused: finish this iteration, merge its PR if CI is green as your loop would, don't start another, call ScheduleWakeup with stop: true, then reply with one line that starts with the word PAUSED and a colon, and says what you'll do on resume."
+PAUSE="Fleet reboot (station-maintenance fleet 30) starts when you are paused: finish this iteration, merge its PR if CI is green as your loop would, don't start another, stop your wakeups (ScheduleWakeup with stop: true, CronDelete for a recurring job), then reply with one line that starts with the word PAUSED and a colon, and says what you'll do on resume."
 for l in "${LOOPS[@]}"; do IFS=$'\t' read -r h p cwd sid cmd <<<"$l"
   if (( DRY )); then note "would prompt $h $p (${cwd##*/}), status now: $(status "$h" "$p")"; continue; fi
   # A blocked agent is waiting on Ben's answer: typing over its question would answer it.

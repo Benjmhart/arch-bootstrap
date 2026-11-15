@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# tests/restart-check: tools/restart-check sorts processes running replaced code by their cgroup (a fake /proc).
+set -u
+t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
+mk() { mkdir -p "$t/$1"; printf '%s\n' "$2" >"$t/$1/cgroup"; echo "$3" >"$t/$1/comm"
+  printf '7f00-7f01 r-xp 0 00:00 1 %s\n' "$4" >"$t/$1/maps"; }
+mk 10 "0::/system.slice/cronie.service" crond "/usr/lib/libc.so.6 (deleted)"
+mk 11 "0::/system.slice/sshd.service" sshd "/usr/lib/libc.so.6 (deleted)"
+mk 12 "0::/user.slice/user-1000.slice/user@1000.service/app.slice/obsidian-sync.service" node "/usr/lib/libssl.so.3 (deleted)"
+mk 13 "0::/user.slice/user-1000.slice/user@1000.service/app.slice/herdr.service" herdr "/usr/lib/libc.so.6 (deleted)"
+mk 14 "0::/user.slice/user-1000.slice/session-2.scope" Xorg "/usr/lib/Xorg (deleted)"
+mk 15 "0::/system.slice/fine.service" fine "/usr/lib/libc.so.6"
+mk 16 "0::/system.slice/tmp.service" tmpuser "/tmp/x (deleted)"
+out=$(RESTART_CHECK_PROC=$t "$(dirname "$0")/../tools/restart-check" 2>&1 | sed 's/\x1b\[[0-9;]*m//g')
+bad=0
+for want in "restart pending (user): obsidian-sync.service" "restart pending (system): cronie.service ("; do
+  grep -qF "$want" <<<"$out" || { echo "FAIL: missing: $want"; bad=1; }
+done
+for n in Xorg herdr sshd; do grep "left alone" <<<"$out" | grep -qw "$n" || { echo "FAIL: $n not left alone"; bad=1; }; done
+for no in fine.service tmp.service; do grep -q "$no" <<<"$out" && { echo "FAIL: listed $no"; bad=1; }; done
+(( bad )) && { echo "$out"; exit 1; }
+echo "ok: services pending, session/NEVER left alone, unreplaced and non-/usr ignored"

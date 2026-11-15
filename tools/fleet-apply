@@ -328,7 +328,9 @@ if (( ${#stages[@]} )); then
   only=$(IFS=,; echo "${stages[*]}")
   exec 3<<<"$pw"
   unset pw
-  script -qfec "sudo -S -p '' -v <&3 && exec 3<&- && cd '$REPO' && PACMAN_IGNORE='$ignore' ./bootstrap.sh --only $only" \
+  # Then, as root in the same pty, what still runs replaced code (report only: its ATTENTION lines reach fpush's
+  # "needs you" list; fleet 30). The stages' exit code stays the run's.
+  script -qfec "sudo -S -p '' -v <&3 && exec 3<&- && cd '$REPO' && PACMAN_IGNORE='$ignore' ./bootstrap.sh --only $only; r=\$?; [ -x tools/restart-check ] && sudo -n tools/restart-check; exit \$r" \
     "$STATE/last.log" </dev/null || rc=$?
   exec 3<&-
 else

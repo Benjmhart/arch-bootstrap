@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# restart-check [--restart] -- after an upgrade, what still runs the replaced code (a needrestart in brief;
+# station-maintenance fleet 30, Ben 2026-11-14: "avoid reboots and software restarts wherever we can").
+# A process whose /proc/<pid>/maps holds a file under /usr marked "(deleted)" runs code pacman has replaced. Each is
+# sorted by its cgroup:
+#   a user or system service    restart pending; --restart restarts it (user services first)
+#   in NEVER below, or anything else (the login session, Xorg, xmonad, herdr's server, pid 1)
+#                               left alone: it picks the new code up at the next login or reboot (a note, no alarm)
+# and the running kernel against the installed one: "reboot pending", batched by tools/fleet-reboot (the
+# kernel-modules-hook keeps the running kernel's modules, so waiting is safe).
+# Report-only by default. fleet-apply runs it as root after an fpush's stages, so the report reaches fpush's
+# "needs you" list (ATTENTION lines). Not root: only this user's processes are read.
+set -uo pipefail
+shopt -s extglob
+here=$(cd "$(dirname "$0")" && pwd)
+. "$here/../lib/ops.sh" || { echo "FAIL  no $here/../lib/ops.sh"; exit 1; }
+RESTART=0; [[ ${1:-} == --restart ]] && RESTART=1
+PROC=${RESTART_CHECK_PROC:-/proc}
+# Never restarted from here: the connection this runs over, the network, the login session and its keyring, audio,
+# CI jobs (docker, the runners: a restart kills a job, fleet 30 2026-11-14), herdr (its agents).
+NEVER='^(sshd|tailscaled|NetworkManager|systemd-networkd|systemd-resolved|iwd|wpa_supplicant|dbus|dbus-broker|systemd-logind|systemd-journald|systemd-udevd|polkit|user@[0-9]+|getty@.*|display-manager|docker|containerd|gitlab-runner|actions\.runner\..*|.*herdr.*|gnome-keyring.*|pipewire.*|wireplumber|xdg-.*|at-spi.*)\.service$'
+
+declare -A SYS=() USR=() LATER=()
+for p in "$PROC"/[0-9]*; do
+  grep -qE ' /usr/.* \(deleted\)$' "$p/maps" 2>/dev/null || continue
+  cg=$(tail -1 "$p/cgroup" 2>/dev/null); unit=${cg##*/}; name=$(cat "$p/comm" 2>/dev/null || echo "pid ${p##*/}")
+  case $cg in
+    */user@+([0-9]).service/*.service) uid=${cg#*/user@}; uid=${uid%%.service*}
+      if [[ $unit =~ $NEVER ]]; then LATER[$name]=1; else USR[$uid:$unit]=1; fi ;;
+    0::/system.slice/*.service)
+      if [[ $unit =~ $NEVER ]]; then LATER[$name]=1; else SYS[$unit]=1; fi ;;
+    *) LATER[$name]=1 ;;
+  esac
+done
+(( EUID == 0 )) || note "not root: only $(id -un)'s processes were read"
+
+k=$(uname -r); base=$(cat "/usr/lib/modules/$k/pkgbase" 2>/dev/null || echo linux)
+inst=$(pacman -Q "$base" 2>/dev/null | cut -d' ' -f2 | sed 's/\.\(arch\|lts\|zen\)/-\1/')
+if [[ -n $inst && $inst != "$k" ]]; then
+  attn "kernel $base $inst installed, $k running: reboot pending (batch the fleet's with fleet-reboot)"
+fi
+
+(( ${#LATER[@]} )) && note "replaced code until the next login or reboot (left alone): $(printf '%s ' "${!LATER[@]}" | tr ' ' '\n' | sort | tr '\n' ' ')"
+if (( ! ${#SYS[@]} && ! ${#USR[@]} )); then ok "no service runs replaced code"; exit 0; fi
+
+if (( ! RESTART )); then
+  (( ${#USR[@]} )) && attn "restart pending (user): $(printf '%s ' "${!USR[@]}" | sed 's/[0-9]*://g')(restart-check --restart)"
+  (( ${#SYS[@]} )) && attn "restart pending (system): $(printf '%s ' "${!SYS[@]}")(restart-check --restart, as root)"
+  exit 0
+fi
+for u in "${!USR[@]}"; do uid=${u%%:*} unit=${u#*:}
+  if (( EUID == 0 )); then systemctl --user -M "$(id -nu "$uid")@" restart "$unit"; else systemctl --user restart "$unit"; fi \
+    && ok "restarted (user) $unit" || attn "restart failed (user): $unit"
+done
+for unit in "${!SYS[@]}"; do
+  (( EUID == 0 )) || { attn "not root: system $unit not restarted"; continue; }
+  systemctl restart "$unit" && ok "restarted $unit" || attn "restart failed: $unit"
+done

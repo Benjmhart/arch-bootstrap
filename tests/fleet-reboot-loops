@@ -10,7 +10,14 @@ w() { printf '{"type":"assistant","message":{"content":[{"type":"tool_use","name
 { u "/next-story:bmad-pony"; w '{"stop":true}'; } >"$d/b.jsonl"                                                  # stopped
 { u "/old"; w '{"stop":true}'; u "/new arg"; } >"$d/c.jsonl"                                                     # restarted
 printf '{"type":"user","message":{"content":"hello"}}\n' >"$d/e.jsonl"                                          # no loop
-out=$(printf 'p1\ta\t/x/a\np2\tb\t/x/b\np3\tc\t/x/c\n\np5\te\t/x/e\np6\tnone\t/x/f\n' | HOME=$t python3 -c "$py")
-want=$(printf 'p1\t/x/a\ta\t/loop /next-story:bmad-pony x\np3\t/x/c\tc\t/loop /new arg')
-[[ $out == "$want" ]] && echo "ok: running and restarted loops found, stopped and loop-less ones skipped" \
+cc() { printf '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"%s","name":"CronCreate","input":%s}]}}\n' "$1" "$2"
+       printf '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"%s","content":"Scheduled job %s"}]}}\n' "$1" "$3"; }
+cd_() { printf '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"x","name":"CronDelete","input":{"id":"%s"}}]}}\n' "$1"; }
+{ u "5m /check"; cc t1 '{"cron":"*/5 * * * *","prompt":"/check"}' job1; } >"$d/g.jsonl"                          # cron /loop running
+{ u "5m /check"; cc t1 '{"cron":"*/5 * * * *","prompt":"/check"}' job1; cd_ job1; } >"$d/h.jsonl"               # cron /loop deleted
+cc t2 '{"cron":"0 * * * *","prompt":"look at CI"}' job2 >"$d/k.jsonl"                                          # agent-made job
+cc t3 '{"cron":"0 9 * * *","prompt":"once","recurring":false}' job3 >"$d/m.jsonl"                             # one-shot: no loop
+out=$(printf 'p1\ta\t/x/a\np2\tb\t/x/b\np3\tc\t/x/c\n\np5\te\t/x/e\np6\tnone\t/x/f\np7\tg\t/x/g\np8\th\t/x/h\np9\tk\t/x/k\npa\tm\t/x/m\n' | HOME=$t python3 -c "$py")
+want=$(printf 'p1\t/x/a\ta\t/loop /next-story:bmad-pony x\np3\t/x/c\tc\t/loop /new arg\np7\t/x/g\tg\t/loop 5m /check\np9\t/x/k\tk\tYour recurring job ended with a reboot (session-only). Make it again: CronCreate {"cron": "0 * * * *", "prompt": "look at CI"}')
+[[ $out == "$want" ]] && echo "ok: wakeup and cron loops and agent-made jobs found; stopped, deleted, one-shot and loop-less skipped" \
   || { echo "FAIL"; echo "got:"; echo "$out"; echo "want:"; echo "$want"; exit 1; }
