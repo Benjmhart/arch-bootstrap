@@ -4776,11 +4776,14 @@ WIFI_PWR_ON_SAV=on" "TLP power-saver profile" && { systemctl is-active --quiet t
   for u in systemd-rfkill.service systemd-rfkill.socket; do
     [[ $(systemctl is-enabled "$u" 2>/dev/null) == masked ]] || { run sudo systemctl mask "$u"; did "$u masked (TLP handles radios)"; }
   done
-  for u in tlp.service tlp-pd.service; do
-    systemctl list-unit-files "$u" >/dev/null 2>&1 || continue
-    if systemctl is-enabled --quiet "$u" 2>/dev/null; then ok "$u enabled"
-    else run sudo systemctl enable --now "$u"; did "$u enabled"; fi
-  done
+  if systemctl is-enabled --quiet tlp.service 2>/dev/null; then ok "tlp.service enabled"
+  else run sudo systemctl enable --now tlp.service; did "tlp.service enabled"; fi
+  # tlp-pd is NOT enabled: D-Bus starts it on the first tlpctl call (its system-services files name
+  # SystemdService=tlp-pd.service). Enabled, it ran at every boot after multi-user.target, +4.4 s on micro's way to
+  # graphical.target (2026-11-15: userspace 21.7 s -> 27.2 s from the boot it arrived).
+  if systemctl is-enabled --quiet tlp-pd.service 2>/dev/null; then
+    run sudo systemctl disable tlp-pd.service; did "tlp-pd.service disabled (D-Bus starts it on demand)"
+  else ok "tlp-pd.service on demand (D-Bus)"; fi
 }
 
 # Pointer speed under X, every machine: the maximum (Ben 2026-10-17: +30%, then +30% more, then "max it out on all
