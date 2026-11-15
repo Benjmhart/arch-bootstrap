@@ -2029,7 +2029,9 @@ install_herdr_integrations() {
 # across machines; its daemon is `herdr-oldinout` (dotfiles, started by xmonad/sway).
 # kryptamine/herdr-auto-title (Ben 2026-11-13: "auto title tab names are ok for now, get them on the other machines";
 # fleet 24): names tabs and panes after what runs in them. Its build step downloads the release binary and checks its sha256.
-HERDR_PLUGINS="${HERDR_PLUGINS:-thanhdat77/herdr-navigator Benjmhart/herdr-folders Benjmhart/herdr-queues Benjmhart/herdr-theoldinout kryptamine/herdr-auto-title}"
+# Benjmhart/herdr-machine-icons (Ben's own, 2026-11-15, fleet 25): python3 only. Each machine's icon on its panes
+# ($machine_icon in the sidebar rows); the icon list is in the dotfiles (~/.config/herdr/plugins/config/...).
+HERDR_PLUGINS="${HERDR_PLUGINS:-thanhdat77/herdr-navigator Benjmhart/herdr-folders Benjmhart/herdr-queues Benjmhart/herdr-theoldinout kryptamine/herdr-auto-title Benjmhart/herdr-machine-icons}"
 YAZI_PLUGINS="${YAZI_PLUGINS:-yazi-rs/plugins:smart-enter ndtoan96/ouch Rolv-Apneseth/starship yazi-rs/flavors:dracula}"
 install_tui_plugins() {
   local repo tag p
