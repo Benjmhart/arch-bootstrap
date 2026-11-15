@@ -2104,6 +2104,26 @@ install_keybind_find() {
   fi
 }
 
+# terminactory (`tfac`; gitlab.com/snipedbywifi/terminactory, Ben 2026-11-15): an idle factory game for the terminal, played
+# beside the agents. A stranger's repo with no tags, so it is PINNED to a commit read before it went in (2026-11-15:
+# build.rs only embeds the game's .md pages; no network; it runs pbcopy/wl-copy/xclip for its Copy button and nothing
+# else; deps ratatui, serde, signal-hook, libc). A bump is a commit here, so fpush shows it. Hosts with a window manager,
+# like keybind-find. Not wired to Claude's Stop hook (`tfac hook`).
+TERMINACTORY_URL=https://gitlab.com/snipedbywifi/terminactory.git
+TERMINACTORY_REV=6d76220bddef2ab8d8885a5df85dfe47235f7bb6
+install_terminactory() {
+  have Xorg || have sway || { info "terminactory: no window manager here, skipped"; return 0; }
+  have cargo || { warn "terminactory: no cargo -- not installed"; return 0; }
+  local have_t; have_t=$(cargo install --list 2>/dev/null | grep '^terminactory ' || true)
+  if [[ $have_t == *"?rev=$TERMINACTORY_REV#"* ]]; then
+    ok "terminactory at ${TERMINACTORY_REV:0:7}"
+  else
+    run cargo install --locked --force --git "$TERMINACTORY_URL" --rev "$TERMINACTORY_REV" terminactory \
+      && did "terminactory at ${TERMINACTORY_REV:0:7}" \
+      || warn "terminactory: build failed -- next run"
+  fi
+}
+
 # The vault's sync is a service: enabled but stopped means notes stop moving. earlyoom killed it on beast-arch
 # (2026-10-30 21:56), it exited 0, Restart=on-failure left it down for 14 h, and the next fpush failed verify. Restart=
 # always fixes the cause (unit in the dotfiles); this heals a stopped one, and reloads first when the unit file changed,
@@ -6258,6 +6278,7 @@ stage_services() {
   # Here, not in toolchains: fpush runs this stage by default, so plugins follow their releases (beast-arch 118/119).
   install_tui_plugins
   install_keybind_find
+  install_terminactory
   set_default_pdf_viewer
   set_default_browser_lean
   keep_obsidian_sync_running
