@@ -21,5 +21,9 @@ case $rc in
   0) echo "clean: $HOME" ;;
   1) printf '%s\n' "$out" | grep ' FOUND$'
      echo "$(grep -c ' FOUND$' <<<"$out") infected file(s) under $HOME -- see ~/.local/state/chores/virus-scan.log"; exit 75 ;;
-  *) printf '%s\n' "$out" | tail -5; echo "clamscan failed (rc $rc)"; exit "$rc" ;;
+  # rc 2 = some error, and it wins over 1, so hits are still looked for. The error lines are kept: tail -5 showed only
+  # xz warnings and hid the real one, two Sundays running (2026-11-08, 11-15).
+  *) printf '%s\n' "$out" | grep ' FOUND$'
+     printf '%s\n' "$out" | grep -i 'error' | grep -v 'cli_scanxz' | sort | uniq -c | sort -rn | head -40
+     echo "clamscan failed (rc $rc), $(grep -c ' FOUND$' <<<"$out") hit(s)"; exit "$rc" ;;
 esac

@@ -5983,6 +5983,16 @@ disk=\$(lsblk -dno PATH,SERIAL,TRAN | awk '\$2==\"$RESCUE_USB_SERIAL\" && \$3==\
 for p in \$(lsblk -lnpo PATH,MOUNTPOINT \"\$disk\" | awk 'NF==2 {print \$1}'); do umount \"\$p\" || exit 1; done
 echo y | /usr/bin/ventoy -u \"\$disk\"" "rescue-ventoy-upgrade" || true
   [[ -x $bin ]] || run sudo chmod 755 "$bin"
+  # The chore runs from the user manager, which polkit never counts as the active session, so udisks wants a password
+  # to mount VTOYEFI (failed 2026-11-16 00:28; the data partition only worked because the desktop had automounted it).
+  # This stick alone, by serial, for this user.
+  put_etc_file /etc/polkit-1/rules.d/50-rescue-usb-mount.rules "// Written by arch-bootstrap (setup_rescue_ventoy_upgrade): the rescue-usb chore mounts the rescue stick unattended.
+polkit.addRule(function(action, subject) {
+  if ((action.id == 'org.freedesktop.udisks2.filesystem-mount' ||
+       action.id == 'org.freedesktop.udisks2.filesystem-mount-other-seat') &&
+      subject.user == '$USER' && action.lookup('drive.serial') == '$RESCUE_USB_SERIAL')
+    return polkit.Result.YES;
+});" "polkit: $USER mounts the rescue stick without a password" || true
   local sf=/etc/sudoers.d/20-rescue-ventoy-upgrade tmp; tmp=$(mktemp)
   printf '%s\n' "$USER ALL=(root) NOPASSWD: $bin \"\"" >"$tmp"
   if sudo -n cmp -s "$tmp" "$sf" 2>/dev/null; then
