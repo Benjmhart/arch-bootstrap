@@ -2059,6 +2059,13 @@ install_tui_plugins() {
     if herdr plugin list 2>/dev/null | grep -q '^- local.fold '; then ok "herdr plugin local.fold linked"
     else run herdr plugin link "$HOME/.config/herdr/fold" >/dev/null && did "herdr plugin local.fold linked"; fi
   fi
+  # A plugin installed into a running server never gets its startup run (herdr runs those at server start), so
+  # herdr-machine-icons tagged no pane until a pane or agent appeared (fleet 25, 2026-11-15). Tagging is idempotent.
+  local mi
+  mi=$(herdr plugin list --plugin benjmhart.machine-icons --json 2>/dev/null | jq -r '.result.plugins[0].plugin_root // empty' 2>/dev/null || true)
+  if [[ -n $mi && -f $mi/machine_icons.py ]] && herdr status server 2>/dev/null | grep -q '^status: running'; then
+    (cd "$mi" && python3 machine_icons.py) && ok "herdr machine icons tagged" || warn "herdr machine icons: tagging failed -- next run"
+  fi
   # A running server keeps the config.toml it started with, so new key bindings (the navigator's prefix+t) did nothing
   # after an fpush until a reload (station-maintenance beast-arch 118, 2026-10-18).
   if have herdr && herdr status server 2>/dev/null | grep -q '^status: running'; then
