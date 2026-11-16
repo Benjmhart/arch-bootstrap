@@ -4,6 +4,13 @@
 # Only a pane's own session (a claude whose parent is a shell); the daemon's background sessions (parent: a bg-pty-host)
 # are left alone. Only when herdr says the agent is idle or done, never working or blocked. A claude outside herdr
 # (a plain terminal) cannot be reached and is only counted. --dry-run: say what would be restarted.
+#
+# Loops (Ben 2026-11-16: "orchestrate graceful loop-stops and restarts ... and get the loops back up after"): a session in
+# /loop refuses /restart ("work is running in the background") for as long as it loops, so loops never upgraded. Only the
+# session knows whether its subagents, watchers or shells are mid-work, so a stale looping session is asked once (state
+# ask-<pid>) to stop its loop at its next safe point and end its reply with "RESTART-READY /loop ...". A later pass that
+# finds that line (transcript) and the agent idle exits and resumes it on the installed version, then types the /loop
+# line back (pending in relaunch-<session id> until it starts, so a failed relaunch is retried every pass).
 # Ceiling: a prompt typed but not sent in an idle session would be submitted with the /restart; none of the panes
 # shows a draft to herdr's state.
 set -uo pipefail
@@ -105,12 +112,100 @@ claude_pid() {   # the pane's claude process
     [[ $(readlink "/proc/$p/exe" 2>/dev/null) == "$vdir"/* ]] && { echo "$p"; return; }
   done
 }
+transcript() { ls "$HOME"/.claude/projects/*/"$1".jsonl 2>/dev/null | head -1; }
+# loop_state <session id>: "none", "active" (a loop is scheduled), or "ready <the /loop line to relaunch>".
+loop_state() {
+  local f; f=$(transcript "$1"); [[ -n $f ]] || { echo none; return; }
+  python3 - "$f" <<'EOP'
+import json, re, sys
+state, line = "none", ""
+for ln in open(sys.argv[1]):
+    try:
+        d = json.loads(ln)
+    except ValueError:
+        continue
+    m = d.get("message") or {}
+    c = m.get("content")
+    if not isinstance(c, list):
+        continue
+    for b in c:
+        if b.get("type") == "tool_use" and b.get("name") == "ScheduleWakeup":
+            state = "none" if b.get("input", {}).get("stop") else "active"
+        elif b.get("type") == "tool_use" and b.get("name") == "CronCreate" and not b.get("input", {}).get("durable"):
+            state = "active"
+        elif b.get("type") == "text" and m.get("role") == "assistant":
+            r = re.findall(r"^RESTART-READY (/loop\b.*)$", b.get("text") or "", re.M)
+            if r:
+                state, line = "ready", r[-1].strip().strip("`")
+print(state + (" " + line if state == "ready" else ""))
+EOP
+}
+status() { "$herdr" agent list 2>/dev/null | jq -r --arg p "$1" '.result.agents[] | select(.pane_id == $p) | .agent_status'; }
+# say <pane> <text>: type a prompt into an idle claude with an empty box and submit it. A leading "/" opens the slash
+# menu: its highlighted entry must be the typed command before it is accepted (the /deep-research incident, 2026-11-08).
+say() {
+  local pane=$1 text=$2 sel i s
+  "$herdr" pane send-text "$pane" "$text" >/dev/null || return 1
+  sleep 1
+  if [[ $text == /* ]]; then
+    sel=$("$herdr" agent read "$pane" 2>/dev/null | tr -d '\r' | sed "s/$nbsp/ /g" \
+          | awk '/^─/ {n++; last[n]=NR} {l[NR]=$0} END {for (i=last[n-1]-1; i>0 && i>last[n-1]-20; i--) if (l[i] ~ /^ +❯ \//) {print l[i]; exit}}' \
+          | awk '{print $2}')
+    if [[ -n $sel ]]; then
+      [[ $sel == "${text%% *}" ]] || { "$herdr" pane send-keys "$pane" c-c >/dev/null; echo "menu highlighted $sel, not ${text%% *}"; return 1; }
+      "$herdr" pane send-keys "$pane" "$accept" >/dev/null; sleep 1
+    fi
+  fi
+  "$herdr" pane send-keys "$pane" "$submit" >/dev/null || return 1
+  for i in $(seq 10); do
+    sleep 1; s=$(status "$pane")
+    [[ $s == working || $s == blocked ]] && return 0
+  done
+  echo "typed but the agent did not start (still ${s:-?})"; return 1
+}
+ASK="[claude-restart chore] Claude Code %s is installed; this session still runs %s, and its loop keeps it from restarting. At your next safe point (no background task, subagent, monitor or shell of yours still running, between loop iterations): stop your loop (ScheduleWakeup with stop: true; CronDelete any /loop cron jobs), then end that reply with one line exactly: RESTART-READY <the /loop command that restarts your loop as it was, e.g. /loop /next-story:bmad-pony>. The chore then restarts this session on the new version and types that line back. If work is running now, carry on and do it when it is done; you will not be asked again."
+# relaunch [pane]: for each session with a pending /loop line (relaunch-<sid>) whose claude is on the installed version,
+# idle, with an empty box: type the line. Every pass, so a relaunch that failed is retried.
+relaunch() {
+  local f sid line pane np i r
+  for f in "$state"/relaunch-*; do
+    [[ -e $f ]] || continue
+    sid=${f##*/relaunch-}; line=$(cat "$f")
+    np=; for i in "$HOME"/.claude/sessions/*.json; do
+      [[ $(jq -r '.sessionId // empty' "$i" 2>/dev/null) == "$sid" ]] || continue
+      i=${i##*/}; i=${i%.json}; [[ -e /proc/$i && $(readlink "/proc/$i/exe") == "$cur" ]] && np=$i
+    done
+    [[ -n $np ]] || continue
+    pane=$(tr '\0' '\n' < "/proc/$np/environ" 2>/dev/null | sed -n 's/^HERDR_PANE_ID=//p')
+    [[ -n $pane && ( -z ${1:-} || $1 == "$pane" ) ]] || continue
+    for i in $(seq 20); do
+      [[ $(status "$pane") =~ ^(idle|done)$ && -z $(box "$pane") ]] && break
+      sleep 2
+    done
+    if (( dry )); then echo "would relaunch in $pane: $line"; continue; fi
+    if r=$(say "$pane" "$line"); then rm -f "$f"; echo "relaunched in $pane: $line"
+    else echo "FAIL $pane: relaunch of '$line' ($r); retried next pass"; fi
+  done
+}
 restart() {   # 0 restarted (/restart), 4 resumed (exit + claude --resume), 2 skipped (draft, busy), 1 failed
-  local pane=$1 pid b i; pid=$(claude_pid "$pane")
-  [[ -n $pid && -n $(find "$state/bg-$pid" -mmin -60 2>/dev/null) ]] && { echo "skip $pane: background work (refused <1h ago)"; return 2; }
+  local pane=$1 pid b i sid ls; pid=$(claude_pid "$pane")
+  sid=$(jq -r '.sessionId // empty' "$HOME/.claude/sessions/$pid.json" 2>/dev/null)
+  ls=$( [[ -n $sid ]] && loop_state "$sid" || echo none)
+  [[ $ls == none && -n $pid && -n $(find "$state/bg-$pid" -mmin -60 2>/dev/null) ]] && { echo "skip $pane: background work (refused <1h ago)"; return 2; }
   b=$(box "$pane")
   if [[ -n $b ]] && ! grep -qv '^/restart$' <<<"$b"; then "$herdr" pane send-keys "$pane" c-c >/dev/null; sleep 1; b=$(box "$pane"); fi
   [[ -z $b ]] || { echo "skip $pane: the prompt holds a draft"; return 2; }
+  case $ls in
+    ready*)
+      printf '%s\n' "${ls#ready }" > "$state/relaunch-$sid"
+      resume "$pane" "$pid" || return 1
+      echo "resumed $pane (loop stopped by the agent)"; relaunch "$pane"; return 4 ;;
+    active)
+      [[ -e $state/ask-$pid ]] && { echo "skip $pane: looping, waiting for its RESTART-READY"; return 2; }
+      say "$pane" "$(printf "$ASK" "${cur##*/}" "$(basename "$(readlink "/proc/$pid/exe")")")" >/dev/null \
+        && { : > "$state/ask-$pid"; echo "asked $pane to stop its loop at a safe point"; return 2; }
+      echo "fail $pane: could not ask it to stop its loop"; return 1 ;;
+  esac
   # Already known to refuse /restart (Remote Control) or to lack it: straight to exit + resume.
   if [[ -n $pid && ( -e $state/rc-$pid || -e $state/nr-$pid ) ]]; then
     resume "$pane" "$pid" && { echo "resumed $pane (exit + claude --resume)"; return 4; }; return 1
@@ -148,20 +243,21 @@ restart() {   # 0 restarted (/restart), 4 resumed (exit + claude --resume), 2 sk
   done
   echo "note: $pane: /restart sent ($accept, $submit), but the pane still runs an old claude"; return 1
 }
-find "$state" -name 'rc-*' -o -name 'bg-*' -o -name 'nr-*' 2>/dev/null | while read -r f; do [[ -e /proc/${f##*-} ]] || rm -f "$f"; done
+find "$state" -name 'rc-*' -o -name 'bg-*' -o -name 'nr-*' -o -name 'ask-*' 2>/dev/null | while read -r f; do [[ -e /proc/${f##*-} ]] || rm -f "$f"; done
 done_n=0 busy=0 resumed=0 failed=0
 if (( ${#stale[@]} )) && [[ -x $herdr ]]; then
   states=$("$herdr" agent list 2>/dev/null | jq -r '.result.agents[] | "\(.pane_id) \(.agent_status)"')
   for pane in "${!stale[@]}"; do
     st=$(awk -v p="$pane" '$1 == p {print $2}' <<<"$states")
     if [[ $st == idle || $st == done ]]; then
-      if (( dry )); then echo "would restart $pane (${stale[$pane]}, $st)"
+      if (( dry )); then p=$(claude_pid "$pane"); echo "would restart $pane (${stale[$pane]}, $st, loop: $(loop_state "$(jq -r '.sessionId // empty' "$HOME/.claude/sessions/$p.json" 2>/dev/null)"))"
       else restart "$pane"; case $? in 0) echo "restarted $pane (was ${stale[$pane]})"; done_n=$((done_n+1));;
                                          4) resumed=$((resumed+1)); done_n=$((done_n+1));; 1) failed=$((failed+1));; esac; fi
       (( dry )) && done_n=$((done_n+1))
     else busy=$((busy+1)); fi
   done
 fi
+[[ -x $herdr ]] && relaunch
 (( dry )) && w="to restart" || w=restarted
 echo "claude ${cur##*/}: $done_n $w ($resumed by exit + resume), $busy busy (next pass), $failed failed, $outside outside herdr"
 (( failed == 0 ))
