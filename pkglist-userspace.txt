@@ -49,7 +49,8 @@ github-cli
 glow
 gnome-keyring
 go
-godot
+# godot: not on micro (Ben 2026-11-16, station-maintenance fleet 39); pkglist-remove.txt takes it off there.
+godot        # not: micro
 grim
 gst-plugin-pipewire
 inotify-tools
@@ -87,7 +88,8 @@ noto-fonts
 noto-fonts-cjk
 noto-fonts-emoji
 obsidian
-obs-studio
+# obs-studio: beast-arch only (Ben 2026-11-16, fleet 39); pkglist-remove.txt takes it (and its cef) off the rest.
+obs-studio   # only: beast-arch
 ollama
 openbsd-netcat
 openssh

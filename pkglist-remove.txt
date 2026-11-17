@@ -20,3 +20,8 @@ cbatticon             # battery on xmobar instead (dotfiles 6a1cdd0; Ben 2026-11
 i3lock-color          # xsecurelock is the lock on every machine since 2026-11-04 (Ben 2026-11-12)
 # ascii-rain-git (AUR): replaced 2026-11-12 by setup_ascii_rain (a pinned upstream commit); the -git build never matched its pin.
 ascii-rain-git
+# Ben 2026-11-16 (station-maintenance fleet 39): claude-desktop off every machine; obs-studio kept on beast-arch only
+# (its cef goes with it: -Rns); godot off micro (pkglist-userspace.txt has the matching only:/not:).
+claude-desktop
+obs-studio    # not: beast-arch
+godot         # only: micro

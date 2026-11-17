@@ -3970,7 +3970,7 @@ theme_launcher_icons() {
   local pair name target d f n=0
   [[ -d $dst && -d $src ]] || return 0
   (( DRY_RUN )) && { info "(dry run) would theme launcher icons"; return 0; }
-  local -a alias=(claude-desktop:internet-chat espanso:accessories-text-editor handy:audio-input-microphone
+  local -a alias=(espanso:accessories-text-editor handy:audio-input-microphone
     keymapp:preferences-desktop-keyboard rofi:kmenuedit scrcpy:guiscrcpy xpra:krdc yazi:system-file-manager)
   for f in "$apps"/*.desktop; do   # Steam games: an icon name per game (steam_icon_<appid>), all to Steam's
     [[ -f $f ]] || continue   # no .desktop at all: the glob stays literal (VM canary, fleet 11, 2026-11-10)
