@@ -6,6 +6,8 @@
 # $OPS/micro-fleet-reboot-20261114.log, is what this automates).
 #   --dry-run   every read-only step for real (gates, loops and their commands, CI, keyrings); prompts, reboots and
 #               resumes nothing, and asks no password.
+# Media re-encode workers (user units media-convert*.service, media-center task 10) are stopped before the reboot and
+# left stopped after it: the list is printed at the end and kept in $OPS/fleet-reboot-workers.tsv, for whoever starts them.
 # Passwords (lib/ops.sh): login, asked once (sudo for the CI check where docker needs root; the keyrings after boot).
 set -uo pipefail
 shopt -s extglob
@@ -149,6 +151,18 @@ for h in "${HOSTS[@]}"; do
   ok "$h: no CI job running"
 done
 
+step "workers: the media re-encode workers stop (SIGTERM releases their claims) and stay stopped after the reboot"
+WSTATE=$OPS/fleet-reboot-workers.tsv
+workers() { r "$1" "systemctl --user list-units --state=active --no-legend --plain '${WGLOB:-media-convert*.service}'" 2>/dev/null |
+  awk '$1 !~ /^media-convert-(start|pause)\.service$/ {print $1}'; }
+(( DRY )) || : >"$WSTATE"
+for h in "${HOSTS[@]}"; do w=$(workers "$h" | tr '\n' ' '); w=${w% }
+  [[ -n $w ]] || { ok "$h: no worker running"; continue; }
+  (( DRY )) && { note "$h: would stop $w"; continue; }
+  r "$h" "systemctl --user stop $w" && [[ -z $(workers "$h") ]] && ok "$h: stopped $w" || attn "$h: still running: $(workers "$h" | tr '\n' ' ')"
+  printf '%s\t%s\n' "$h" "$w" >>"$WSTATE"
+done
+
 if (( DRY )); then
   step "would reboot ${HOSTS[*]} at once (reboot-to-unlock), unlock each from here (tools/unlock: YubiKey touches), verify, unlock keyrings, resume:"
   for l in "${LOOPS[@]}"; do IFS=$'\t' read -r h p cwd sid cmd <<<"$l"; note "$h ${cwd##*/}: /clear, then $cmd"; done
@@ -207,4 +221,6 @@ for l in "${LOOPS[@]}"; do IFS=$'\t' read -r h p cwd sid cmd <<<"$l"
   esac
 done
 
+step "workers: held stopped (start them yourself, e.g. after a move that needs them stopped)"
+[[ -s $WSTATE ]] && while IFS=$'\t' read -r h w; do attn "$h: held: $w"; done <"$WSTATE" || ok "none were running"
 finish "fleet back up. Now reboot micro yourself (sudo reboot) and unlock it at its keyboard. (log: $OPS_LOG)"
