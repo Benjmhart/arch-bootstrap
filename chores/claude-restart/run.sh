@@ -94,23 +94,57 @@ resume() {
     esac
   done
   cmd="claude --resume $sid"; (( ${#args[@]} )) && cmd+=" $(printf '%q ' "${args[@]}")"; cmd=${cmd% }
+  # Kept until the new claude is up: a claude that exits after we stop waiting (micro 2026-11-16 20:20: over 10 s,
+  # Remote Control disconnecting on a slow disk) is resumed by the next pass instead of leaving a bare shell.
+  printf '%s\t%s\n' "$pane" "$cmd" > "$state/resume-$sid"
   "$herdr" pane send-keys "$pane" ctrl+d >/dev/null; sleep 0.5; "$herdr" pane send-keys "$pane" ctrl+d >/dev/null
-  for i in $(seq 20); do [[ -e /proc/$pid ]] || break; sleep 0.5; done
-  [[ -e /proc/$pid ]] && { echo "fail $pane: claude $pid did not exit on ctrl+d (left as it was)"; return 1; }
+  for i in $(seq 120); do [[ -e /proc/$pid ]] || break; sleep 0.5; done
+  [[ -e /proc/$pid ]] && { echo "fail $pane: claude $pid did not exit on ctrl+d within 60 s (if it exits later, the next pass resumes it)"; return 1; }
   sleep 1   # the shell's prompt back
+  type_resume "$pane" "$sid" "$cmd" || return 1
+  sleep 5   # Remote Control reconnects a moment after start
+  out=$("$herdr" agent read "$pane" 2>/dev/null | grep -E "Remote Control not started here|Couldn't reconnect|Previous session is unavailable" | tail -1)
+  [[ -n $out ]] && echo "note $pane: resumed, but Remote Control says: ${out## } (run /remote-control there)"
+  return 0
+}
+# type_resume <pane> <sid> <cmd>: type the resume command into the pane's shell; 0 once the installed claude is up on
+# that session (the pending resume-<sid> is then removed). One try: a failure is reported and left to a person.
+type_resume() {
+  local pane=$1 sid=$2 cmd=$3 i np
+  rm -f "$state/resume-$sid"
   "$herdr" pane send-text "$pane" "$cmd" >/dev/null && "$herdr" pane send-keys "$pane" enter >/dev/null \
     || { echo "FAIL $pane: claude exited but could not type '$cmd' into the pane; up-arrow there or run it by hand"; return 1; }
   for i in $(seq 30); do
     sleep 1; np=$(claude_pid "$pane")
     [[ -n $np && $(readlink "/proc/$np/exe" 2>/dev/null) == "$cur" \
-       && $(jq -r '.sessionId // empty' "$HOME/.claude/sessions/$np.json" 2>/dev/null) == "$sid" ]] && break
-    np=
+       && $(jq -r '.sessionId // empty' "$HOME/.claude/sessions/$np.json" 2>/dev/null) == "$sid" ]] && return 0
   done
-  [[ -n $np ]] || { echo "FAIL $pane: typed '$cmd' but no claude ${cur##*/} on session $sid came up in 30 s; look at the pane"; return 1; }
-  sleep 5   # Remote Control reconnects a moment after start
-  out=$("$herdr" agent read "$pane" 2>/dev/null | grep -E "Remote Control not started here|Couldn't reconnect|Previous session is unavailable" | tail -1)
-  [[ -n $out ]] && echo "note $pane: resumed, but Remote Control says: ${out## } (run /remote-control there)"
-  return 0
+  echo "FAIL $pane: typed '$cmd' but no claude ${cur##*/} on session $sid came up in 30 s; look at the pane"; return 1
+}
+# pending: a resume whose claude exited after resume() stopped waiting. Typed once its pane has no claude left.
+pending() {
+  local f sid pane cmd p
+  for f in "$state"/resume-*; do
+    [[ -e $f ]] || continue
+    sid=${f##*/resume-}; IFS=$'\t' read -r pane cmd < "$f"
+    "$herdr" pane get "$pane" >/dev/null 2>&1 || { echo "note: pane $pane is gone; not resumed: $cmd"; rm -f "$f"; continue; }
+    p=$(claude_pid "$pane")
+    if [[ -n $p ]]; then   # still exiting: next pass. Restarted by someone (another session): nothing to do.
+      [[ $(jq -r '.sessionId // empty' "$HOME/.claude/sessions/$p.json" 2>/dev/null) == "$sid" && $(readlink "/proc/$p/exe") != "$cur" ]] || rm -f "$f"
+      continue
+    fi
+    shell_fg "$pane" || { echo "note $pane: its shell is not at a prompt; not typing: $cmd"; continue; }
+    (( dry )) && { echo "would type in $pane: $cmd"; continue; }
+    type_resume "$pane" "$sid" "$cmd" && echo "resumed $pane late (its claude exited after the wait): $cmd"
+  done
+}
+shell_fg() {   # the pane's shell owns its terminal (nothing else in the foreground to type into)
+  local e p st; for e in /proc/[0-9]*/environ; do
+    grep -qz "^HERDR_PANE_ID=$1\$" "$e" 2>/dev/null || continue; p=${e#/proc/}; p=${p%/environ}
+    [[ $(cat "/proc/$p/comm" 2>/dev/null) =~ ^(zsh|bash|sh|fish)$ ]] || continue
+    read -ra st < <(sed 's/^.*) //' "/proc/$p/stat")   # fields from state on: [2] pgrp, [5] tpgid
+    (( st[2] == st[5] )) && return 0
+  done; return 1
 }
 claude_pid() {   # the pane's claude process
   local e p; for e in /proc/[0-9]*/environ; do
@@ -299,7 +333,7 @@ if (( ${#stale[@]} )) && [[ -x $herdr ]]; then
     else busy=$((busy+1)); fi
   done
 fi
-[[ -x $herdr ]] && relaunch
+[[ -x $herdr ]] && { pending; relaunch; }
 (( dry )) && w="to restart" || w=restarted
 echo "claude ${cur##*/}: $done_n $w ($resumed by exit + resume), $busy busy (next pass), $failed failed, $outside outside herdr"
 (( failed == 0 ))
