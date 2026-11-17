@@ -4548,7 +4548,7 @@ ACTION=="add|change", KERNEL=="sd[a-z]", ATTR{queue/rotational}=="1", ATTR{queue
   fi
 
   # zram up to half of RAM. zram-generator's default caps it at 4 GiB: beast-arch's sat at 3.8 of 4 GiB with 7.1 GiB
-  # gone to the SSD swap behind it and 21 GiB of RAM free (2026-11-16, station-maintenance fleet 38). Lean hosts get
+  # gone to the SSD swap behind it and 21 GiB of RAM free (2026-11-16, station-maintenance fleet 39). Lean hosts get
   # zram as big as RAM instead (apply_lean_profile). The file must exist before zram_only_swap is asked. Next boot.
   if ! profile_on lean && put_etc_file /etc/systemd/zram-generator.conf \
 "# Written by arch-bootstrap. Half of RAM, not zram-generator's 4 GiB cap (see tune_storage_and_swap).

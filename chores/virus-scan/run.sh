@@ -23,7 +23,13 @@ case $rc in
      echo "$(grep -c ' FOUND$' <<<"$out") infected file(s) under $HOME -- see ~/.local/state/chores/virus-scan.log"; exit 75 ;;
   # rc 2 = some error, and it wins over 1, so hits are still looked for. The error lines are kept: tail -5 showed only
   # xz warnings and hid the real one, two Sundays running (2026-11-08, 11-15).
-  *) printf '%s\n' "$out" | grep ' FOUND$'
+  # Only xz errors (a truncated .xz somewhere: "premature end of compressed stream") and no hit: clean, said so. That
+  # alone failed beast-arch's chore every Sunday (2026-11-15, station-maintenance fleet 39); the xz lines were already
+  # hidden as noise, the rc 2 was not.
+  *) if ! grep -q ' FOUND$' <<<"$out" && ! grep -i 'error' <<<"$out" | grep -qv 'cli_scanxz'; then
+       echo "clean: $HOME ($(grep -c 'cli_scanxz.*Error\|Error.*cli_scanxz' <<<"$out") xz archive error(s): truncated archives, not infections)"; exit 0
+     fi
+     printf '%s\n' "$out" | grep ' FOUND$'
      printf '%s\n' "$out" | grep -i 'error' | grep -v 'cli_scanxz' | sort | uniq -c | sort -rn | head -40
      echo "clamscan failed (rc $rc), $(grep -c ' FOUND$' <<<"$out") hit(s)"; exit "$rc" ;;
 esac
