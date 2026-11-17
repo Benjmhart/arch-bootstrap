@@ -1,0 +1,9 @@
+[Unit]
+Description=Every 10 minutes on micro: its herdr agents, queues, chores and health to beast-arch (arch-bootstrap chores/status-push)
+
+[Timer]
+OnCalendar=*:0/10
+Unit=chore@status-push.service
+
+[Install]
+WantedBy=timers.target
