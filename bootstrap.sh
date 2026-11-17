@@ -1178,6 +1178,17 @@ ensure_root_space() {
   return 1
 }
 
+# remove_debug_packages: makepkg builds no -debug split packages any more (~/.config/pacman/makepkg.conf !debug), but the
+# ones built before stay installed: media-center had 10 (110 MiB on a 7 G-free root, 2026-11-16, station-maintenance
+# fleet 39; micro's were removed by hand in micro 19). Nothing depends on a -debug package.
+remove_debug_packages() {
+  local -a dbg; mapfile -t dbg < <(pacman -Qq | grep -- '-debug$' || true)
+  (( ${#dbg[@]} )) || { ok "no -debug packages"; return 0; }
+  run sudo pacman -Rn --noconfirm "${dbg[@]}" && did "removed ${#dbg[@]} -debug package(s): ${dbg[*]}" \
+    || warn "could not remove the -debug packages: ${dbg[*]}"
+  return 0
+}
+
 # pacman_cache_on_home: where / is small (install.sh gives a disk under 320 GiB a 32 GiB root: micro, media-center) and
 # /home is its own filesystem, pacman's package cache lives on /home. On micro it held 4.8G of the 32G root (Ben
 # 2026-11-06, station-maintenance micro 17). paccache reads CacheDir through pacman-conf, so its weekly trim follows.
@@ -1243,6 +1254,7 @@ stage_packages() {
   sudo_timeout_dropin
   pacman_cache_on_home
   ensure_root_space
+  remove_debug_packages
 
   info "installing from pkglist-userspace.txt -- no kernel, microcode, GPU or firmware"
 
