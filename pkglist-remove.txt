@@ -11,7 +11,7 @@ jellyfin-mpv-shim
 mpv-shim-default-shaders
 python-pystray
 # Off micro only (Ben 2026-11-06, station-maintenance micro 17: its 32G root); pkglist-aur.txt has them "# not: micro".
-zoom          # only: micro
+zoom          # only: micro, media-center   (media-center: Ben 2026-11-16, fleet 39)
 lightworks    # unused (Ben 2026-11-12); off micro since 2026-11-06
 rambox-pro-bin   # only: micro
 # plymouth: tried as the boot screen 2026-11-07, retired the same day (station-maintenance carbon 12).

@@ -33,7 +33,7 @@ streamdeck-ui                        fd887de11f6eaa3265e2fdc7645712136b3fc640   
 ventoy-bin                           b185aeda22473076cc0cb7d330bc8bc0b43c8a0e
 xdg-desktop-portal-termfilechooser   7b759fbd09fd94dad25005891061a2a267d0c4f6
 yay                                  a856562dc26bb1ea060e167983cd22ca6bcac9ec
-zoom                                 b5fd0c07c9c69c95928445d69d9d616b1039a3f6   # not: micro
+zoom                                 b5fd0c07c9c69c95928445d69d9d616b1039a3f6   # not: micro, media-center
 # ZSA Keymapp (station-maintenance beast-arch 108, Ben 2026-11-01): live Moonlander layer overlay. Its zsa-udev
 # dependency comes from extra (pkglist-userspace.txt).
 zsa-keymapp-bin                      a2cddd725473d7becea6291e5aebacc8e8a254cc   # only: beast-arch
