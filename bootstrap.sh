@@ -5257,6 +5257,13 @@ setup_castiron() {
   if ! listen=$(castiron_listen); then
     warn "castiron: needs a LAN and a tailnet IPv4 address, has neither or one -- not set up (tailscale up?)"; return 0
   fi
+  # The deployer itself comes from here since 2026-11-16 (tools/castiron-deploy; it was a one-off $OPS install of
+  # 2026-11-07/08). Only replaced, never first installed: its sudoers line is still Ben's setup script's
+  # (station-maintenance fleet 39).
+  if [[ -x /usr/local/sbin/castiron-deploy ]] && ! cmp -s "$SCRIPT_DIR/tools/castiron-deploy" /usr/local/sbin/castiron-deploy; then
+    run sudo install -m 755 "$SCRIPT_DIR/tools/castiron-deploy" /usr/local/sbin/castiron-deploy \
+      && did "castiron-deploy updated from tools/castiron-deploy" || warn "castiron-deploy: could not update"
+  fi
   # Once castiron's own deployer is installed, it owns the binary: every commit merged to castiron's staging runs here
   # (owner decision 2026-11-06; /usr/local/sbin/castiron-deploy, log /var/log/castiron-deploy.log). The pin is only the
   # first install. The 2026-11-07 16:14 fpush built the pin c0fdb46 and installed it over the deployed 207c4a9, nine

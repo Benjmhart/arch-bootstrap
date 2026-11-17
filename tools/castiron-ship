@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# castiron-ship <sha> -- deploy a castiron staging commit to media-center, built HERE (beast-arch, 16 cores) instead of
+# on media-center's 4 (a cold release build there took 13 min with the media pipeline beside it; station-maintenance
+# fleet 39, Ben 2026-11-16). Replaces `ssh media-center 'sudo -n /usr/local/sbin/castiron-deploy <sha>'`: same output,
+# same exit codes (castiron-deploy's: 0 deployed, 3 not on staging, 4 another deploy running, 5 rolled back).
+# If anything on this side fails (build, copy), it falls back to that old command: media-center builds it itself.
+# media-center cannot reach beast-arch (tailnet policy, by design), so the binary goes this way.
+set -uo pipefail
+sha=${1:-}
+[[ $sha =~ ^[0-9a-f]{40}$ ]] || { echo "usage: castiron-ship <full 40-hex sha>" >&2; exit 2; }
+host=${CASTIRON_HOST:-media-center}
+src=$HOME/.cache/castiron-ship/src
+remote=.cache/castiron-ship/castiron-$sha
+fallback() { echo "== $1: media-center builds it itself"; exec ssh "$host" "sudo -n /usr/local/sbin/castiron-deploy $sha"; }
+
+# Until the next fpush installs the --binary-aware castiron-deploy there, the old one takes the SHA only.
+ssh "$host" "grep -q -- --binary /usr/local/sbin/castiron-deploy" || fallback "$host's castiron-deploy predates --binary"
+
+echo "== build $sha here ($(uname -n))"
+if [[ ! -d $src/.git ]]; then mkdir -p "${src%/*}" && git clone -q git@github-castiron:Benjmhart/castiron.git "$src" || fallback "clone failed"; fi
+git -C "$src" fetch -q origin || fallback "fetch failed"
+git -C "$src" merge-base --is-ancestor "$sha" origin/staging || { echo "$sha is not on origin/staging: refusing" >&2; exit 3; }
+git -C "$src" checkout -q --detach "$sha" && git -C "$src" clean -qfdx -e target || fallback "checkout failed"
+(cd "$src" && mise trust -q . && mise install -q && nice -n 19 ionice -c 3 mise exec -- cargo build -q --release --locked -p castiron) \
+  || fallback "build failed here"
+"$src/target/release/castiron" --version || fallback "the built binary does not run"
+
+echo "== copy to $host"
+ssh "$host" "mkdir -p .cache/castiron-ship && find .cache/castiron-ship -name 'castiron-*' -mtime +2 -delete" \
+  && scp -q "$src/target/release/castiron" "$host:$remote.part" && ssh "$host" "mv $remote.part $remote" || fallback "copy failed"
+
+echo "== deploy on $host"
+exec ssh "$host" "sudo -n /usr/local/sbin/castiron-deploy $sha --binary /home/ben/$remote"

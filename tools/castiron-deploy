@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+# castiron-deploy <sha> [--binary FILE]: build and install a castiron commit that is on origin/staging.
+# Source: arch-bootstrap tools/castiron-deploy, installed by setup_castiron (station-maintenance fleet 39, 2026-11-16).
+# --binary: a release build of <sha> made elsewhere (tools/castiron-ship on beast-arch: 16 cores, not media-center's 4),
+# taken only from ~/.cache/castiron-ship/ and copied before use. The trust is unchanged: the local build also runs as
+# ben in ben's cache. The source is still fetched here (staging check, plugins, SDK).
+# Owner decision 2026-11-06: every commit merged to staging runs on media-center once its base CI
+# is green. Installed by $OPS/media-center-castiron-deploy-setup-20261107.sh; runs as root via one
+# NOPASSWD sudoers line for this script only. The build runs as ben; only the install is root.
+set -euo pipefail
+umask 022
+[[ ${1:-} =~ ^[0-9a-f]{40}$ && ( $# -eq 1 || ( $# -eq 3 && $2 == --binary ) ) ]] \
+  || { echo "usage: castiron-deploy <full 40-hex sha> [--binary /home/ben/.cache/castiron-ship/castiron-<sha>]" >&2; exit 2; }
+sha=$1 prebuilt=${3:-}
+[[ -z $prebuilt || $prebuilt == "/home/ben/.cache/castiron-ship/castiron-$sha" ]] \
+  || { echo "--binary must be /home/ben/.cache/castiron-ship/castiron-$sha" >&2; exit 2; }
+SRC=/home/ben/.cache/castiron-deploy/src
+REPO=git@github-castiron:Benjmhart/castiron.git
+BIN=/usr/local/bin/castiron
+CONF=/etc/castiron/castiron.toml
+DATA=/var/lib/castiron
+HEALTH=http://192.168.1.90:8420/api/v1/status
+LOG=/var/log/castiron-deploy.log
+as_ben() { runuser -u ben -- env -i HOME=/home/ben USER=ben LOGNAME=ben PATH=/usr/local/bin:/usr/bin:/bin "$@"; }
+
+exec 9>/run/castiron-deploy.lock
+flock -n 9 || { echo "another deploy is running" >&2; exit 4; }
+
+echo "== source $sha"
+if [[ ! -d $SRC/.git ]]; then
+  as_ben mkdir -p "${SRC%/*}"
+  as_ben git clone -q "$REPO" "$SRC"
+fi
+as_ben git -C "$SRC" fetch -q origin
+as_ben git -C "$SRC" merge-base --is-ancestor "$sha" origin/staging \
+  || { echo "$sha is not on origin/staging: refusing" >&2; exit 3; }
+as_ben git -C "$SRC" checkout -q --detach "$sha"
+as_ben git -C "$SRC" clean -qfdx -e target
+
+if [[ -n $prebuilt ]]; then
+  echo "== prebuilt binary (built elsewhere for $sha)"
+  [[ -f $prebuilt && ! -L $prebuilt && $(stat -c %U "$prebuilt") == ben ]] || { echo "no usable $prebuilt" >&2; exit 2; }
+  new=$(mktemp /usr/local/lib/castiron-deploy.XXXXXX); trap 'rm -f "$new"' EXIT
+  cp "$prebuilt" "$new"; chmod 755 "$new"
+else
+  echo "== build (as ben)"
+  as_ben sh -c 'cd "$1" && mise trust -q . && mise install -q && mise exec -- cargo build -q --release --locked -p castiron' sh "$SRC"
+  new=$SRC/target/release/castiron
+fi
+as_ben "$new" --version
+
+# Never restart under a viewer (owner bug report 2026-11-08: deploys cut off casts mid-episode).
+# The build above runs during playback; the install waits until no session is live, then goes at once.
+# ponytail: 10 s poll, 12 h cap (a session left paused overnight must not block deploys forever).
+TOKEN=/home/ben/.castiron-token
+busy() {
+  [[ -r $TOKEN ]] || return 1
+  as_ben "$BIN" --server "${HEALTH%/api/v1/status}" --token-file "$TOKEN" --json playback list 2>/dev/null \
+    | grep -Eq '"state":"(starting|playing|paused)"'
+}
+waited=0
+while busy && (( waited < 43200 )); do
+  (( waited % 300 == 0 )) && echo "== waiting: something is playing (${waited}s so far)"
+  sleep 10; waited=$((waited + 10))
+done
+
+echo "== backup"
+stamp=$(date +%Y%m%d-%H%M%S)
+backup=$DATA/backups/castiron-$stamp-pre-${sha:0:7}.db
+runuser -u castiron -- mkdir -p -m 700 "$DATA/backups"
+runuser -u castiron -- "$BIN" admin --config "$CONF" backup "$backup"
+echo "$backup"
+
+echo "== install"
+cp -p "$BIN" "$BIN.prev"
+install -m 755 "$new" "$BIN"   # install writes a new inode: never "Text file busy" over the running binary
+install -d -o castiron -g castiron "$DATA/plugins"
+cp -rT "$SRC/plugins/sdk-deno" "$DATA/sdk-deno"
+for p in "$SRC"/plugins/bundled/*/; do
+  cp -rT "$p" "$DATA/plugins/$(basename "$p")"
+done
+chown -R castiron: "$DATA/sdk-deno" "$DATA/plugins"
+
+echo "== restart"
+systemctl restart castiron
+healthy() {
+  # 120 s: since 0.18 the server binds ~37 s after start (startup sweep of the roots first), and 30 s rolled back a
+  # healthy deploy (castiron 2026-11-12, 569cfeb).
+  for _ in $(seq 120); do
+    sleep 1
+    systemctl is-active -q castiron || continue
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "$HEALTH" || true)
+    [[ $code != 000 ]] && return 0
+  done
+  return 1
+}
+if healthy; then
+  echo "$(date -Is) deployed $sha backup=$backup" >> "$LOG"
+  echo "deployed $sha"
+  exit 0
+fi
+echo "unhealthy after restart: rolling back the binary" >&2
+journalctl -u castiron -n 30 --no-pager >&2 || true
+install -m 755 "$BIN.prev" "$BIN"   # not cp over the running binary: "Text file busy" ended the 2026-11-12 rollback
+systemctl restart castiron
+echo "$(date -Is) FAILED $sha (rolled back binary; db backup=$backup)" >> "$LOG"
+echo "rolled back to the previous binary. If it will not start either, the new one migrated the" >&2
+echo "database forward: restore $backup (docs/install.md section 13)." >&2
+exit 5
