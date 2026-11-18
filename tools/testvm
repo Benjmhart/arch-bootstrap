@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# testvm -- the shared test VMs on surfboard (fleet 37's Windows 11): started on demand, stopped when idle. The VM ran
+# testvm -- the shared test VMs on surfboard (fleet 37: win11, macos): started on demand, stopped when idle. The VM ran
 # 23 h unattended at ~1.1 cores and 8 G, with surfboard's IO pressure ~50 % beside CI (station-maintenance fleet 37/39,
 # Ben 2026-11-18: "spinning down the VM when it's been inactive for ~10m").
 #
@@ -13,7 +13,7 @@
 # The chore testvm-idle (every 2 min, surfboard) runs `testvm idle`: a running VM with no lease touched in
 # TESTVM_IDLE_MIN (10) minutes and no live connection is shut down.
 set -uo pipefail
-root=${TESTVM_ROOT:-$HOME/.cache/fleet37-vm}; idle=${TESTVM_IDLE_MIN:-10}; vms=${TESTVMS:-win11}
+root=${TESTVM_ROOT:-$HOME/.cache/fleet37-vm}; idle=${TESTVM_IDLE_MIN:-10}; vms=${TESTVMS:-win11 macos}
 cmd=${1:-status}; one=${2:-}
 
 pid()   { local p; p=$(cat "$root/$1/qemu.pid" 2>/dev/null) && kill -0 "$p" 2>/dev/null && echo "$p"; }
