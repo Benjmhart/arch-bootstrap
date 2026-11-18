@@ -60,6 +60,12 @@ done
 # - Only an EMPTY input box is used (Claude Code's dim suggestion text does not count). A box holding only "/restart" lines (left by the old version) is cleared with one
 #   ctrl+c; any other text is a draft and the pane is skipped.
 state=${XDG_STATE_HOME:-$HOME/.local/state}/claude-restart; mkdir -p "$state"
+# herdr-agent-upgrade's loop (station-maintenance fleet 40) does these passes where its plugin runs: it touches
+# plugin-loop.alive every pass (10 min), so a fresh one means stand aside. Both take upgrade.lock: one pass at a time.
+if (( ! dry )); then
+  [[ -n $(find "$state/plugin-loop.alive" -mmin -15 2>/dev/null) ]] && { echo "herdr-agent-upgrade's loop runs the upgrades here: stood aside"; exit 0; }
+  exec 9>"$state/upgrade.lock"; flock -n 9 || { echo "another upgrade pass is running: skipped"; exit 0; }
+fi
 kb=$HOME/.claude/keybindings.json
 submit=enter
 if [[ -r $kb ]]; then
