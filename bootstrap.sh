@@ -4664,23 +4664,17 @@ SystemMaxUse=100M" "journal capped at 100 MiB (lean)"; then
   put_etc_file /etc/vivaldi/policies/managed/memory-saver.json \
     '{ "HighEfficiencyModeEnabled": true, "MemorySaverModeSavings": 1 }' "Vivaldi Memory Saver on (lean)" || true
 
-  # Vivaldi's profile in RAM (profile-sync-daemon; Ben 2026-11-08, beast-arch 127): on micro's spinning disk the
-  # browser's constant small writes were the lag. Overlay mode keeps only what changed in RAM (the 361 MiB profile stays
-  # on disk underneath), which needs its helper run as root without a password. psd.conf is in the dotfiles. The
-  # service is enabled, not started: psd will not take a profile while Vivaldi runs, so it begins at the next login.
-  if have psd-overlay-helper; then
-    local sf=/etc/sudoers.d/30-psd-overlay tmp; tmp=$(mktemp)
-    printf '%s\n' "$USER ALL=(ALL) NOPASSWD: /usr/bin/psd-overlay-helper" >"$tmp"
-    if sudo -n cmp -s "$tmp" "$sf" 2>/dev/null; then
-      ok "psd overlay helper: no password"
-    elif run sudo visudo -cqf "$tmp" && run sudo install -m 440 -o root -g root "$tmp" "$sf"; then
-      did "psd overlay helper: no password ($sf)"
-    else
-      warn "could not write $sf"
-    fi
-    rm -f "$tmp"
+  # The browser profile in RAM (profile-sync-daemon; Ben 2026-11-08, beast-arch 127): on micro's spinning disk the
+  # browser's constant small writes were the lag. Overlay mode keeps only what changed in RAM (the profile stays on disk
+  # underneath). psd.conf (qutebrowser, vivaldi) is in the dotfiles. psd 8 mounts the overlay with fuse-overlayfs as the
+  # user: the root helper psd-overlay-helper and its sudoers line are gone (this step waited for that helper, so psd was
+  # never enabled after the upgrade: station-maintenance fleet 39, 2026-11-18). The service is enabled, not started:
+  # psd will not take a profile while its browser runs, so it begins at the next login.
+  if have psd; then
+    [[ -e /etc/sudoers.d/30-psd-overlay ]] && run sudo rm -f /etc/sudoers.d/30-psd-overlay &&
+      did "removed the psd-overlay-helper sudoers line (psd 8 has no helper)"
     if systemctl --user is-enabled --quiet psd.service 2>/dev/null; then ok "psd (browser profile in RAM) enabled"
-    else run systemctl --user enable psd.service; did "psd enabled: Vivaldi's profile goes to RAM at the next login"; fi
+    else run systemctl --user enable psd.service; did "psd enabled: the browser profile goes to RAM at the next login"; fi
   fi
 }
 
