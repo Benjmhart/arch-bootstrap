@@ -1,0 +1,9 @@
+[Unit]
+Description=Every 2 minutes on surfboard: shut down an idle test VM (arch-bootstrap chores/testvm-idle, tools/testvm)
+
+[Timer]
+OnCalendar=*:0/2
+Unit=chore@testvm-idle.service
+
+[Install]
+WantedBy=timers.target

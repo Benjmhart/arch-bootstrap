@@ -4105,6 +4105,7 @@ install_chores() {
     did "chore backup off here: micro backs this machine up over its tunnel"
   fi
   [[ $(uname -n) == "${FLEET_CANARY_HOST:-beast-arch}" ]] && extra+=" canary"   # the KVM host: the nightly VM canary (fleet 11)
+  [[ $(uname -n) == "${TESTVM_HOST:-surfboard}" ]] && extra+=" testvm-idle"   # the shared test VMs: stopped when idle (fleet 37/39)
   for c in low-disk virus-scan repo-hygiene clipboard-wipe vivaldi-theme claude-restart boot-time reminders tailnet-paths cpu-temp $extra $CHORES; do
     [[ -f $d/$c/chore-$c.timer ]] || { warn "CHORES names '$c', but there is no chores/$c/chore-$c.timer"; continue; }
     if systemctl --user is-enabled --quiet "chore-$c.timer" 2>/dev/null; then

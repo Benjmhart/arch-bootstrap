@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# testvm -- the shared test VMs on surfboard (fleet 37's Windows 11): started on demand, stopped when idle. The VM ran
+# 23 h unattended at ~1.1 cores and 8 G, with surfboard's IO pressure ~50 % beside CI (station-maintenance fleet 37/39,
+# Ben 2026-11-18: "spinning down the VM when it's been inactive for ~10m").
+#
+# The protocol, for every agent that uses a test VM (from beast-arch or anywhere: ssh surfboard first):
+#   ~/projects/arch-bootstrap/tools/testvm up win11      start it if needed, wait for its sshd, take a 10-min lease
+#   ~/projects/arch-bootstrap/tools/testvm touch win11   renew the lease (work with no open ssh/VNC for >10 min)
+#   ~/projects/arch-bootstrap/tools/testvm down win11    when you are done (ACPI shutdown; others' leases are honoured)
+#   ~/projects/arch-bootstrap/tools/testvm status        every VM: running, lease age, live connections
+# Never start one with its run.sh directly, and never leave an ssh session hanging into it: an open connection from a
+# client younger than 2 h counts as use; older ones are ignored (a hung session kept this VM up for 23 h).
+# The chore testvm-idle (every 2 min, surfboard) runs `testvm idle`: a running VM with no lease touched in
+# TESTVM_IDLE_MIN (10) minutes and no live connection is shut down.
+set -uo pipefail
+root=${TESTVM_ROOT:-$HOME/.cache/fleet37-vm}; idle=${TESTVM_IDLE_MIN:-10}; vms=${TESTVMS:-win11}
+cmd=${1:-status}; one=${2:-}
+
+pid()   { local p; p=$(cat "$root/$1/qemu.pid" 2>/dev/null) && kill -0 "$p" 2>/dev/null && echo "$p"; }
+port()  { grep -oP 'hostfwd=tcp:127\.0\.0\.1:\K[0-9]+(?=-:22)' "$root/$1/run.sh" | head -1; }
+vncp()  { local n; n=$(grep -oP -- '-vnc 127\.0\.0\.1:\K[0-9]+' "$root/$1/run.sh" | head -1); [[ -n $n ]] && echo $((5900 + n)); }
+sshd()  { timeout 5 bash -c "exec 3<>/dev/tcp/127.0.0.1/$(port "$1") && head -c4 <&3" 2>/dev/null | grep -q '^SSH-'; }
+lease() { local m; m=$(stat -c %Y "$root/$1/lease" 2>/dev/null) || { echo 99999; return; }; echo $(( ($(date +%s) - m) / 60 )); }
+# live connections: clients of the VM's ssh/VNC port whose process started within the last 2 h
+live()  { local p c n=0 e; for p in $(port "$1") $(vncp "$1"); do
+            for c in $(ss -tnpH state established "( dport = :$p )" | grep -oP 'pid=\K[0-9]+' | sort -u); do
+              e=$(ps -o etimes= -p "$c" 2>/dev/null) && (( e < 7200 )) && n=$((n + 1))
+            done; done; echo "$n"; }
+mon()   { python3 -c 'import socket,sys,time; s=socket.socket(socket.AF_UNIX); s.connect(sys.argv[1]); time.sleep(.3); s.recv(4096)
+s.sendall(sys.argv[2].encode()+b"\n"); time.sleep(1); s.close()' "$root/$1/mon.sock" "$2" 2>/dev/null; }   # no socat on surfboard
+check() { [[ -x $root/$1/run.sh ]] || { echo "no test VM '$1' (no $root/$1/run.sh)" >&2; exit 2; }; }
+
+stop() { # ACPI power button, then the hard stop after 3 min
+  local v=$1 p i; p=$(pid "$v") || { echo "$v: not running"; return 0; }
+  mon "$v" system_powerdown
+  for i in $(seq 36); do kill -0 "$p" 2>/dev/null || { echo "$v: shut down ($((i * 5)) s)"; rm -f "$root/$v/lease"; return 0; }; sleep 5; done
+  mon "$v" quit; sleep 2; kill -0 "$p" 2>/dev/null && { echo "$v: still running after quit (pid $p)" >&2; return 1; }
+  echo "$v: no ACPI shutdown in 3 min: stopped hard"; rm -f "$root/$v/lease"
+}
+
+case $cmd in
+  up)    v=${one:-win11}; check "$v"
+         if ! pid "$v" >/dev/null; then (cd "$root/$v" && ./run.sh >/dev/null) || { echo "$v: run.sh failed" >&2; exit 1; }; echo "$v: starting"; fi
+         touch "$root/$v/lease"
+         for i in $(seq 120); do sshd "$v" && break; sleep 5; done
+         sshd "$v" || { echo "$v: no sshd after 10 min (VNC 127.0.0.1:$(vncp "$v"))" >&2; exit 1; }
+         touch "$root/$v/lease"
+         echo "$v: up: ssh -p $(port "$v") -i $root/kit/vmkey ben@127.0.0.1 (lease ${idle} min; renew with: testvm touch $v)" ;;
+  touch) v=${one:-win11}; check "$v"; pid "$v" >/dev/null || { echo "$v: not running (testvm up $v)" >&2; exit 1; }
+         touch "$root/$v/lease"; echo "$v: lease renewed" ;;
+  down)  v=${one:-win11}; check "$v"; stop "$v" ;;
+  idle)  for v in $vms; do [[ -x $root/$v/run.sh ]] && pid "$v" >/dev/null || continue
+           a=$(lease "$v"); n=$(live "$v")
+           if (( a >= idle && n == 0 )); then echo "$v: idle (lease ${a} min old, no live connection)"; stop "$v" || exit 1; fi
+         done; exit 0 ;;
+  status) for v in $vms; do [[ -x $root/$v/run.sh ]] || continue
+           if p=$(pid "$v"); then echo "$v: running (pid $p), lease $(lease "$v") min old, $(live "$v") live connection(s), sshd $(sshd "$v" && echo up || echo down)"
+           else echo "$v: stopped"; fi; done ;;
+  *)     sed -n '7,11p' "$0"; exit 2 ;;
+esac
