@@ -281,7 +281,11 @@ restart() {   # 0 restarted (/restart), 4 resumed (exit + claude --resume), 2 sk
         && { : > "$state/ask-$pid"; echo "asked $pane to stop its loop at a safe point"; return 2; }
       echo "fail $pane: could not ask it to stop its loop"; return 1 ;;
   esac
-  # Already known to refuse /restart (Remote Control) or to lack it: straight to exit + resume.
+  # Known to refuse /restart (Remote Control) or to lack it: straight to exit + resume. Remote Control is read from the
+  # session file (bridgeSessionId, 2.1.327): typing /restart first left "Can't restart while Remote Control is
+  # connected" in the conversation, and a resumed session showed it as its last line, so it looked stuck (Ben
+  # 2026-11-18: personal-comms "failed to restart"; it had restarted).
+  [[ -n $pid && -n $(jq -r '.bridgeSessionId // empty' "$HOME/.claude/sessions/$pid.json" 2>/dev/null) ]] && : > "$state/rc-$pid"
   if [[ -n $pid && ( -e $state/rc-$pid || -e $state/nr-$pid ) ]]; then
     resume "$pane" "$pid" && { echo "resumed $pane (exit + claude --resume)"; return 4; }; return 1
   fi
