@@ -16,12 +16,14 @@ fallback() { echo "== $1: media-center builds it itself"; exec ssh "$host" "sudo
 # Until the next fpush installs the --binary-aware castiron-deploy there, the old one takes the SHA only.
 ssh "$host" "grep -q -- --binary /usr/local/sbin/castiron-deploy" || fallback "$host's castiron-deploy predates --binary"
 
+# castiron's build-release task (from 94f9adb, story 7.1) builds the web app into web/dist before cargo embeds it;
+# plain cargo there ships a placeholder page. Older commits have no such task: cargo alone, as before.
 echo "== build $sha here ($(uname -n))"
 if [[ ! -d $src/.git ]]; then mkdir -p "${src%/*}" && git clone -q git@github-castiron:Benjmhart/castiron.git "$src" || fallback "clone failed"; fi
 git -C "$src" fetch -q origin || fallback "fetch failed"
 git -C "$src" merge-base --is-ancestor "$sha" origin/staging || { echo "$sha is not on origin/staging: refusing" >&2; exit 3; }
 git -C "$src" checkout -q --detach "$sha" && git -C "$src" clean -qfdx -e target || fallback "checkout failed"
-(cd "$src" && mise trust -q . && mise install -q && nice -n 19 ionice -c 3 mise exec -- cargo build -q --release --locked -p castiron) \
+(cd "$src" && mise trust -q . && mise install -q && nice -n 19 ionice -c 3 sh -c 'if grep -q "^\[tasks.build-release\]" mise.toml; then mise run build-release; else mise exec -- cargo build -q --release --locked -p castiron; fi') \
   || fallback "build failed here"
 "$src/target/release/castiron" --version || fallback "the built binary does not run"
 

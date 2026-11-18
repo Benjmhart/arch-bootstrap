@@ -43,8 +43,10 @@ if [[ -n $prebuilt ]]; then
   new=$(mktemp /usr/local/lib/castiron-deploy.XXXXXX); trap 'rm -f "$new"' EXIT
   cp "$prebuilt" "$new"; chmod 755 "$new"
 else
+  # castiron's build-release task (from 94f9adb, story 7.1) builds the web app into web/dist before cargo embeds it;
+  # plain cargo there ships a placeholder page. Older commits have no such task: cargo alone, as before.
   echo "== build (as ben)"
-  as_ben sh -c 'cd "$1" && mise trust -q . && mise install -q && mise exec -- cargo build -q --release --locked -p castiron' sh "$SRC"
+  as_ben sh -c 'cd "$1" && mise trust -q . && mise install -q && if grep -q "^\[tasks.build-release\]" mise.toml; then mise run build-release; else mise exec -- cargo build -q --release --locked -p castiron; fi' sh "$SRC"
   new=$SRC/target/release/castiron
 fi
 as_ben "$new" --version
