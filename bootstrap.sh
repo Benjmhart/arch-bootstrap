@@ -4559,6 +4559,18 @@ ACTION=="add|change", KERNEL=="sd[a-z]", ATTR{queue/rotational}=="1", ATTR{queue
     run sudo udevadm control --reload
     run sudo udevadm trigger --subsystem-match=block --action=change
   fi
+  # Where CI runners live (beast-arch, surfboard: not bootstrap-managed, so found by their units), SATA SSDs get bfq too:
+  # the runners' drop-ins set IOWeight=20 so CI yields the disk to the desk, and only bfq honours it; mq-deadline
+  # ignored it while beast-arch's herdr stalled under two CI jobs (2026-11-18, station-maintenance fleet 39). NVMe stays
+  # on none (bfq costs more there than it gives).
+  if [[ -n $(systemctl list-unit-files --no-legend 'actions.runner.*' gha-runner.service gitlab-runner.service 2>/dev/null) ]] &&
+     put_etc_file /etc/udev/rules.d/61-ioscheduler-ci.rules \
+'# Written by arch-bootstrap. bfq on SATA SSDs too where CI runners live: their IOWeight works only under bfq.
+ACTION=="add|change", KERNEL=="sd[a-z]", ATTR{queue/rotational}=="0", ATTR{queue/scheduler}="bfq"' \
+     "bfq on SATA SSDs (CI runners here)"; then
+    run sudo udevadm control --reload
+    run sudo udevadm trigger --subsystem-match=block --action=change
+  fi
 
   # zram up to half of RAM. zram-generator's default caps it at 4 GiB: beast-arch's sat at 3.8 of 4 GiB with 7.1 GiB
   # gone to the SSD swap behind it and 21 GiB of RAM free (2026-11-16, station-maintenance fleet 39). Lean hosts get
