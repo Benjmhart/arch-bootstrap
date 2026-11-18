@@ -49,6 +49,12 @@ done
 #   empty prompt, then `claude --resume <its session id> <its own flags>` typed into the pane's shell. Resuming
 #   reattaches the Remote Control session recorded in the conversation (docs: remote-control). Checked after: a new
 #   claude in the pane, on the installed version, on the same session id, with no Remote Control failure on screen.
+#   Since 2026-11-18 (Ben: "gracefully disconnect the agent from remote control, restart them, and get them back on
+#   remote control"): a session whose file has a bridgeSessionId is first disconnected (/remote-control, "Disconnect this
+#   session"), then /restart runs as for any session, then Remote Control comes back (the restarted claude reconnects by
+#   itself, as a NEW Remote Control session; /remote-control if not in 20 s). Exit + resume is the fallback when the
+#   disconnect does not take. Rehearsed with this code on a throwaway 2.1.326 session in herdr-sandbox: 2.1.327, same
+#   pid and session id, Remote Control back, no refusal on screen.
 #   Until then these were told once per process and skipped for good, so those sessions never updated (beast-arch
 #   journal, refusals from 2026-11-08).
 # - Only an EMPTY input box is used (Claude Code's dim suggestion text does not count). A box holding only "/restart" lines (left by the old version) is cleared with one
@@ -250,6 +256,45 @@ relaunch() {
     else echo "FAIL $pane: relaunch of '$line' ($r); retried next pass"; fi
   done
 }
+bridge() { jq -r '.bridgeSessionId // empty' "$HOME/.claude/sessions/$1.json" 2>/dev/null; }   # Remote Control's id
+# rc_slash <pane>: type /remote-control and run it, only if the menu highlights exactly that entry (as /restart below).
+rc_slash() {
+  local pane=$1 sel
+  "$herdr" pane send-text "$pane" /remote-control >/dev/null || return 1
+  sleep 1
+  sel=$("$herdr" agent read "$pane" 2>/dev/null | tr -d '\r' | sed "s/$nbsp/ /g" | grep -E '^ +❯ /' | tail -1 | awk '{print $2}')
+  [[ $sel == /remote-control ]] || { "$herdr" pane send-keys "$pane" c-c >/dev/null; return 1; }
+  "$herdr" pane send-keys "$pane" "$accept" >/dev/null; sleep 1; "$herdr" pane send-keys "$pane" "$submit" >/dev/null
+}
+# rc_off <pane> <pid>: Remote Control's dialog (Disconnect this session / Show QR code / Continue, Continue selected):
+# up to "Disconnect this session", Enter; 0 once the session file has no bridgeSessionId. Rehearsed on a throwaway
+# session in herdr-sandbox, 2.1.327, 2026-11-18 ("Remote Control disconnected.").
+rc_off() {
+  local pane=$1 pid=$2 i
+  rc_slash "$pane" || { echo "note $pane: no /remote-control in its menu"; return 1; }
+  sleep 3
+  for i in 1 2 3 4; do
+    "$herdr" agent read "$pane" 2>/dev/null | sed "s/$nbsp/ /g" | grep -q '❯ Disconnect this session' && break
+    "$herdr" pane send-keys "$pane" up >/dev/null; sleep 0.5
+  done
+  "$herdr" agent read "$pane" 2>/dev/null | sed "s/$nbsp/ /g" | grep -q '❯ Disconnect this session' \
+    || { "$herdr" pane send-keys "$pane" escape >/dev/null; echo "note $pane: Remote Control's dialog had no Disconnect"; return 1; }
+  "$herdr" pane send-keys "$pane" enter >/dev/null
+  for i in $(seq 20); do sleep 0.5; [[ -z $(bridge "$pid") ]] && { sleep 1; return 0; }; done
+  echo "note $pane: Remote Control did not disconnect"; return 1
+}
+# rc_on <pane>: the restarted claude reconnects by itself (seen in the rehearsal: a new Remote Control session, so a
+# new entry on the phone); if it has not in 20 s, /remote-control connects it.
+rc_on() {
+  local pane=$1 i np
+  for i in $(seq 20); do sleep 1; np=$(claude_pid "$pane"); [[ -n $np && -n $(bridge "$np") ]] && return 0; done
+  rc_slash "$pane" && for i in $(seq 20); do sleep 1; [[ -n $(bridge "$np") ]] && { echo "note $pane: Remote Control reconnected by /remote-control"; return 0; }; done
+  echo "FAIL $pane: restarted, but Remote Control is off; run /remote-control there"
+}
+# rc_restart <pane>: restart, and a session it disconnected from Remote Control gets it back whatever happened next
+# (restarted, refused, failed). Not after exit + resume (4): a resumed claude reconnects by itself.
+RCWAS=
+rc_restart() { RCWAS=; restart "$1"; local r=$?; [[ -n $RCWAS && $r != 4 ]] && rc_on "$1"; return $r; }
 restart() {   # 0 restarted (/restart), 4 resumed (exit + claude --resume), 2 skipped (draft, busy), 1 failed
   local pane=$1 pid b i sid ls; pid=$(claude_pid "$pane")
   sid=$(jq -r '.sessionId // empty' "$HOME/.claude/sessions/$pid.json" 2>/dev/null)
@@ -281,11 +326,10 @@ restart() {   # 0 restarted (/restart), 4 resumed (exit + claude --resume), 2 sk
         && { : > "$state/ask-$pid"; echo "asked $pane to stop its loop at a safe point"; return 2; }
       echo "fail $pane: could not ask it to stop its loop"; return 1 ;;
   esac
-  # Known to refuse /restart (Remote Control) or to lack it: straight to exit + resume. Remote Control is read from the
-  # session file (bridgeSessionId, 2.1.327): typing /restart first left "Can't restart while Remote Control is
-  # connected" in the conversation, and a resumed session showed it as its last line, so it looked stuck (Ben
-  # 2026-11-18: personal-comms "failed to restart"; it had restarted).
-  [[ -n $pid && -n $(jq -r '.bridgeSessionId // empty' "$HOME/.claude/sessions/$pid.json" 2>/dev/null) ]] && : > "$state/rc-$pid"
+  # Remote Control connected (the session file's bridgeSessionId): disconnect it, /restart, and it comes back (Ben
+  # 2026-11-18: "gracefully disconnect the agent from remote control, restart them, and get them back on"). A
+  # disconnect that does not take falls through to the old way, exit + resume.
+  [[ -n $pid && -n $(bridge "$pid") ]] && { rc_off "$pane" "$pid" && RCWAS=1 || : > "$state/rc-$pid"; }
   if [[ -n $pid && ( -e $state/rc-$pid || -e $state/nr-$pid ) ]]; then
     resume "$pane" "$pid" && { echo "resumed $pane (exit + claude --resume)"; return 4; }; return 1
   fi
@@ -331,7 +375,7 @@ if (( ${#stale[@]} )) && [[ -x $herdr ]]; then
     if [[ $st == idle || $st == done || $st == working ]]; then
       if (( dry )); then p=$(claude_pid "$pane"); i=$(jq -r '.sessionId // empty' "$HOME/.claude/sessions/$p.json" 2>/dev/null)
         echo "would restart $pane (${stale[$pane]}, $st, loop: $(loop_state "$i"), in flight: $(heavy "$p" "$i"))"
-      else restart "$pane"; case $? in 0) echo "restarted $pane (was ${stale[$pane]})"; done_n=$((done_n+1));;
+      else rc_restart "$pane"; case $? in 0) echo "restarted $pane (was ${stale[$pane]})"; done_n=$((done_n+1));;
                                          4) resumed=$((resumed+1)); done_n=$((done_n+1));; 1) failed=$((failed+1));; esac; fi
       (( dry )) && done_n=$((done_n+1))
     else busy=$((busy+1)); fi
