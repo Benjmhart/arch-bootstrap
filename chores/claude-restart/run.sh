@@ -45,8 +45,8 @@ done
 # - Any "Can't restart while ..." reply is a refusal. Background work running: retried after an hour (state bg-<pid>).
 # - A session with Remote Control connected refuses: "Can't restart while Remote Control is connected" (2.1.321-2.1.325
 #   at least, by design: the check is in the binary). Since 2026-11-13 (Ben: every agent on Remote Control, and "fix
-#   the chore") such a session, and one whose menu shows no /restart, is exited and resumed instead: ctrl+d twice on its
-#   empty prompt, then `claude --resume <its session id> <its own flags>` typed into the pane's shell. Resuming
+#   the chore") such a session was exited (ctrl+d) and resumed; **never since 2026-11-19 (Ben: no ctrl+d)**: one that
+#   /restart can't reach is reported and left running. A resume pending from before is still typed into a bare shell. Resuming
 #   reattaches the Remote Control session recorded in the conversation (docs: remote-control). Checked after: a new
 #   claude in the pane, on the installed version, on the same session id, with no Remote Control failure on screen.
 #   Since 2026-11-18 (Ben: "gracefully disconnect the agent from remote control, restart them, and get them back on
@@ -89,38 +89,7 @@ box() {   # the input box's text, one line per line, prompt mark and blanks stri
 }
 # resume <pane> <pid>: exit that claude and start the installed one on the same conversation, with its own flags.
 # 0 done, 1 failed. Only called with an empty input box (checked before /restart was typed).
-resume() {
-  local pane=$1 pid=$2 sid i np out a skip=0 cmd
-  sid=$(jq -r '.sessionId // empty' "$HOME/.claude/sessions/$pid.json" 2>/dev/null)
-  [[ -n $sid ]] || { echo "fail $pane: no session id for claude $pid (~/.claude/sessions/$pid.json)"; return 1; }
-  # Its own flags (permission mode, model ...), minus how it was resumed or continued before.
-  local -a args=() argv=()
-  mapfile -d '' argv < "/proc/$pid/cmdline"
-  for a in "${argv[@]:1}"; do
-    if (( skip )); then skip=0; continue; fi
-    case $a in
-      -c|--continue) ;;
-      -r|--resume|--session-id) skip=1 ;;
-      --resume=*|--session-id=*) ;;
-      *) args+=("$a") ;;
-    esac
-  done
-  cmd="claude --resume $sid"; (( ${#args[@]} )) && cmd+=" $(printf '%q ' "${args[@]}")"; cmd=${cmd% }
-  # Kept until the new claude is up: a claude that exits after we stop waiting (micro 2026-11-16 20:20: over 10 s,
-  # Remote Control disconnecting on a slow disk) is resumed by the next pass instead of leaving a bare shell.
-  printf '%s\t%s\n' "$pane" "$cmd" > "$state/resume-$sid"
-  "$herdr" pane send-keys "$pane" ctrl+d >/dev/null; sleep 0.5; "$herdr" pane send-keys "$pane" ctrl+d >/dev/null
-  for i in $(seq 120); do [[ -e /proc/$pid ]] || break; sleep 0.5; done
-  [[ -e /proc/$pid ]] && { echo "fail $pane: claude $pid did not exit on ctrl+d within 60 s (if it exits later, the next pass resumes it)"; return 1; }
-  sleep 1   # the shell's prompt back
-  type_resume "$pane" "$sid" "$cmd" || return 1
-  sleep 5   # Remote Control reconnects a moment after start
-  out=$("$herdr" agent read "$pane" 2>/dev/null | grep -E "Remote Control not started here|Couldn't reconnect|Previous session is unavailable" | tail -1)
-  [[ -n $out ]] && echo "note $pane: resumed, but Remote Control says: ${out## } (run /remote-control there)"
-  return 0
-}
-# type_resume <pane> <sid> <cmd>: type the resume command into the pane's shell; 0 once the installed claude is up on
-# that session (the pending resume-<sid> is then removed). One try: a failure is reported and left to a person.
+no_exit() { echo "fail $1: $2; not restarted, not exited (Ben 2026-11-19: no ctrl+d): look at the pane"; }
 type_resume() {
   local pane=$1 sid=$2 cmd=$3 i np
   rm -f "$state/resume-$sid"
@@ -317,16 +286,9 @@ restart() {   # 0 restarted (/restart), 4 resumed (exit + claude --resume), 2 sk
   if [[ -n $b ]] && ! grep -qv '^/restart$' <<<"$b"; then "$herdr" pane send-keys "$pane" c-c >/dev/null; sleep 1; b=$(box "$pane"); fi
   [[ -z $b ]] || { echo "skip $pane: the prompt holds a draft"; return 2; }
   case $ls in
-    ready*)
-      printf '%s\n' "${ls#ready }" > "$state/relaunch-$sid"
-      resume "$pane" "$pid" || return 1
-      echo "resumed $pane (loop stopped by the agent)"; relaunch "$pane"; return 4 ;;
-    active*)
-      if [[ -z $why && $ls == "active /loop"* ]]; then
-        printf '%s\n' "${ls#active }" > "$state/relaunch-$sid"
-        resume "$pane" "$pid" || return 1
-        echo "resumed $pane (loop stopped: nothing substantial in flight)"; relaunch "$pane"; return 4
-      fi
+    ready*)   # paused at a safe point: Remote Control off, /restart, relaunch (below and each pass)
+      printf '%s\n' "${ls#ready }" > "$state/relaunch-$sid" ;;
+    active*)   # every loop is asked to pause at a safe point first (Ben 2026-11-19)
       [[ -e $state/ask-$pid ]] && { echo "skip $pane: looping, waiting for its RESTART-READY"; return 2; }
       say "$pane" "$(printf "$ASK" "${cur##*/}" "$(basename "$(readlink "/proc/$pid/exe")")")" >/dev/null \
         && { : > "$state/ask-$pid"; echo "asked $pane to stop its loop at a safe point"; return 2; }
@@ -334,11 +296,9 @@ restart() {   # 0 restarted (/restart), 4 resumed (exit + claude --resume), 2 sk
   esac
   # Remote Control connected (the session file's bridgeSessionId): disconnect it, /restart, and it comes back (Ben
   # 2026-11-18: "gracefully disconnect the agent from remote control, restart them, and get them back on"). A
-  # disconnect that does not take falls through to the old way, exit + resume.
-  [[ -n $pid && -n $(bridge "$pid") ]] && { rc_off "$pane" "$pid" && RCWAS=1 || : > "$state/rc-$pid"; }
-  if [[ -n $pid && ( -e $state/rc-$pid || -e $state/nr-$pid ) ]]; then
-    resume "$pane" "$pid" && { echo "resumed $pane (exit + claude --resume)"; return 4; }; return 1
-  fi
+  # disconnect that does not take is reported: no ctrl+d, ever (Ben 2026-11-19).
+  [[ -n $pid && -n $(bridge "$pid") ]] && rc_off "$pane" "$pid" && RCWAS=1
+  [[ -n $pid && -n $(bridge "$pid") ]] && { no_exit "$pane" "Remote Control would not disconnect"; return 1; }
   local refused0 why; refused0=$("$herdr" agent read "$pane" 2>/dev/null | grep -c "Can't restart while")
   "$herdr" pane send-text "$pane" /restart >/dev/null || return 1
   # The menu's highlighted entry must BE /restart before it is accepted. A claude without /restart (2.1.318 in w2:p1,
@@ -351,7 +311,7 @@ restart() {   # 0 restarted (/restart), 4 resumed (exit + claude --resume), 2 sk
     "$herdr" pane send-keys "$pane" c-c >/dev/null; [[ -n $pid ]] && : > "$state/nr-$pid"
     echo "note $pane: no /restart in its menu (highlighted: ${sel:-nothing}); cleared, exit + resume instead"
     sleep 1; [[ -z $(box "$pane") ]] || { echo "skip $pane: the prompt is not empty after clearing"; return 2; }
-    [[ -n $pid ]] && resume "$pane" "$pid" && { echo "resumed $pane (exit + claude --resume)"; return 4; }; return 1
+    no_exit "$pane" "/restart can't run here"; return 1
   fi
   "$herdr" pane send-keys "$pane" "$accept" >/dev/null || return 1
   sleep 1; "$herdr" pane send-keys "$pane" "$submit" >/dev/null || return 1
@@ -363,7 +323,7 @@ restart() {   # 0 restarted (/restart), 4 resumed (exit + claude --resume), 2 sk
       if [[ $why == *"Remote Control"* ]]; then [[ -n $pid ]] && : > "$state/rc-$pid"
         echo "note $pane: /restart refused (Remote Control is connected): exit + resume instead"
         sleep 1; [[ -z $(box "$pane") ]] || { echo "skip $pane: the prompt is not empty after the refusal"; return 2; }
-        [[ -n $pid ]] && resume "$pane" "$pid" && { echo "resumed $pane (exit + claude --resume)"; return 4; }; return 1
+        no_exit "$pane" "/restart can't run here"; return 1
       fi
       [[ -n $pid ]] && : > "$state/bg-$pid"   # e.g. "work is running in the background": retried in an hour
       echo "refused $pane: ${why#*restart while }"; return 2
