@@ -13,7 +13,9 @@
 # line back (pending in relaunch-<session id> until it starts, so a failed relaunch is retried every pass).
 #
 # Ben 2026-11-16: "you don't need for the agent to be idle, we can stop and resume unless it will lose substantial
-# work". So a working session is interrupted (Esc) and resumed, and a looping one is stopped and resumed with its loop
+# work". [Superseded 2026-11-19 (Ben): no Esc and no exit; a busy or looping session is asked to wind down (shells,
+# subagents, monitors, loop) and say RESTART-READY, then Remote Control off and /restart.] Before: a working session
+# was interrupted (Esc) and resumed, and a looping one was stopped and resumed with its loop
 # typed back (the /loop line from its last ScheduleWakeup), unless it has substantial work in flight: a shell of its own
 # running over 2 min, or a subagent started over 2 min ago that is still writing. Those keep the old behaviour: left
 # while working; asked to stop at a safe point when idle and looping. Blocked sessions (a question for Ben) are left.
@@ -155,12 +157,15 @@ for ln in open(sys.argv[1]):
             state = "none" if i.get("stop") else "active"
             if not i.get("stop"):
                 line = "/loop" if "autonomous-loop" in (i.get("prompt") or "") else (i.get("prompt") or "")
-        elif b.get("type") == "tool_use" and b.get("name") == "CronCreate" and not b.get("input", {}).get("durable"):
+        elif b.get("type") == "tool_use" and b.get("name") == "CronCreate" and not b.get("input", {}).get("durable") \
+                and b.get("input", {}).get("recurring", True):
             state, line = "active", ""  # a cron loop's /loop line is not in the call: only the agent can say it
+        elif b.get("type") == "tool_use" and b.get("name") == "CronDelete" and state == "active":
+            state, line = "none", ""    # one-shot reminders and deleted crons are no loop (2026-11-19)
         elif b.get("type") == "text" and m.get("role") == "assistant":
-            r = re.findall(r"^RESTART-READY (/loop\b.*)$", b.get("text") or "", re.M)
+            r = re.findall(r"^RESTART-READY(?:[ \t]+(/loop\b.*))?[ \t]*$", b.get("text") or "", re.M)
             if r:
-                state, line = "ready", r[-1].strip().strip("`")
+                state, line = "ready", (r[-1] or "").strip().strip("`")
 print(state + (" " + line if state != "none" and line.startswith("/loop") else ""))
 EOP
 }
@@ -177,12 +182,6 @@ heavy() {
     t=$(head -c 65536 "$f" | grep -om1 '"timestamp":"[^"]*"' | cut -d'"' -f4); t=$(date -d "$t" +%s 2>/dev/null) || continue
     (( now - t > 120 )) && { echo "a subagent working $(( (now - t) / 60 )) min"; return; }
   done
-}
-# interrupt <pane>: Esc ends the turn (Claude Code's default chat:cancel); 0 once the agent is idle/done.
-interrupt() {
-  local i; "$herdr" pane send-keys "$1" esc >/dev/null || return 1
-  for i in $(seq 20); do sleep 1; [[ $(status "$1") =~ ^(idle|done)$ ]] && return 0; done
-  return 1
 }
 status() { "$herdr" agent list 2>/dev/null | jq -r --arg p "$1" '.result.agents[] | select(.pane_id == $p) | .agent_status'; }
 # say <pane> <text>: type a prompt into an idle claude with an empty box and submit it. A leading "/" opens the slash
@@ -207,7 +206,7 @@ say() {
   done
   echo "typed but the agent did not start (still ${s:-?})"; return 1
 }
-ASK="[claude-restart chore] Claude Code %s is installed; this session still runs %s, and its loop keeps it from restarting. At your next safe point (no background task, subagent, monitor or shell of yours still running, between loop iterations): stop your loop (ScheduleWakeup with stop: true; CronDelete any /loop cron jobs), then end that reply with one line exactly: RESTART-READY <the /loop command that restarts your loop as it was, e.g. /loop /next-story:bmad-pony>. The chore then restarts this session on the new version and types that line back. If work is running now, carry on and do it when it is done; you will not be asked again."
+ASK="[claude-restart chore] Claude Code %s is installed; this session still runs %s. At your next safe point (between loop iterations, if you loop): gracefully finish or stop every background shell, subagent and monitor of yours (TaskStop what can't finish soon), stop your loop if you have one (ScheduleWakeup with stop: true; CronDelete your recurring cron jobs), then end that reply with one line exactly: RESTART-READY, followed by the /loop command that restarts your loop as it was if you had one (e.g. RESTART-READY /loop /next-story:bmad-pony). The chore then disconnects Remote Control, restarts this session on the new version, reconnects it and types that /loop line back. If work is running now, carry on and do this when it is done; you will not be asked again."
 # relaunch [pane]: for each session with a pending /loop line (relaunch-<sid>) whose claude is on the installed version,
 # idle, with an empty box: type the line. Every pass, so a relaunch that failed is retried.
 relaunch() {
@@ -275,25 +274,20 @@ restart() {   # 0 restarted (/restart), 4 resumed (exit + claude --resume), 2 sk
   sid=$(jq -r '.sessionId // empty' "$HOME/.claude/sessions/$pid.json" 2>/dev/null)
   ls=$( [[ -n $sid ]] && loop_state "$sid" || echo none)
   local why; why=$( [[ -n $pid && -n $sid ]] && heavy "$pid" "$sid")
-  if [[ $(status "$pane") == working ]]; then
-    [[ -n $why ]] && { echo "skip $pane: working, $why"; return 2; }
-    interrupt "$pane" || { echo "fail $pane: did not stop on Esc"; return 1; }
-    echo "note $pane: interrupted (no substantial work in flight)"
-    sleep 1; ls=$(loop_state "$sid")
+  # Ben 2026-11-19: no Esc, no ctrl+d. Working, shells/subagents in flight, a background refusal, or a loop: asked once
+  # to wind down at a safe point and say RESTART-READY. A READY counts only after this pid was asked.
+  local ready=; [[ $ls == ready* && -n $pid && -e $state/ask-$pid ]] && ready=1
+  if [[ -z $ready ]] && [[ $(status "$pane") == working || -n $why || ( -n $pid && -e $state/bg-$pid ) || $ls == active* ]]; then
+    [[ -e $state/ask-$pid ]] && { echo "skip $pane: asked to wind down; waiting for its RESTART-READY"; return 2; }
+    b=$(box "$pane"); [[ -z $b ]] || { echo "skip $pane: the prompt holds a draft: ${b:0:40}"; return 2; }
+    say "$pane" "$(printf "$ASK" "${cur##*/}" "$(basename "$(readlink "/proc/$pid/exe")")")" >/dev/null \
+      && { : > "$state/ask-$pid"; echo "asked $pane to wind down (shells, subagents, loop) at a safe point"; return 2; }
+    echo "fail $pane: could not ask it to wind down"; return 1
   fi
-  [[ $ls == none && -n $why && -n $pid && -n $(find "$state/bg-$pid" -mmin -60 2>/dev/null) ]] && { echo "skip $pane: background work (refused <1h ago)"; return 2; }
   b=$(box "$pane")
   if [[ -n $b ]] && ! grep -qv '^/restart$' <<<"$b"; then "$herdr" pane send-keys "$pane" c-c >/dev/null; sleep 1; b=$(box "$pane"); fi
-  [[ -z $b ]] || { echo "skip $pane: the prompt holds a draft"; return 2; }
-  case $ls in
-    ready*)   # paused at a safe point: Remote Control off, /restart, relaunch (below and each pass)
-      printf '%s\n' "${ls#ready }" > "$state/relaunch-$sid" ;;
-    active*)   # every loop is asked to pause at a safe point first (Ben 2026-11-19)
-      [[ -e $state/ask-$pid ]] && { echo "skip $pane: looping, waiting for its RESTART-READY"; return 2; }
-      say "$pane" "$(printf "$ASK" "${cur##*/}" "$(basename "$(readlink "/proc/$pid/exe")")")" >/dev/null \
-        && { : > "$state/ask-$pid"; echo "asked $pane to stop its loop at a safe point"; return 2; }
-      echo "fail $pane: could not ask it to stop its loop"; return 1 ;;
-  esac
+  [[ -z $b ]] || { echo "skip $pane: the prompt holds a draft: ${b:0:40}"; return 2; }
+  [[ -n $ready && $ls != ready ]] && printf '%s\n' "${ls#ready }" > "$state/relaunch-$sid"
   # Remote Control connected (the session file's bridgeSessionId): disconnect it, /restart, and it comes back (Ben
   # 2026-11-18: "gracefully disconnect the agent from remote control, restart them, and get them back on"). A
   # disconnect that does not take is reported: no ctrl+d, ever (Ben 2026-11-19).
