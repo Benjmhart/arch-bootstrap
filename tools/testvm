@@ -14,7 +14,7 @@
 # TESTVM_IDLE_MIN (10) minutes and no live connection is shut down; so is one whose lease is kept fresh with no live
 # connection for TESTVM_HELD_MIN (30) minutes (a lease touched in a loop is not use), and the next `testvm` command
 # says so (Ben 2026-11-20: "make sure that other users you are sharing infra with are being efficient").
-# CI waits its turn: surfboard's runners run /usr/local/lib/ci/testvm-wait before each job (ACTIONS_RUNNER_HOOK_JOB_
+# CI waits its turn: surfboard's runners run /usr/local/lib/ci/testvm-wait.sh before each job (ACTIONS_RUNNER_HOOK_JOB_
 # STARTED, drop-in actions.runner.Benjmhart-.service.d/testvm-wait.conf), which holds the job while a VM runs.
 set -uo pipefail
 root=${TESTVM_ROOT:-$HOME/.cache/fleet37-vm}; idle=${TESTVM_IDLE_MIN:-10}; held=${TESTVM_HELD_MIN:-30}; vms=${TESTVMS:-win11 macos}

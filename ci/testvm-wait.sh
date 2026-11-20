@@ -1,5 +1,6 @@
 #!/bin/sh
 # testvm-wait -- an Actions job's first step on surfboard (ACTIONS_RUNNER_HOOK_JOB_STARTED): wait while a test VM runs
+# The runner takes a hook only by a path ending .sh/.ps1/.js: without it every job failed at "Set up runner" (castiron PR #182, 2026-11-20).
 # (tools/testvm). Ben 2026-11-20: "if either of the VM's are busy, surfboard should be unavailable for CI jobs".
 # Timing tests failed under a busy VM (nihongo-smash PR #150, 2026-11-20). testvm stops an idle VM within 10-30 min.
 # comm is cut to 15 characters: qemu-system-x86. ponytail: any qemu counts as a test VM (surfboard runs no other); after 2 h the job runs anyway, rather than time out.
