@@ -230,6 +230,61 @@ relaunch() {
     else echo "FAIL $pane: relaunch of '$line' ($r); retried next pass"; fi
   done
 }
+# resume_of <pid> <session id>: the command that resumes this claude with its own flags (the old session choice dropped).
+resume_of() {
+  local -a a out=(); local x skip=0
+  mapfile -d '' -t a < "/proc/$1/cmdline" 2>/dev/null || return 1
+  for x in "${a[@]:1}"; do
+    (( skip )) && { skip=0; continue; }
+    case ${x%%=*} in -c|--continue|-r|--resume|--session-id) [[ $x == -r || $x == --resume || $x == --session-id ]] && skip=1; continue;; esac
+    out+=("$(printf %q "$x")")
+  done
+  echo "claude --resume $2${out[*]:+ ${out[*]}}"
+}
+# settled <pane> <session id> <resume command>: /restart started the new claude; it counts only if it is still there 15 s
+# later. keybind-find-meta's exited within seconds (beast-arch, 17:21 2026-11-19) and its pane sat at the shell for
+# 17 min: one that dropped to its shell is resumed there (a relaunch, not an exit). Port of herdr-agent-upgrade e3b4c07.
+settled() {
+  local pane=$1 sid=$2 cmd=$3; sleep 15
+  [[ -n $(claude_pid "$pane") ]] && return 0
+  [[ -n $cmd ]] || { echo "fail $pane: the new claude exited after /restart and its session is unknown; resume it by hand"; return 1; }
+  if ! shell_fg "$pane"; then
+    printf '%s\t%s\n' "$pane" "$cmd" > "$state/resume-$sid"   # pending() types it later
+    echo "fail $pane: the new claude exited after /restart; its shell is busy, the next pass resumes it: $cmd"; return 1
+  fi
+  echo "note $pane: the new claude exited within 15 s of /restart; resumed: $cmd"
+  type_resume "$pane" "$sid" "$cmd"
+}
+# refused <pane>: the refusal under the last "❯ /restart", or nothing. Claude redraws a repeated refusal in place, so
+# counting refusal lines missed the orchestrator's (2026-11-19) and /restart was re-sent every pass.
+refused() {
+  "$herdr" agent read "$1" 2>/dev/null | tr -d '\r' | sed "s/$nbsp/ /g" | grep -v '^[[:space:]]*$' \
+    | awk '/^[[:space:]]*❯ \/restart/ {at=NR; r=""; next} at && NR <= at+3 && r == "" && /Can.t restart while/ {r=$0} END {sub(/^[[:space:]]+/, "", r); print r}'
+}
+# holders <pid>: what a claude's own shells are running ("pid N (M min) command head; ...").
+holders() {
+  ps --ppid "$1" -o pid=,etimes=,args= 2>/dev/null | awk '{p=$1; m=int($2/60); $1=$2=""; c=$0; sub(/^ +/, "", c)
+    i=index(c, "eval \047"); if (i) c=substr(c, i+6); printf "%spid %s (%d min) %s", (n++ ? "; " : ""), p, m, substr(c, 1, 90)}'
+}
+# loops_due: after a pass that restarted anything, the orchestrator runs its trusted-loops pass (loops.md): loops that
+# stopped on their own are not this chore's job (Ben 2026-11-19). It lives on beast-arch: typed into it there once it is
+# idle with an empty box, sent by the agent inbox from any other machine. The flag carries it to the next pass until then.
+LOOPS_AGENT=$HOME/projects/orchestrator
+loops_due() {
+  local flag=$state/loops-due pane ib=$HOME/projects/station-maintenance/bin/inbox
+  [[ -e $flag ]] || return 0
+  if [[ ! -d $LOOPS_AGENT ]]; then
+    [[ -x $ib ]] || { echo "note: no $ib to ask the orchestrator for its trusted-loops pass; next pass"; return 0; }
+    (cd "$HOME" && "$ib" send --to orchestrator@beast-arch --subject "Claude upgrade on $(uname -n): run the trusted-loops pass" < "$flag" >/dev/null 2>&1) \
+      && { rm -f "$flag"; echo "asked the orchestrator on beast-arch (inbox) to run its trusted-loops pass"; } \
+      || echo "note: could not send the orchestrator its trusted-loops ask; next pass"
+    return 0
+  fi
+  pane=$("$herdr" agent list 2>/dev/null | jq -r --arg d "$LOOPS_AGENT" '[.result.agents[] | select(.agent == "claude" and .cwd == $d and (.agent_status == "idle" or .agent_status == "done"))][0].pane_id // empty')
+  [[ -n $pane && -z $(box "$pane") ]] || return 0
+  if r=$(say "$pane" "$(cat "$flag")"); then rm -f "$flag"; echo "asked $pane (orchestrator) to run its trusted-loops pass"
+  else echo "note $pane: could not ask for the trusted-loops pass ($r); next pass"; fi
+}
 bridge() { jq -r '.bridgeSessionId // empty' "$HOME/.claude/sessions/$1.json" 2>/dev/null; }   # Remote Control's id
 # rc_slash <pane>: type /remote-control and run it, only if the menu highlights exactly that entry (as /restart below).
 rc_slash() {
@@ -278,7 +333,12 @@ restart() {   # 0 restarted (/restart), 4 resumed (exit + claude --resume), 2 sk
   # to wind down at a safe point and say RESTART-READY. A READY counts only after this pid was asked.
   local ready=; [[ $ls == ready* && -n $pid && -e $state/ask-$pid ]] && ready=1
   if [[ -z $ready ]] && [[ $(status "$pane") == working || -n $why || ( -n $pid && -e $state/bg-$pid ) || $ls == active* ]]; then
-    [[ -e $state/ask-$pid ]] && { echo "skip $pane: asked to wind down; waiting for its RESTART-READY"; return 2; }
+    if [[ -e $state/ask-$pid ]]; then
+      local age=$(( $(date +%s) - $(stat -c %Y "$state/ask-$pid") ))
+      # dungeon-smash waited 1 h 48 min on a self-matching `pgrep -f` loop (2026-11-19): reported, with its shells
+      (( age > 3600 )) && { local hd; hd=$(holders "$pid"); echo "fail $pane: asked to wind down $((age / 60)) min ago and still not RESTART-READY; held by: ${hd:-nothing visible (a subagent or monitor?)}"; return 1; }
+      echo "skip $pane: asked to wind down; waiting for its RESTART-READY"; return 2
+    fi
     b=$(box "$pane"); [[ -z $b ]] || { echo "skip $pane: the prompt holds a draft: ${b:0:40}"; return 2; }
     say "$pane" "$(printf "$ASK" "${cur##*/}" "$(basename "$(readlink "/proc/$pid/exe")")")" >/dev/null \
       && { : > "$state/ask-$pid"; echo "asked $pane to wind down (shells, subagents, loop) at a safe point"; return 2; }
@@ -293,27 +353,32 @@ restart() {   # 0 restarted (/restart), 4 resumed (exit + claude --resume), 2 sk
   # disconnect that does not take is reported: no ctrl+d, ever (Ben 2026-11-19).
   [[ -n $pid && -n $(bridge "$pid") ]] && rc_off "$pane" "$pid" && RCWAS=1
   [[ -n $pid && -n $(bridge "$pid") ]] && { no_exit "$pane" "Remote Control would not disconnect"; return 1; }
-  local refused0 why; refused0=$("$herdr" agent read "$pane" 2>/dev/null | grep -c "Can't restart while")
-  "$herdr" pane send-text "$pane" /restart >/dev/null || return 1
+  local cmd= att sel; [[ -n $pid && -n $sid ]] && cmd=$(resume_of "$pid" "$sid")
   # The menu's highlighted entry must BE /restart before it is accepted. A claude without /restart (2.1.318 in w2:p1,
   # 2026-11-08) highlights the nearest match instead, and accepting it ran /deep-research twice in Ben's session.
-  sleep 1; local sel
+  # Right after Remote Control's dialog closes the menu can highlight nothing (orchestrator 17:40 2026-11-19): one more
+  # try 3 s later.
+  for att in 1 2; do
+  "$herdr" pane send-text "$pane" /restart >/dev/null || return 1
+  sleep 1
   sel=$("$herdr" agent read "$pane" 2>/dev/null | tr -d '\r' | sed "s/$nbsp/ /g" \
         | awk '/^─/ {n++; last[n]=NR} {l[NR]=$0} END {for (i=last[n-1]-1; i>0 && i>last[n-1]-20; i--) if (l[i] ~ /^ +❯ \//) {print l[i]; exit}}' \
         | awk '{print $2}')
-  if [[ $sel != /restart ]]; then
-    "$herdr" pane send-keys "$pane" c-c >/dev/null; [[ -n $pid ]] && : > "$state/nr-$pid"
-    echo "note $pane: no /restart in its menu (highlighted: ${sel:-nothing}); cleared, exit + resume instead"
+  [[ $sel == /restart ]] && break
+  "$herdr" pane send-keys "$pane" c-c >/dev/null
+  if (( att == 2 )); then
     sleep 1; [[ -z $(box "$pane") ]] || { echo "skip $pane: the prompt is not empty after clearing"; return 2; }
-    no_exit "$pane" "/restart can't run here"; return 1
+    no_exit "$pane" "no /restart in its menu (highlighted: ${sel:-nothing})"; return 1
   fi
+  sleep 3
+  done
   "$herdr" pane send-keys "$pane" "$accept" >/dev/null || return 1
   sleep 1; "$herdr" pane send-keys "$pane" "$submit" >/dev/null || return 1
   for i in 1 2 3 4 5 6; do
     sleep 2
-    why=$("$herdr" agent read "$pane" 2>/dev/null | grep "Can't restart while")
-    if (( $(grep -c . <<<"$why") > refused0 )); then
-      why=$(tail -1 <<<"$why")
+    [[ $(readlink "/proc/$(claude_pid "$pane")/exe" 2>/dev/null) == "$cur" ]] && { settled "$pane" "$sid" "$cmd"; return; }
+    local why; why=$(refused "$pane")
+    if [[ -n $why ]]; then
       if [[ $why == *"Remote Control"* ]]; then [[ -n $pid ]] && : > "$state/rc-$pid"
         echo "note $pane: /restart refused (Remote Control is connected): exit + resume instead"
         sleep 1; [[ -z $(box "$pane") ]] || { echo "skip $pane: the prompt is not empty after the refusal"; return 2; }
@@ -322,11 +387,10 @@ restart() {   # 0 restarted (/restart), 4 resumed (exit + claude --resume), 2 sk
       [[ -n $pid ]] && : > "$state/bg-$pid"   # e.g. "work is running in the background": retried in an hour
       echo "refused $pane: ${why#*restart while }"; return 2
     fi
-    [[ $(readlink "/proc/$(claude_pid "$pane")/exe" 2>/dev/null) == "$cur" ]] && return 0
   done
   echo "note: $pane: /restart sent ($accept, $submit), but the pane still runs an old claude"; return 1
 }
-find "$state" -name 'rc-*' -o -name 'bg-*' -o -name 'nr-*' -o -name 'ask-*' 2>/dev/null | while read -r f; do [[ -e /proc/${f##*-} ]] || rm -f "$f"; done
+find "$state" -name 'rc-*' -o -name 'bg-*' -o -name 'ask-*' 2>/dev/null | while read -r f; do [[ -e /proc/${f##*-} ]] || rm -f "$f"; done
 done_n=0 busy=0 resumed=0 failed=0
 if (( ${#stale[@]} )) && [[ -x $herdr ]]; then
   states=$("$herdr" agent list 2>/dev/null | jq -r '.result.agents[] | "\(.pane_id) \(.agent_status)"')
@@ -341,7 +405,8 @@ if (( ${#stale[@]} )) && [[ -x $herdr ]]; then
     else busy=$((busy+1)); fi
   done
 fi
-[[ -x $herdr ]] && { pending; relaunch; }
+(( done_n && ! dry )) && printf '%s\n' "The Claude upgrade pass at $(date +%H:%M) on $(uname -n) restarted $done_n session(s) onto ${cur##*/} (journalctl --user -u chore@claude-restart there). Run your trusted-loops pass (loops.md): bring back the loops that should be running, and tell Ben what you did." > "$state/loops-due"
+[[ -x $herdr ]] && { pending; relaunch; (( dry )) || loops_due; }
 (( dry )) && w="to restart" || w=restarted
 echo "claude ${cur##*/}: $done_n $w ($resumed by exit + resume), $busy busy (next pass), $failed failed, $outside outside herdr"
 (( failed == 0 ))
