@@ -11,16 +11,21 @@
 # Never start one with its run.sh directly, and never leave an ssh session hanging into it: an open connection from a
 # client younger than 2 h counts as use; older ones are ignored (a hung session kept this VM up for 23 h).
 # The chore testvm-idle (every 2 min, surfboard) runs `testvm idle`: a running VM with no lease touched in
-# TESTVM_IDLE_MIN (10) minutes and no live connection is shut down.
+# TESTVM_IDLE_MIN (10) minutes and no live connection is shut down; so is one whose lease is kept fresh with no live
+# connection for TESTVM_HELD_MIN (30) minutes (a lease touched in a loop is not use), and the next `testvm` command
+# says so (Ben 2026-11-20: "make sure that other users you are sharing infra with are being efficient").
+# CI waits its turn: surfboard's runners run /usr/local/lib/ci/testvm-wait before each job (ACTIONS_RUNNER_HOOK_JOB_
+# STARTED, drop-in actions.runner.Benjmhart-.service.d/testvm-wait.conf), which holds the job while a VM runs.
 set -uo pipefail
-root=${TESTVM_ROOT:-$HOME/.cache/fleet37-vm}; idle=${TESTVM_IDLE_MIN:-10}; vms=${TESTVMS:-win11 macos}
+root=${TESTVM_ROOT:-$HOME/.cache/fleet37-vm}; idle=${TESTVM_IDLE_MIN:-10}; held=${TESTVM_HELD_MIN:-30}; vms=${TESTVMS:-win11 macos}
 cmd=${1:-status}; one=${2:-}
 
 pid()   { local p; p=$(cat "$root/$1/qemu.pid" 2>/dev/null) && kill -0 "$p" 2>/dev/null && echo "$p"; }
 port()  { grep -oP 'hostfwd=tcp:127\.0\.0\.1:\K[0-9]+(?=-:22)' "$root/$1/run.sh" | head -1; }
 vncp()  { local n; n=$(grep -oP -- '-vnc 127\.0\.0\.1:\K[0-9]+' "$root/$1/run.sh" | head -1); [[ -n $n ]] && echo $((5900 + n)); }
 sshd()  { timeout 5 bash -c "exec 3<>/dev/tcp/127.0.0.1/$(port "$1") && head -c4 <&3" 2>/dev/null | grep -q '^SSH-'; }
-lease() { local m; m=$(stat -c %Y "$root/$1/lease" 2>/dev/null) || { echo 99999; return; }; echo $(( ($(date +%s) - m) / 60 )); }
+age()   { local m; m=$(stat -c %Y "$1" 2>/dev/null) || { echo 99999; return; }; echo $(( ($(date +%s) - m) / 60 )); }
+lease() { age "$root/$1/lease"; }
 # live connections: clients of the VM's ssh/VNC port whose process started within the last 2 h
 live()  { local p c n=0 e; for p in $(port "$1") $(vncp "$1"); do
             for c in $(ss -tnpH state established "( dport = :$p )" | grep -oP 'pid=\K[0-9]+' | sort -u); do
@@ -48,9 +53,11 @@ stop() { # the guest's shutdown over ssh (90 s), then the ACPI power button, the
   echo "$v: no ACPI shutdown in 3 min: stopped hard"; rm -f "$root/$v/lease"
 }
 
+[[ $cmd == idle ]] || for v in $vms; do [[ -s $root/$v/notice ]] && { cat "$root/$v/notice" >&2; rm -f "$root/$v/notice"; }; done
+
 case $cmd in
   up)    v=${one:-win11}; check "$v"
-         if ! pid "$v" >/dev/null; then (cd "$root/$v" && ./run.sh >/dev/null) || { echo "$v: run.sh failed" >&2; exit 1; }; echo "$v: starting"; fi
+         if ! pid "$v" >/dev/null; then touch "$root/$v/used"; (cd "$root/$v" && ./run.sh >/dev/null) || { echo "$v: run.sh failed" >&2; exit 1; }; echo "$v: starting"; fi
          touch "$root/$v/lease"
          for i in $(seq 120); do sshd "$v" && break; sleep 5; done
          sshd "$v" || { echo "$v: no sshd after 10 min (VNC 127.0.0.1:$(vncp "$v"))" >&2; exit 1; }
@@ -60,11 +67,15 @@ case $cmd in
          touch "$root/$v/lease"; echo "$v: lease renewed" ;;
   down)  v=${one:-win11}; check "$v"; stop "$v" ;;
   idle)  for v in $vms; do [[ -x $root/$v/run.sh ]] && pid "$v" >/dev/null || continue
-           a=$(lease "$v"); n=$(live "$v")
-           if (( a >= idle && n == 0 )); then echo "$v: idle (lease ${a} min old, no live connection)"; stop "$v" || exit 1; fi
-         done; exit 0 ;;
+           a=$(lease "$v"); n=$(live "$v"); (( n > 0 )) && touch "$root/$v/used"; u=$(age "$root/$v/used")
+           if (( a >= idle && n == 0 )); then echo "$v: idle (lease ${a} min old, no live connection)"; stop "$v" || exit 1
+           elif (( u >= held && u < 99999 )); then
+             echo "$(date '+%F %R') testvm: $v was shut down: its lease was renewed but nothing had used it (no ssh/VNC) for ${u} min. Run 'testvm down $v' when you are done; renew only while you use it." > "$root/$v/notice"
+             echo "$v: held (lease renewed, no live connection for ${u} min): shut down"; stop "$v" || exit 1; held_out=1
+           fi
+         done; [[ -n ${held_out:-} ]] && exit 75; exit 0 ;;
   status) for v in $vms; do [[ -x $root/$v/run.sh ]] || continue
-           if p=$(pid "$v"); then echo "$v: running (pid $p), lease $(lease "$v") min old, $(live "$v") live connection(s), sshd $(sshd "$v" && echo up || echo down)"
+           if p=$(pid "$v"); then echo "$v: running (pid $p), lease $(lease "$v") min old, last used $(age "$root/$v/used") min ago, $(live "$v") live connection(s), sshd $(sshd "$v" && echo up || echo down)"
            else echo "$v: stopped"; fi; done ;;
   *)     sed -n '7,11p' "$0"; exit 2 ;;
 esac
