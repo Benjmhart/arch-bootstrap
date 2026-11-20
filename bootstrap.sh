@@ -2037,13 +2037,13 @@ install_herdr_integrations() {
 # Benjmhart/herdr-folders (Ben's own, published 2026-11-01): python3 only, but rides the cargo gate below with navigator.
 # Benjmhart/herdr-queues (Ben's own, 2026-11-13, station-maintenance fleet 25; was herdr-streams until 2026-11-14):
 # python3 only, same. Its jumps across machines also need `herdr-queues watch` (dotfiles, started by xmonad/sway).
-# Benjmhart/herdr-theoldinout (Ben's own, 2026-11-14, station-maintenance fleet 29): python3 only, same. vim's jump list
-# across machines; its daemon is `herdr-oldinout` (dotfiles, started by xmonad/sway).
+# Benjmhart/herdr-inandout (Ben's own, 2026-11-14, station-maintenance fleet 29; was herdr-theoldinout until 2026-11-20):
+# python3 only, same. vim's jump list across machines; its daemon is `herdr-inandout` (dotfiles, started by xmonad/sway).
 # kryptamine/herdr-auto-title (Ben 2026-11-13: "auto title tab names are ok for now, get them on the other machines";
 # fleet 24): names tabs and panes after what runs in them. Its build step downloads the release binary and checks its sha256.
 # Benjmhart/herdr-machine-icons (Ben's own, 2026-11-15, fleet 25): python3 only. Each machine's icon on its panes
 # ($machine_icon in the sidebar rows); the icon list is in the dotfiles (~/.config/herdr/plugins/config/...).
-HERDR_PLUGINS="${HERDR_PLUGINS:-thanhdat77/herdr-navigator Benjmhart/herdr-folders Benjmhart/herdr-queues Benjmhart/herdr-theoldinout kryptamine/herdr-auto-title Benjmhart/herdr-machine-icons}"
+HERDR_PLUGINS="${HERDR_PLUGINS:-thanhdat77/herdr-navigator Benjmhart/herdr-folders Benjmhart/herdr-queues Benjmhart/herdr-inandout kryptamine/herdr-auto-title Benjmhart/herdr-machine-icons}"
 YAZI_PLUGINS="${YAZI_PLUGINS:-yazi-rs/plugins:smart-enter ndtoan96/ouch Rolv-Apneseth/starship yazi-rs/flavors:dracula}"
 install_tui_plugins() {
   local repo tag p
@@ -2065,6 +2065,18 @@ install_tui_plugins() {
   if have herdr && herdr plugin list 2>/dev/null | grep -q '^- benjmhart.streams '; then
     run herdr plugin uninstall benjmhart.streams >/dev/null && did "herdr plugin benjmhart.streams removed (now herdr-queues)"
   fi
+  # herdr-theoldinout became herdr-inandout (0.4.0, 2026-11-20): the old id goes, and a running old daemon is swapped for
+  # the new one with its display (else prefix+o waits for the next login). The new daemon moves the old history over.
+  if have herdr && herdr plugin list 2>/dev/null | grep -q '^- benjmhart.oldinout '; then
+    run herdr plugin uninstall benjmhart.oldinout >/dev/null && did "herdr plugin benjmhart.oldinout removed (now herdr-inandout)"
+  fi
+  local op ev
+  for op in $(pgrep -u "$USER" -f '[o]ldinout.py daemon'); do
+    [[ -x $HOME/.local/bin/herdr-inandout ]] || break
+    ev=$(tr '\0' '\n' < "/proc/$op/environ" | grep -E '^(DISPLAY|WAYLAND_DISPLAY|XAUTHORITY|SWAYSOCK|XDG_RUNTIME_DIR)=' | tr '\n' ' ')
+    kill "$op" && env $ev setsid -f "$HOME/.local/bin/herdr-inandout" >/dev/null 2>&1 </dev/null \
+      && did "herdr-inandout daemon started (was herdr-oldinout)"
+  done
   # The fold plugin lives in the dotfiles (~/.config/herdr/fold; Ben 2026-11-01), so it is linked, not installed: the
   # link points at the checkout, and an fpush moving the dotfiles updates it. No cargo needed.
   if have herdr && [[ -f $HOME/.config/herdr/fold/herdr-plugin.toml ]]; then
