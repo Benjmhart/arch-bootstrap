@@ -6,7 +6,7 @@
 # The protocol, for every agent that uses a test VM (from beast-arch or anywhere: ssh surfboard first):
 #   ~/projects/arch-bootstrap/tools/testvm up win11      start it if needed, wait for its sshd, take a 10-min lease
 #   ~/projects/arch-bootstrap/tools/testvm touch win11   renew the lease (work with no open ssh/VNC for >10 min)
-#   ~/projects/arch-bootstrap/tools/testvm down win11    when you are done (ACPI shutdown; others' leases are honoured)
+#   ~/projects/arch-bootstrap/tools/testvm down win11    when you are done (guest shutdown over ssh, then ACPI)
 #   ~/projects/arch-bootstrap/tools/testvm status        every VM: running, lease age, live connections
 # Never start one with its run.sh directly, and never leave an ssh session hanging into it: an open connection from a
 # client younger than 2 h counts as use; older ones are ignored (a hung session kept this VM up for 23 h).
@@ -30,8 +30,18 @@ mon()   { python3 -c 'import socket,sys,time; s=socket.socket(socket.AF_UNIX); s
 s.sendall(sys.argv[2].encode()+b"\n"); time.sleep(1); s.close()' "$root/$1/mon.sock" "$2" 2>/dev/null; }   # no socat on surfboard
 check() { [[ -x $root/$1/run.sh ]] || { echo "no test VM '$1' (no $root/$1/run.sh)" >&2; exit 2; }; }
 
-stop() { # ACPI power button, then the hard stop after 3 min
-  local v=$1 p i; p=$(pid "$v") || { echo "$v: not running"; return 0; }
+# the guest's own shutdown over ssh: macOS ignores the ACPI power button (fleet 37, 2026-11-19; a guest
+# /etc/sudoers.d/shutdown lets ben run this one command), Windows's sshd shell is PowerShell
+gcmd()  { case $1 in macos) echo 'sudo -n /sbin/shutdown -h now' ;; win11) echo 'shutdown /s /t 0' ;; *) return 1 ;; esac; }
+
+stop() { # the guest's shutdown over ssh (90 s), then the ACPI power button, then the hard stop after 3 min
+  local v=$1 p i c; p=$(pid "$v") || { echo "$v: not running"; return 0; }
+  if c=$(gcmd "$v") && sshd "$v"; then
+    timeout 20 ssh -n -p "$(port "$v")" -i "$root/kit/vmkey" -o ConnectTimeout=5 -o BatchMode=yes \
+      -o StrictHostKeyChecking=accept-new ben@127.0.0.1 "$c" >/dev/null 2>&1   # the drop as it goes down is not an error
+    for i in $(seq 18); do kill -0 "$p" 2>/dev/null || { echo "$v: shut down over ssh ($((i * 5)) s)"; rm -f "$root/$v/lease"; return 0; }; sleep 5; done
+    echo "$v: still running 90 s after its shutdown over ssh: ACPI next"
+  fi
   mon "$v" system_powerdown
   for i in $(seq 36); do kill -0 "$p" 2>/dev/null || { echo "$v: shut down ($((i * 5)) s)"; rm -f "$root/$v/lease"; return 0; }; sleep 5; done
   mon "$v" quit; sleep 2; kill -0 "$p" 2>/dev/null && { echo "$v: still running after quit (pid $p)" >&2; return 1; }
