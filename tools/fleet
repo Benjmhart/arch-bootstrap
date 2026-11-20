@@ -267,6 +267,8 @@ bump_date() {  # offer the newest archive day; a yes commits it to arch-bootstra
     esac
   done
   tmp=$(mktemp -d)
+  # Fetched again: origin can move while the question waits (2026-11-20, a station-maintenance push mid-fpush).
+  gitr ab fetch -q origin || die "arch-bootstrap: fetch failed"
   gitr ab worktree add -q --detach "$tmp" origin/main || die "arch-bootstrap: worktree failed"
   echo "$new" > "$tmp/repo-date"
   aur_pins "$tmp/pkglist-aur.txt"
