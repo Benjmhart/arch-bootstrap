@@ -19,8 +19,8 @@
 # typed back (the /loop line from its last ScheduleWakeup), unless it has substantial work in flight: a shell of its own
 # running over 2 min, or a subagent started over 2 min ago that is still writing. Those keep the old behaviour: left
 # while working; asked to stop at a safe point when idle and looping. Blocked sessions (a question for Ben) are left.
-# Ceiling: a prompt typed but not sent in an idle session would be submitted with the /restart; none of the panes
-# shows a draft to herdr's state.
+# Drafts: nothing is typed into a box holding text, nor into Claude's agent view (untypable, 2026-11-21). Ceiling: a
+# draft typed in the second between the check and the typing.
 set -uo pipefail
 dry=0; [[ ${1:-} == --dry-run ]] && dry=1
 herdr=$HOME/.local/bin/herdr
@@ -88,6 +88,16 @@ box() {   # the input box's text, one line per line, prompt mark and blanks stri
           # greyed-out prompt suggestion ("push it"), not a draft: dropped (seen in three panes, 2026-11-08).
   "$herdr" agent read "$1" --ansi 2>/dev/null | sed -E $'s/\x1b\\[2m[^\x1b]*//g; s/\x1b\\[[0-9;?]*[A-Za-z]//g' | awk '/^─/ {n++; last[n]=NR} {l[NR]=$0} END {for (i=last[n-1]+1; i<last[n]; i++) print l[i]}' \
     | tr -d '\r' | sed "s/^❯//; s/$nbsp/ /g; s/^ *//; s/ *\$//" | grep -v '^$'
+}
+# Claude's agent view (`claude agents`: the Needs input / Completed list): no /restart there, and a prompt typed there
+# starts a new session. personal-comms sat in it 2026-11-20..21 and ~100 passes typed /restart into it. Its footer, seen
+# in herdr-sandbox on 2.1.330 (2026-11-21). Port of herdr-agent-upgrade's agent_view/untypable.
+agent_view() { "$herdr" agent read "$1" 2>/dev/null | grep -qE 'ctrl\+x to remove all|describe a task for a new session'; }
+# untypable <pane>: why nothing may be typed there now, or nothing. Every path that types checks it right before typing:
+# trstn-meta's draft (carbon, 2026-11-20 18:00) was lost under the wind-down ask.
+untypable() {
+  local b; agent_view "$1" && { echo "it shows Claude's agent view; open the session there (Ben) to upgrade it"; return; }
+  b=$(box "$1"); [[ -z $b ]] || echo "draft in box: ${b:0:40}"
 }
 # resume <pane> <pid>: exit that claude and start the installed one on the same conversation, with its own flags.
 # 0 done, 1 failed. Only called with an empty input box (checked before /restart was typed).
@@ -188,6 +198,7 @@ status() { "$herdr" agent list 2>/dev/null | jq -r --arg p "$1" '.result.agents[
 # menu: its highlighted entry must be the typed command before it is accepted (the /deep-research incident, 2026-11-08).
 say() {
   local pane=$1 text=$2 sel i s
+  s=$(untypable "$pane"); [[ -z $s ]] || { echo "$s"; return 1; }
   "$herdr" pane send-text "$pane" "$text" >/dev/null || return 1
   sleep 1
   if [[ $text == /* ]]; then
@@ -226,6 +237,7 @@ relaunch() {
       sleep 2
     done
     if (( dry )); then echo "would relaunch in $pane: $line"; continue; fi
+    r=$(untypable "$pane"); [[ -z $r ]] || { echo "skip $pane: relaunch of '$line' waits: $r"; continue; }   # typed anyway after 40 s until 2026-11-21
     if r=$(say "$pane" "$line"); then rm -f "$f"; echo "relaunched in $pane: $line"
     else echo "FAIL $pane: relaunch of '$line' ($r); retried next pass"; fi
   done
@@ -289,6 +301,7 @@ bridge() { jq -r '.bridgeSessionId // empty' "$HOME/.claude/sessions/$1.json" 2>
 # rc_slash <pane>: type /remote-control and run it, only if the menu highlights exactly that entry (as /restart below).
 rc_slash() {
   local pane=$1 sel
+  [[ -z $(untypable "$pane") ]] || return 1   # its ctrl+c on a mismatch would wipe a draft
   "$herdr" pane send-text "$pane" /remote-control >/dev/null || return 1
   sleep 1
   sel=$("$herdr" agent read "$pane" 2>/dev/null | tr -d '\r' | sed "s/$nbsp/ /g" | grep -E '^ +❯ /' | tail -1 | awk '{print $2}')
@@ -325,7 +338,9 @@ rc_on() {
 RCWAS=
 rc_restart() { RCWAS=; restart "$1"; local r=$?; [[ -n $RCWAS && $r != 4 ]] && rc_on "$1"; return $r; }
 restart() {   # 0 restarted (/restart), 4 resumed (exit + claude --resume), 2 skipped (draft, busy), 1 failed
-  local pane=$1 pid b i sid ls; pid=$(claude_pid "$pane")
+  local pane=$1 pid b i sid ls
+  agent_view "$pane" && { echo "skip $pane: it shows Claude's agent view (no /restart there); nothing typed: open the session there"; return 2; }
+  pid=$(claude_pid "$pane")
   sid=$(jq -r '.sessionId // empty' "$HOME/.claude/sessions/$pid.json" 2>/dev/null)
   ls=$( [[ -n $sid ]] && loop_state "$sid" || echo none)
   local why; why=$( [[ -n $pid && -n $sid ]] && heavy "$pid" "$sid")
@@ -359,6 +374,7 @@ restart() {   # 0 restarted (/restart), 4 resumed (exit + claude --resume), 2 sk
   # Right after Remote Control's dialog closes the menu can highlight nothing (orchestrator 17:40 2026-11-19): one more
   # try 3 s later.
   for att in 1 2; do
+  b=$(untypable "$pane"); [[ -z $b ]] || { echo "skip $pane: $b"; return 2; }
   "$herdr" pane send-text "$pane" /restart >/dev/null || return 1
   sleep 1
   sel=$("$herdr" agent read "$pane" 2>/dev/null | tr -d '\r' | sed "s/$nbsp/ /g" \
