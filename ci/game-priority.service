@@ -1,0 +1,11 @@
+# Installed to /etc/systemd/system/ with ci/game-priority.sh in /usr/local/lib/ci/ (station-maintenance surfboard 10).
+[Unit]
+Description=Gameplay first: CI held to two CPUs while a Steam game runs
+
+[Service]
+ExecStart=/usr/local/lib/ci/game-priority.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,12 @@
+# ci.slice -- where surfboard's CI runs (Actions runners, GitLab job containers): only what is left over.
+# Ben 2026-11-21: "gameplay on surfboard should always take priority over other activity". The runners' old
+# Nice=10/CPUWeight=20 ranked CI only among system services; system.slice and user.slice split the CPU 50/50, so CI
+# took half the machine under a game (13:04-15:38 that day, jobs back to back). CPUWeight=idle: the slice's tasks run
+# only on CPU time nobody else wants. IOWeight=1: last in line for the disk (bfq on surfboard's SATA disks honours it).
+# Installed to /etc/systemd/system/ by $OPS script (the runners are not bootstrap-managed; station-maintenance surfboard 10).
+[Unit]
+Description=CI jobs: idle priority, gameplay and the desk first
+
+[Slice]
+CPUWeight=idle
+IOWeight=1
