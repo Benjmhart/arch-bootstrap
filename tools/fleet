@@ -598,6 +598,10 @@ status)
 push)
   stages=("$@")
   mkdir -p "$STATE"
+  # Every host's packages stage syncs from the dated archive (pacoloco on media-center only proxies it). When the
+  # archive is down, every host fails at packages: stop before the password and the review (fpush 2026-11-21 11:13).
+  curl -sf -m 15 -o /dev/null https://archive.archlinux.org/repos/ \
+    || die "pre-flight: archive.archlinux.org does not answer (15 s): every packages stage would fail. Nothing applied; retry later"
   exec 3<"$IN" || die "no terminal for the review ($IN)"
   unlock
   declare -A result=() secrets_bad=()
