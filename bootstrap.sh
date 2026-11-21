@@ -6565,7 +6565,13 @@ stage_verify() {
   # been failing on its own parser since dotfiles 247c477 and nobody saw; it then found mod-o missing in sway.
   if profile_on media-center && [[ -f $SCRIPT_DIR/repo-date ]]; then
     local rd; rd=$(tr - / < "$SCRIPT_DIR/repo-date")
-    check "pacoloco serves the archive on :9129" "curl -sf -m 30 -o /dev/null http://localhost:9129/repo/archive/$rd/core/os/x86_64/core.db"
+    # pacoloco only proxies the archive: with the archive down (2026-11-21) it serves nothing, and that is not its fault.
+    if curl -sf -m 15 -o /dev/null "${ARCHIVE_URL:-https://archive.archlinux.org/repos}/"; then
+      check "pacoloco serves the archive on :9129" "curl -sf -m 30 -o /dev/null http://localhost:9129/repo/archive/$rd/core/os/x86_64/core.db"
+    else
+      warn "the archive does not answer: pacoloco checked only for running, not end to end"
+      check "pacoloco running (the archive is down)" "systemctl is-active -q pacoloco"
+    fi
   fi
   have sway && [[ -x $HOME/.local/bin/wm-sync-check ]] && check "wm-sync-check: xmonad keys all bound in sway" "$HOME/.local/bin/wm-sync-check"
   check "nvm present"                   "[ -s \"\${NVM_DIR:-\$HOME/.nvm}/nvm.sh\" ]"
