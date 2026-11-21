@@ -598,10 +598,16 @@ status)
 push)
   stages=("$@")
   mkdir -p "$STATE"
-  # Every host's packages stage syncs from the dated archive (pacoloco on media-center only proxies it). When the
-  # archive is down, every host fails at packages: stop before the password and the review (fpush 2026-11-21 11:13).
-  curl -sf -m 15 -o /dev/null https://archive.archlinux.org/repos/ \
-    || die "pre-flight: archive.archlinux.org does not answer (15 s): every packages stage would fail. Nothing applied; retry later"
+  # The packages stage syncs from the dated archive (pacoloco on media-center only proxies it). With the archive down
+  # (2026-11-21, hours) a host keeps the date it already synced, but a NEW date cannot reach anyone: stop before the
+  # password and the review. bump_date offers no new date while the archive is down.
+  if ! curl -sf -m 15 -o /dev/null "$ALA/"; then
+    gitr ab fetch -q origin || die "arch-bootstrap: fetch failed"
+    read -r _ last_ab _ < <(tail -1 "$SNAPS" 2>/dev/null) || true
+    [[ $(gitr ab show origin/main:repo-date 2>/dev/null) == "$(gitr ab show "${last_ab:-HEAD}:repo-date" 2>/dev/null)" ]] \
+      || die "pre-flight: archive.archlinux.org does not answer and this push moves the package date: nothing applied; retry later"
+    echo "note  archive.archlinux.org does not answer; the package date is unchanged, so each machine keeps its synced packages"
+  fi
   exec 3<"$IN" || die "no terminal for the review ($IN)"
   unlock
   declare -A result=() secrets_bad=()

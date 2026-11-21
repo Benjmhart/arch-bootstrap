@@ -1121,6 +1121,16 @@ ${want##*$'\n'}"
   did "repos pinned to the archive of $date"
 }
 
+# synced_since_pin: this machine's sync databases came from the mirrorlist as it is now (so from its pinned date). The
+# packages stage runs `pacman -Suu` only after its `-Syy` succeeded, so such a line in pacman.log newer than the
+# mirrorlist proves it.
+synced_since_pin() {
+  local last
+  last=$(grep -F "[PACMAN] Running 'pacman -Suu --needed --noconfirm" /var/log/pacman.log 2>/dev/null | tail -1 | cut -d']' -f1 | tr -d '[')
+  [[ -n $last ]] || return 1
+  (( $(date -d "$last" +%s) > $(stat -c %Y /etc/pacman.d/mirrorlist) ))
+}
+
 # hold_in_pacman_conf <a,b,c>: the holds as IgnorePkg, so a hand-run `pacman -Syu` or `yay` keeps
 # them back too. Until 2026-10-11 they lived only in this script's --ignore. A manual
 # `pacman -Syu neofetch` on beast-arch (2026-10-10 15:46) then upgraded the held linux and
@@ -1301,10 +1311,17 @@ stage_packages() {
     # The keyring first, in its own transaction (the Arch wiki's fix): a package signed by a
     # packager key newer than the installed keyring otherwise fails "invalid or corrupted
     # package (PGP signature)".
-    run sudo pacman -Syy --needed --noconfirm archlinux-keyring || return 1
-    kernel_modules_hook_first || return 1
-    run sudo pacman -Suu --needed --noconfirm ${ignore:+--ignore "$ignore"} ${missing[@]+"${missing[@]}"} || return 1
-    did "packages at the archive of $date${missing[0]:+; installed ${#missing[@]}: ${missing[*]}}"
+    if run sudo pacman -Syy --needed --noconfirm archlinux-keyring; then
+      kernel_modules_hook_first || return 1
+      run sudo pacman -Suu --needed --noconfirm ${ignore:+--ignore "$ignore"} ${missing[@]+"${missing[@]}"} || return 1
+      did "packages at the archive of $date${missing[0]:+; installed ${#missing[@]}: ${missing[*]}}"
+    elif (( ${#missing[@]} == 0 )) && synced_since_pin; then
+      # The archive down (2026-11-21, hours, fleet-wide): a date this machine already holds needs no sync, so an
+      # fpush of other changes goes on. A new date, or a package to install, still stops the stage.
+      warn "the archive did not answer; this machine already has the archive of $date and installs nothing new: sync skipped"
+    else
+      return 1
+    fi
   elif (( ${#missing[@]} == 0 )); then
     ok "all ${#want[@]} user-space packages already installed"
   else
