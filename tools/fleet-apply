@@ -148,7 +148,7 @@ move() {
       [[ -n $f && -f $top/$f ]] && ! "${g[@]}" ls-files --error-unmatch -- ":/$f" >/dev/null 2>&1 \
         && cmp -s <("${g[@]}" show "$sha:$f") "$top/$f" && rm -f -- "$top/$f" \
         && echo "note  $label: untracked $f was already as in ${sha:0:7} here; removed so the move can add it"
-    done < <("${g[@]}" diff --name-only --diff-filter=A "$cur" "$sha")
+    done < <("${g[@]}" diff --no-renames --name-only --diff-filter=A "$cur" "$sha")  # a renamed file is an add too (herdr-inandout, 2026-11-21)
     if [[ $label == secrets ]] && touches "$("${g[@]}" diff --name-only "$cur" "$sha")" && pgrep -x keepassxc >/dev/null; then
       die "secrets: the snapshot changes $VAULT and KeePassXC is running on $HOST -- close it, then re-run"
     fi
