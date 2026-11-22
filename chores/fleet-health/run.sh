@@ -2,7 +2,7 @@
 # fleet-health -- on micro, daily: every machine's health in one report, $OPS/micro-fleet-health-<date>.log
 # (station-maintenance fleet 14; Ben 2026-11-10). Read-only: it reads each host over ssh (the peer key, no agent) and the
 # logs the other chores keep there (cpu-temp, tailnet-paths). PROBLEM and NEWS lines are what count: when their set
-# differs from the last report's, exit 75 so chore-run notifies; otherwise quiet (quiet-ok).
+# differs from the last report's, exit 75 so chore-run notifies and flag 🔖 the station-maintenance agent; otherwise quiet.
 #
 #   PROBLEM  unreachable, failed units (system or user), a filesystem >= 90 %, CPU >= 85 C in the last day, kernel
 #            memory errors (EDAC/MCE) in the last day, the last fpush apply rc != 0
@@ -99,8 +99,16 @@ keys() { grep -E '^(PROBLEM|NEWS)' "$1" 2>/dev/null | sort; }
 n=$(keys "$out" | grep -c ^PROBLEM); news=$(keys "$out" | grep -c ^NEWS)
 new=$(comm -13 <(keys "${prev:-/dev/null}") <(keys "$out") | wc -l)
 summary="fleet health: $n problem(s), $news news item(s); $new new since the last report -- $out"
+# A new problem also flags 🔖 the station-maintenance agent here (the first one, by pane), so it waits in Ben's queue on
+# every machine and not only in a popup that goes away (fleet 44; 2026-11-22: a failed unit sat 5 days unread).
+flag() {
+  local p; p=$(PATH=$HOME/.local/bin:$PATH herdr agent list 2>/dev/null \
+    | jq -r '[.result.agents[] | select(.agent == "claude" and (.cwd | endswith("/station-maintenance")))] | sort_by(.pane_id) | .[0].pane_id // empty')
+  [[ -n $p ]] && "$HOME/.local/bin/herdr-queues" revisit "$p" on >/dev/null 2>&1 && echo "flagged 🔖 the station-maintenance agent ($p)"
+}
 if (( new )); then
   comm -13 <(keys "${prev:-/dev/null}") <(keys "$out") | head -5
+  flag
   echo "$summary"; exit 75
 fi
 echo "$summary"
