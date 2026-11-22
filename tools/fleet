@@ -631,8 +631,10 @@ preflight() {
     P=(); while IFS='=' read -r k v; do P[$k]=$v; done <<<"$out"
     (( ${P[free]:-0} >= 5 )) || { nogo "$h: / has ${P[free]}G free (the bootstrap stops under 5G)"; n=$((n+1)); }
     (( vault )) && [[ ${P[kpx]} == 1 ]] && { nogo "$h: KeePassXC is open and the push changes the vault: close it"; n=$((n+1)); }
-    [[ ${P[applied]} =~ rc=([0-9]+) && ${BASH_REMATCH[1]} != 0 ]] \
-      && attn "$h: its last apply ended ${BASH_REMATCH[0]}: the stages after that failure have not run there since"
+    if [[ ${P[applied]} =~ rc=([0-9]+) && ${BASH_REMATCH[1]} != 0 ]]; then
+      attn "$h: its last apply ended ${BASH_REMATCH[0]}: the stages after that failure have not run there since; dry-running verify"
+      while IFS= read -r v; do nogo "$h: verify would fail (dry run, arch-bootstrap ${T[ab]:0:7}): $v"; n=$((n+1)); done < <(pre_verify "$h" "${T[ab]}")
+    fi
     list=""
     for r in ab dot; do
       base=${P[$r]}
@@ -657,6 +659,17 @@ PRE_LIST")
   done
   (( n == 0 )) || { nogo "pre-flight: $n blocker(s) above: nothing applied"; return 1; }
   ok "pre-flight: every reachable machine can take arch-bootstrap ${T[ab]:0:7}, dotfiles ${T[dot]:0:7}"
+}
+# pre_verify HOST COMMIT: that commit's verify stage, dry run, on a machine whose last apply failed (memory item 15: its
+# later stages went untested; 2026-11-21 media-center's verify failed on the archive outage). The incoming bootstrap.sh
+# goes to a temporary file beside the machine's own (it finds lib/, pkglist... by its own path), runs, and is removed.
+# Prints each FAILED check. ponytail: the sibling files are the machine's current ones, not the commit's.
+pre_verify() {
+  pre_run "$1" "f=~/projects/arch-bootstrap/.fleet-preflight-bootstrap.sh
+base64 -d > \$f <<'PRE_B64'
+$(gitr ab show "$2:bootstrap.sh" | base64 -w0)
+PRE_B64
+timeout 180 bash \$f --dry-run --only verify 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | sed -n 's/^ *warn *\(.*\) -- FAILED$/\1/p'; rm -f \$f" 
 }
 pre_run() { if [[ $1 == "$SELF" ]]; then (cd ~ && bash -s <<<"$2" 2>/dev/null)
             else ssh -o BatchMode=yes -o ConnectTimeout=8 "$1" bash -s <<<"$2" 2>/dev/null; fi; }
