@@ -1,0 +1,9 @@
+[Unit]
+Description=Every 2 minutes on a laptop: home-only.target runs only at home, on the home wifi and on AC (arch-bootstrap chores/home-only)
+
+[Timer]
+OnCalendar=*:0/2
+Unit=chore@home-only.service
+
+[Install]
+WantedBy=timers.target
