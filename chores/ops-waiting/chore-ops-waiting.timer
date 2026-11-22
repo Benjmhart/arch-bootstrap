@@ -1,0 +1,10 @@
+[Unit]
+Description=Hourly on micro: remind Ben of every $OPS script marked NEEDS-BEN that has not run (arch-bootstrap chores/ops-waiting)
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+Unit=chore@ops-waiting.service
+
+[Install]
+WantedBy=timers.target
