@@ -525,6 +525,7 @@ echo "failed=$(systemctl --failed --plain --no-legend 2>/dev/null | awk "{print 
 echo "x=$(pgrep -x "xmonad.*|sway" >/dev/null && echo 1 || echo 0)"   # a desk: the WM starts the helpers (surfboard runs X for Steam only)
 echo "watch=$(pgrep -f "[q]ueues.py watch" >/dev/null && echo 1 || echo 0)"
 echo "oio=$(pgrep -f "[i]nandout.py daemon" >/dev/null && echo 1 || echo 0)"
+echo "xss=$(pgrep -x xss-lock >/dev/null && echo 1 || echo 0)"   # the screen lock (fleet 36: broke silently for two days)
 echo "free=$(df --output=avail -BG / | tail -1 | tr -dc 0-9)"'
 verify() {
   local h k v a="" d="" s="" out probe bad=0 up=0; local -a notes=(); local -A P=() herdrs=() plug=()
@@ -550,6 +551,7 @@ $PROBE"
     if [[ ${P[$h.x]} == 1 ]]; then desk=ok
       [[ ${P[$h.watch]} == 1 ]] || { desk=NO; note_ "$h: herdr-queues watcher not running"; }
       [[ ${P[$h.oio]} == 1 ]] || { desk=NO; note_ "$h: inandout daemon not running"; }
+      [[ ${P[$h.xss]} == 1 || " ${FLEET_NO_LOCK:-media-center} " == *" $h "* ]] || { desk=NO; note_ "$h: xss-lock not running: the screen does not lock"; }
     fi
     (( ${P[$h.free]:-0} >= 5 )) || note_ "$h: / has ${P[$h.free]}G free (bootstrap gate: 5G)"
     [[ -z ${P[$h.failed]// } ]] || note_ "$h: failed units: ${P[$h.failed]}"
