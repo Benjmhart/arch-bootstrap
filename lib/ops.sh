@@ -18,6 +18,7 @@ ok()     { printf '%sok   ✅ %s%s\n' "$_G" "$*" "$_0"; }
 note()   { printf '     %s\n' "$*"; }
 attn()   { printf '%s!!   ⚠️  ATTENTION: %s%s\n' "$_Y" "$*" "$_0"; }
 fail()   { printf '%s!!!  ❌ FAILED: %s%s\n' "$_R" "$*" "$_0"; exit 1; }
+nogo()   { printf '%s!!!  ❌ NO-GO: %s%s\n' "$_R" "$*" "$_0"; }   # a blocker found by a check that goes on to the next (fail stops)
 finish() { printf '\n%s🎉 %s%s\n' "$_G" "$*" "$_0"; }
 # ops_log NAME: everything from here also goes to $OPS/NAME.log, colours kept (read it with `less -R`).
 ops_log() { OPS_LOG=$OPS/$1.log; OPS_COLOR=1; _ops_colors; exec > >(tee -a "$OPS_LOG") 2>&1; step "🦄 start (log: $OPS_LOG)"; }

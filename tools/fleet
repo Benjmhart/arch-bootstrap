@@ -27,6 +27,9 @@
 #                                    nothing else is touched
 #                                 "keys" = move to the snapshot and install authorized_keys only
 #                                 (an urgent revocation); no bootstrap stages.
+#   fleet preflight               what `fleet push` checks first, before the password and the review: the archive (if
+#                                 the date moves), arch-bootstrap's own tests, and on every machine: answers over ssh, /
+#                                 has 5G, KeePassXC closed if the vault changes, no file the move would trip on
 #   fleet verify                  every machine now, one line each: at the approved snapshot, herdr + plugins
 #                                 alike, kernel, desk helpers, / free, failed units (also the end of a push)
 #   fleet rollback [all]          re-apply the previous approved snapshot: micro only, or every
@@ -565,6 +568,97 @@ $PROBE"
   ok "verify: every reachable machine as expected"
 }
 
+# The arch-bootstrap commit's own tests against its own files (fleet 11): tests/stage-steps (a stage function must not end
+# on a failed `a && b`, beast-arch 2026-11-08) and tests/grub-menu (the menu must parse, or a machine does not boot).
+ab_tests() {
+  local d rc=0; d=$(mktemp -d); mkdir "$d/tests" "$d/tools"
+  gitr ab show "$1:bootstrap.sh" > "$d/bootstrap.sh"
+  gitr ab show "$1:tools/fleet-apply" > "$d/tools/fleet-apply"
+  if gitr ab show "$1:tests/stage-steps" > "$d/tests/stage-steps" 2>/dev/null; then bash "$d/tests/stage-steps" || rc=1; fi
+  if gitr ab show "$1:tests/grub-menu" > "$d/tests/grub-menu" 2>/dev/null; then
+    bash "$d/tests/grub-menu" | grep -v '^pass' || true
+    bash "$d/tests/grub-menu" >/dev/null || { echo "the GRUB menu would not parse"; rc=1; }
+  fi
+  rm -rf "$d"; return $rc
+}
+
+# Pre-flight (station-maintenance fleet 43; Ben 2026-11-21: "do a preflight and quit wasting my time on failed runs").
+# Before the password and the review, against origin's tips (a superset of what the review may approve): every check
+# that a past fpush failed on and a session had to remember. Peer-key ssh, read-only on every machine.
+# PRE_HOST: what each machine is at, and what would stop its apply.
+PRE_HOST='echo "ab=$(git -C ~/projects/arch-bootstrap rev-parse HEAD 2>/dev/null)"
+echo "dot=$(git --git-dir=$HOME/.dot rev-parse HEAD 2>/dev/null)"
+echo "free=$(df --output=avail -BG / | tail -1 | tr -dc 0-9)"
+echo "kpx=$(pgrep -x keepassxc >/dev/null && echo 1 || echo 0)"
+echo "applied=$(tail -1 ~/.local/state/fleet/applied 2>/dev/null)"'
+# PRE_FILES, then lines "<ab|dot> <incoming blob, - if deleted> <path>": a file here that the move would trip on.
+# fleet-apply clears a file already as incoming (tracked or untracked) and sets dotfiles edits aside; anything else stops
+# it (2026-11-21: an untracked ~/.local/bin/herdr-inandout the snapshot added by a rename, two failed fpushes).
+PRE_FILES='g() { case $1 in ab) git -C ~/projects/arch-bootstrap "${@:2}" ;; *) git --git-dir="$HOME/.dot" --work-tree="$HOME" "${@:2}" ;; esac; }
+top() { case $1 in ab) echo ~/projects/arch-bootstrap ;; *) echo ~ ;; esac; }
+while read -r r blob p; do
+  f=$(top "$r")/$p
+  [[ -f $f ]] || continue
+  [[ $blob != - && $(g "$r" hash-object -- "$f") == "$blob" ]] && continue
+  if g "$r" ls-files --error-unmatch -- "$f" >/dev/null 2>&1; then
+    g "$r" diff --quiet HEAD -- "$f" && continue
+    if [[ $r == dot ]]; then echo "note $p: edited here; set aside and put back on top"
+    else echo "stop arch-bootstrap $p: edited here, and the push changes it"; fi
+  else echo "stop $p: an untracked file here, and the push adds a different one"; fi
+done'
+preflight() {
+  local h r k v out base list off vault=0 n=0; local -A T=() P=()
+  local -a last=()
+  for r in ab dot sec; do gitr $r fetch -q origin || { nogo "$(title $r): fetch failed"; n=$((n+1)); }; done
+  T[ab]=$(gitr ab rev-parse origin/main); T[dot]=$(gitr dot rev-parse origin/master)
+  [[ -s $SNAPS ]] && read -r -a last < <(tail -1 "$SNAPS")
+  # The packages stage syncs from the dated archive (pacoloco on media-center only proxies it). With the archive down
+  # (2026-11-21, 9+ hours) a machine keeps the date it already synced, but a NEW date cannot reach anyone.
+  if ! curl -sf -m 15 -o /dev/null "$ALA/"; then
+    if [[ $(gitr ab show origin/main:repo-date 2>/dev/null) == "$(gitr ab show "${last[1]:-HEAD}:repo-date" 2>/dev/null)" ]]; then
+      note "archive.archlinux.org does not answer; the package date is unchanged, so each machine keeps its synced packages"
+    else nogo "archive.archlinux.org does not answer and this push moves the package date: retry later"; n=$((n+1)); fi
+  fi
+  [[ -n ${last[3]:-} ]] && gitr sec diff --name-only "${last[3]}" origin/master | grep -qxF Passwords.kdbx && vault=1
+  ab_tests "${T[ab]}" || { nogo "arch-bootstrap ${T[ab]:0:7}: its own tests fail (above)"; n=$((n+1)); }
+  off=$(tailscale status --json 2>/dev/null | jq -r '.Peer[] | select(.Online == false) | .DNSName | split(".")[0]' 2>/dev/null || true)
+  for h in "$SELF" "${hosts[@]}"; do
+    grep -qxF "$h" <<<"$off" && { note "$h: offline on the tailnet, skipped (next fpush)"; continue; }
+    out=$(pre_run "$h" "$PRE_HOST")
+    [[ $out == *free=* ]] || { nogo "$h: online on the tailnet but does not answer over ssh"; n=$((n+1)); continue; }
+    P=(); while IFS='=' read -r k v; do P[$k]=$v; done <<<"$out"
+    (( ${P[free]:-0} >= 5 )) || { nogo "$h: / has ${P[free]}G free (the bootstrap stops under 5G)"; n=$((n+1)); }
+    (( vault )) && [[ ${P[kpx]} == 1 ]] && { nogo "$h: KeePassXC is open and the push changes the vault: close it"; n=$((n+1)); }
+    [[ ${P[applied]} =~ rc=([0-9]+) && ${BASH_REMATCH[1]} != 0 ]] \
+      && attn "$h: its last apply ended ${BASH_REMATCH[0]}: the stages after that failure have not run there since"
+    list=""
+    for r in ab dot; do
+      base=${P[$r]}
+      if ! gitr $r cat-file -e "$base^{commit}" 2>/dev/null; then
+        base=${last[$([[ $r == ab ]] && echo 1 || echo 2)]:-}
+        note "$h: $(title $r) is at ${P[$r]:0:7}, which $SELF does not have: checked from the approved snapshot"
+      fi
+      [[ -n $base && $base != "${T[$r]}" ]] || continue
+      list+=$(gitr $r diff --no-renames --raw --no-abbrev "$base" "${T[$r]}" \
+        | awk -F'\t' -v r=$r '{ split($1, m, " "); b = (m[4] ~ /^0+$/) ? "-" : m[4]; print r, b, $2 }')$'\n'
+    done
+    if [[ -n ${list//$'\n'} ]]; then
+      out=$(pre_run "$h" "$PRE_FILES <<'PRE_LIST'
+$list
+PRE_LIST")
+      while read -r k v; do case $k in
+        stop) nogo "$h: $v"; n=$((n+1)) ;;
+        note) note "$h: $v" ;;
+      esac; done <<<"$out"
+    fi
+    ok "$h: checked"
+  done
+  (( n == 0 )) || { nogo "pre-flight: $n blocker(s) above: nothing applied"; return 1; }
+  ok "pre-flight: every reachable machine can take arch-bootstrap ${T[ab]:0:7}, dotfiles ${T[dot]:0:7}"
+}
+pre_run() { if [[ $1 == "$SELF" ]]; then (cd ~ && bash -s <<<"$2" 2>/dev/null)
+            else ssh -o BatchMode=yes -o ConnectTimeout=8 "$1" bash -s <<<"$2" 2>/dev/null; fi; }
+
 cmd=${1:-status}; shift || true
 case $cmd in
 setup)
@@ -595,19 +689,13 @@ status)
   if [[ -s $SNAPS ]]; then read -r t a d s _ < <(tail -1 "$SNAPS"); echo "approved       ${a:0:7} ${d:0:7} ${s:0:7} $t"; else echo "approved       none yet"; fi
   repos_report
   ;;
+preflight)
+  preflight; exit
+  ;;
 push)
   stages=("$@")
   mkdir -p "$STATE"
-  # The packages stage syncs from the dated archive (pacoloco on media-center only proxies it). With the archive down
-  # (2026-11-21, hours) a host keeps the date it already synced, but a NEW date cannot reach anyone: stop before the
-  # password and the review. bump_date offers no new date while the archive is down.
-  if ! curl -sf -m 15 -o /dev/null "$ALA/"; then
-    gitr ab fetch -q origin || die "arch-bootstrap: fetch failed"
-    read -r _ last_ab _ < <(tail -1 "$SNAPS" 2>/dev/null) || true
-    [[ $(gitr ab show origin/main:repo-date 2>/dev/null) == "$(gitr ab show "${last_ab:-HEAD}:repo-date" 2>/dev/null)" ]] \
-      || die "pre-flight: archive.archlinux.org does not answer and this push moves the package date: nothing applied; retry later"
-    echo "note  archive.archlinux.org does not answer; the package date is unchanged, so each machine keeps its synced packages"
-  fi
+  preflight || exit 1   # before the password and the review: a blocker costs Ben nothing yet
   exec 3<"$IN" || die "no terminal for the review ($IN)"
   unlock
   declare -A result=() secrets_bad=()
@@ -639,18 +727,7 @@ push)
   [[ -t 1 ]] && clear
   # Pre-flight on the arch-bootstrap commit about to go out (station-maintenance fleet 11): its own tests/stage-steps
   # against its own bootstrap.sh. Catches a function that would end a stage on a failed `a && b` (beast-arch, 2026-11-08).
-  preflight=$(mktemp -d); mkdir "$preflight/tests" "$preflight/tools"
-  gitr ab show "$ab:bootstrap.sh" > "$preflight/bootstrap.sh"
-  gitr ab show "$ab:tools/fleet-apply" > "$preflight/tools/fleet-apply"
-  if gitr ab show "$ab:tests/stage-steps" > "$preflight/tests/stage-steps" 2>/dev/null; then
-    bash "$preflight/tests/stage-steps" || { rm -rf "$preflight"; die "pre-flight failed (above): nothing applied"; }
-  fi
-  # The GRUB menu must parse, or a machine does not boot (tests/grub-menu; 2026-11-09 it caught an apostrophe in a title).
-  if gitr ab show "$ab:tests/grub-menu" > "$preflight/tests/grub-menu" 2>/dev/null; then
-    bash "$preflight/tests/grub-menu" | grep -v '^pass' || true
-    bash "$preflight/tests/grub-menu" >/dev/null || { rm -rf "$preflight"; die "pre-flight: the GRUB menu would not parse: nothing applied"; }
-  fi
-  rm -rf "$preflight"
+  ab_tests "$ab" || die "pre-flight failed (above): nothing applied"
   echo "fpush: arch-bootstrap ${ab:0:7}  dotfiles ${dot:0:7}  secrets ${sec:0:7} -> $SELF, then ${hosts[*]}"
 
   # 4. micro first; it records the snapshot once it holds it.

@@ -206,6 +206,12 @@ cat > "$t/bin/ssh" <<EOF
 #!/bin/bash
 req=""; seen=0; host=""
 for a; do if (( seen )); then req+="\$a "; fi; [[ \$a == *.ts.test ]] && { seen=1; host=\${a%%.ts.test}; }; done
+if [[ -z \$host ]]; then   # peer-key ssh (pre-flight, verify): "ssh -o .. -o .. <host> bash -s"
+  for a; do [[ \$a == bash ]] && break; [[ \$a != -* && \$prev != -o ]] && host=\$a; prev=\$a; done
+  echo "\$host peer" >> "$t/ssh.log"
+  [[ -d $t/home-\$host ]] || exit 255
+  cd "$t/home-\$host" && HOME="$t/home-\$host" exec bash -s
+fi
 echo "\$host \${req%% *}" >> "$t/ssh.log"
 HOME="$t/home-\$host" FLEET_HOST="\$host" SSH_ORIGINAL_COMMAND="\${req% }" exec "$t/home-\$host/projects/arch-bootstrap/tools/fleet-apply"
 EOF
@@ -239,7 +245,7 @@ ab_snap=$(git -C "$t/ab.git" rev-parse main)
 check "...the excluded commit is reverted on origin main"     '[[ $(git -C "$t/ab.git" log -1 --format=%s main) == "fleet review on micro: exclude 1 commit(s)" ]] && ! git -C "$t/ab.git" show main:tools/evil >/dev/null 2>&1'
 check "...every machine at the snapshot, bad file absent"     '(( rc == 0 )) && for h in self h1 h2; do [[ $(abat $h) == "$ab_snap" && $(dotat $h) == "$dot3" ]] || exit 1; done; [[ ! -e $t/home-h1/projects/arch-bootstrap/tools/evil && -e $t/home-h1/projects/arch-bootstrap/good ]]'
 check "...micro (self) applied before the others"             '[[ $(grep -m1 -n "^=== self" <<<"$out" | cut -d: -f1) -lt $(grep -m1 -n "^=== h1" <<<"$out" | cut -d: -f1) ]]'
-check "...vault host's secrets pushed first"                  '[[ $(head -1 "$t/ssh.log") == "h1 secrets-push" ]]'
+check "...vault host's secrets pushed first"                  '[[ $(grep -v " peer$" "$t/ssh.log" | head -1) == "h1 secrets-push" ]]'
 check "...snapshot recorded"                                  '[[ $(wc -l < "$SN") == 1 ]] && grep -q " $ab_snap $dot3 " "$SN"'
 rm -f "$t/ticket"; : > "$t/ssh.log"; printf 'y\n' > "$t/answers"   # nothing new anywhere: only the confirm
 out=$(echo pw-ok | fleet push 2>&1); rc=$?
@@ -252,7 +258,7 @@ check "a key in a dotfiles commit is flagged by file and kind" 'grep -q "!! POSS
 check "...and the key text itself is not printed"             '! grep -q "OPENSSH PRIVATE" <<<"$out"'
 rm -f "$t/ticket" "$t/chkpwd.fail" "$t/sudo.fail"; : > "$t/ssh.log"
 out=$(echo wrong | fleet push 2>&1); rc=$?
-check "wrong sudo password: stops before any ssh"             '(( rc != 0 )) && [[ ! -s $t/ssh.log ]]'
+check "wrong sudo password: stops before any ssh"             '(( rc != 0 )) && ! grep -qv " peer$" "$t/ssh.log"'
 check "...caught by the free check, sudo never tried"          '[[ -s $t/chkpwd.fail && ! -s $t/sudo.fail ]] && grep -q "was not accepted: try again" <<<"$out"'
 rm -f "$t/chkpwd.fail" "$t/sudo.fail"
 git -C "$t/home-h2/secrets" pull -q; echo k-h2b > "$t/home-h2/secrets/ssh/keys"; git -C "$t/home-h2/secrets" commit -qam h2b
@@ -409,9 +415,23 @@ check "a DIFFERENT untracked file still stops it, file kept"   '(( rc != 0 )) &&
 rm -f "$H/.local/bin/other"
 
 
+# ================= pre-flight (fleet 43): a file the move would trip on stops the push before the password
+git -C "$t/ab-seed" pull -q; abp=$(commit "$t/ab-seed" tools/newtool v1 "ab: add newtool")
+mkdir -p "$t/home-h1/projects/arch-bootstrap/tools"; echo hand-made > "$t/home-h1/projects/arch-bootstrap/tools/newtool"
+: > "$t/ssh.log"; out=$(echo pw-ok | fleet push 2>&1); rc=$?
+check "pre-flight: a different untracked file the push adds: NO-GO, named"  '(( rc != 0 )) && grep -q "NO-GO: h1: tools/newtool: an untracked file here" <<<"$out"'
+check "...stopped before the password: no apply ssh"           '! grep -qv " peer$" "$t/ssh.log" && ! grep -q "login password" <<<"$out"'
+echo v1 > "$t/home-h1/projects/arch-bootstrap/tools/newtool"
+out=$(fleet preflight 2>&1); rc=$?
+check "...the same file as incoming: pre-flight passes"        '(( rc == 0 )) && grep -q "ok .*pre-flight: every reachable machine" <<<"$out"'
+echo local >> "$t/home-h2/.zshrc"; dotp=$(commit "$t/dot-seed" .zshrc rc-p "dot: zshrc again")
+out=$(fleet preflight 2>&1); rc=$?
+check "...a dotfiles edit the push also changes: a note, not a stop" '(( rc == 0 )) && grep -q "h2: .zshrc: edited here; set aside" <<<"$out"'
+git --git-dir="$t/home-h2/.dot" --work-tree="$t/home-h2" checkout -q -- .zshrc 2>/dev/null; rm -f "$t/home-h1/projects/arch-bootstrap/tools/newtool"
+
 # ================= sudo locked by pam_faillock: said so, before the password is asked (micro, 2026-10-17)
 touch "$t/locked"
-out=$(echo pw-ok | FLEET_INPUT=/dev/null "$H/projects/arch-bootstrap/tools/fleet" push 2>&1); rc=$?
+out=$(echo pw-ok | HOME=$H FLEET_HOSTS="h1 h2" FLEET_SELF_HOST=self FLEET_HOST=self FLEET_VAULT_HOST=h1 FLEET_INPUT=/dev/null "$H/projects/arch-bootstrap/tools/fleet" push 2>&1); rc=$?
 check "faillock lockout: named with its unlock time, not 'rejected'"  '(( rc != 0 )) && grep -q "sudo is locked here until [0-9:]* (pam_faillock" <<<"$out"'
 rm -f "$t/locked"
 
