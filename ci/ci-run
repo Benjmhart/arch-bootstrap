@@ -1,0 +1,14 @@
+#!/bin/sh
+# ci-run -- run a command as the calling user inside ci.slice on surfboard: idle CPU, last for the disk, held by
+# game-priority.sh while a game runs or Ben is using the machine. For surf-test (dotfiles), which moves agents' test
+# runs off beast-arch (station-maintenance fleet 47, 2026-11-22). sudo is only for the slice, a system one (a user
+# slice is idle only among Ben's own processes, and a game runs in his session): the command runs as $SUDO_USER, never
+# as root. Sudoers: `ben ALL=(root) NOPASSWD: /usr/local/lib/ci/ci-run`. A run stops after 2 h. Exit = the command's.
+set -eu
+u=${SUDO_USER:-}
+[ -n "$u" ] && [ "$u" != root ] || { echo "ci-run: run it as 'sudo ci-run CMD...' from your own user" >&2; exit 2; }
+[ $# -gt 0 ] || { echo "usage: sudo ci-run CMD..." >&2; exit 2; }
+h=$(getent passwd "$u" | cut -d: -f6)
+exec systemd-run --quiet --pipe --wait --collect --slice=ci.slice -p RuntimeMaxSec=2h \
+  --uid="$u" --gid="$(id -gn "$u")" -p WorkingDirectory="$(pwd)" \
+  -E HOME="$h" -E USER="$u" -E PATH="$h/.cargo/bin:/usr/local/bin:/usr/bin" -- "$@"

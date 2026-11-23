@@ -1,16 +1,17 @@
 #!/bin/sh
 # testvm-wait -- an Actions job's first step on surfboard (ACTIONS_RUNNER_HOOK_JOB_STARTED): wait while a test VM runs
-# or a game is being played.
+# or a game is being played, or Ben is using surfboard (game-priority.sh writes /run/ci-hold; fleet 47, 2026-11-22).
 # The runner takes a hook only by a path ending .sh/.ps1/.js: without it every job failed at "Set up runner" (castiron PR #182, 2026-11-20).
 # (tools/testvm). Ben 2026-11-20: "if either of the VM's are busy, surfboard should be unavailable for CI jobs".
 # Timing tests failed under a busy VM (nihongo-smash PR #150, 2026-11-20). testvm stops an idle VM within 10-30 min.
 # Ben 2026-11-21: "gameplay on surfboard should always take priority over other activity" (Steam starts every game as
 # `reaper SteamLaunch AppId=<id>`). A job already running when a game starts is held to two CPUs (ci/game-priority.sh).
 # comm is cut to 15 characters: qemu-system-x86. ponytail: any qemu counts as a test VM (surfboard runs no other); after
-# 2 h the job runs anyway rather than time out, still at idle priority in ci.slice.
+# 2 h the job runs anyway (held to two CPUs by game-priority) rather than time out, still at idle priority in ci.slice.
 busy() {
   pgrep -x qemu-system-x86 >/dev/null && { why="a test VM is running"; return 0; }
   pgrep -f '[S]teamLaunch AppId=' >/dev/null && { why="a game is being played"; return 0; }
+  [ -s "${CI_HOLD:-/run/ci-hold}" ] && { why=$(cat "${CI_HOLD:-/run/ci-hold}"); return 0; }   # game-priority.sh: the desk or a shell
   return 1
 }
 end=$(( $(date +%s) + 7200 ))
