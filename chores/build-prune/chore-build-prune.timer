@@ -1,0 +1,11 @@
+[Unit]
+Description=Weekly: delete Rust build output untouched for 14 days under ~/projects (arch-bootstrap chores/build-prune)
+
+[Timer]
+OnCalendar=Sat 04:00
+Persistent=true
+RandomizedDelaySec=30min
+Unit=chore@build-prune.service
+
+[Install]
+WantedBy=timers.target

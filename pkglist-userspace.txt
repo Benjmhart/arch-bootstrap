@@ -120,6 +120,7 @@ ripgrep
 ripgrep-all
 ruby
 rustup
+sccache
 shellcheck
 shfmt
 signal-desktop

@@ -124,7 +124,7 @@ PACMAN_IGNORE="${PACMAN_IGNORE:-}"
 
 # Chores to enable on this machine: names of directories under chores/, each with a
 # chore-NAME.timer. See chores/chore-run for the protocol. low-disk, virus-scan (beast-arch 129), repo-hygiene (134),
-# clipboard-wipe (145) and backup (beast-arch 92) are on everywhere and fleet-due on micro, whatever this says (beast-arch 76);
+# clipboard-wipe (145), build-prune (fleet 47) and backup (beast-arch 92) are on everywhere and fleet-due on micro, whatever this says (beast-arch 76);
 # the rest are opt-in.
 CHORES="${CHORES:-}"
 
@@ -4136,7 +4136,7 @@ install_chores() {
   [[ $(uname -n) == "${FLEET_CANARY_HOST:-beast-arch}" ]] && extra+=" canary"   # the KVM host: the nightly VM canary (fleet 11)
   [[ $(uname -n) == "${TESTVM_HOST:-surfboard}" ]] && extra+=" testvm-idle"   # the shared test VMs: stopped when idle (fleet 37/39)
   [[ " ${HOME_ONLY_HOSTS:-carbon} " == *" $(uname -n) "* ]] && extra+=" home-only"   # heavy work only at home, on AC (fleet 45)
-  for c in low-disk virus-scan repo-hygiene clipboard-wipe vivaldi-theme claude-restart boot-time reminders tailnet-paths cpu-temp $extra $CHORES; do
+  for c in low-disk virus-scan repo-hygiene clipboard-wipe vivaldi-theme claude-restart boot-time reminders tailnet-paths cpu-temp build-prune $extra $CHORES; do
     [[ -f $d/$c/chore-$c.timer ]] || { warn "CHORES names '$c', but there is no chores/$c/chore-$c.timer"; continue; }
     if systemctl --user is-enabled --quiet "chore-$c.timer" 2>/dev/null; then
       ok "chore $c scheduled"

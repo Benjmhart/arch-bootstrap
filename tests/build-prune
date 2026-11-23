@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# tests/build-prune -- chores/build-prune removes a cargo target/ unwritten for BUILD_PRUNE_DAYS and keeps a fresh one,
+# a target/ without CACHEDIR.TAG, and one with no Cargo.toml beside it. Run: tests/build-prune
+set -uo pipefail
+d=$(cd "$(dirname "$0")/.." && pwd)/chores
+t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
+pass=0 fail=0
+check() { if eval "$2"; then pass=$((pass+1)); echo "pass  $1"; else fail=$((fail+1)); echo "FAIL  $1"; fi; }
+mk() { mkdir -p "$t/$1/target/debug/deps"; touch "$t/$1/target/debug/deps/x.rlib"; [[ $2 == tag ]] && touch "$t/$1/target/CACHEDIR.TAG"; [[ $3 == toml ]] && touch "$t/$1/Cargo.toml"; return 0; }
+old() { find "$t/$1/target" -exec touch -d '20 days ago' {} +; }
+mk stale tag toml; old stale
+mk fresh tag toml; old fresh; touch "$t/fresh/target/debug/deps"
+mk untagged none toml; old untagged
+mk notcargo tag none; old notcargo
+mk ws/member tag toml; old ws/member
+out=$(BUILD_PRUNE_ROOT=$t "$d/build-prune/run.sh"); rc=$?
+check "rc 0"                              '(( rc == 0 ))'
+check "stale target removed"              '[[ ! -e $t/stale/target && -e $t/stale/Cargo.toml ]]'
+check "nested stale target removed"       '[[ ! -e $t/ws/member/target ]]'
+check "recently built target kept"        '[[ -e $t/fresh/target/debug/deps/x.rlib ]]'
+check "no CACHEDIR.TAG: kept"             '[[ -e $t/untagged/target ]]'
+check "no Cargo.toml beside it: kept"     '[[ -e $t/notcargo/target ]]'
+check "summary counts 2"                  '[[ $out == *"build-prune: 2 target dir(s) removed"* ]]'
+out=$(BUILD_PRUNE_ROOT=$t/none "$d/build-prune/run.sh"); rc=$?
+check "no projects dir: rc 0"             '(( rc == 0 )) && [[ $out == "no "* ]]'
+check "timer parses"                      'systemd-analyze calendar "$(sed -n "s/^OnCalendar=//p" "$d/build-prune/chore-build-prune.timer")" >/dev/null'
+echo "$pass passed, $fail failed"; (( fail == 0 ))
