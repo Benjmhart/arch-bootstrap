@@ -411,6 +411,9 @@ restart() {   # 0 restarted (/restart), 4 resumed (exit + claude --resume), 2 sk
   echo "note: $pane: /restart sent ($accept, $submit), but the pane still runs an old claude"; return 1
 }
 find "$state" -name 'rc-*' -o -name 'bg-*' -o -name 'ask-*' 2>/dev/null | while read -r f; do [[ -e /proc/${f##*-} ]] || rm -f "$f"; done
+# /restart keeps the pid, so a marker from an earlier round survives the line above: one older than the installed claude
+# belongs to that round (carbon trstn-meta failed every pass on a 2026-11-20 ask; station-maintenance fleet 40).
+find "$state" \( -name 'ask-*' -o -name 'bg-*' \) ! -newer "$cur" -delete 2>/dev/null
 done_n=0 busy=0 resumed=0 failed=0
 if (( ${#stale[@]} )) && [[ -x $herdr ]]; then
   states=$("$herdr" agent list 2>/dev/null | jq -r '.result.agents[] | "\(.pane_id) \(.agent_status)"')
