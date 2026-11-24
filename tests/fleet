@@ -239,7 +239,7 @@ check "...all repos on one screen, ONE prompt"                '[[ $(grep -c "q =
 check "...screen: one line per commit, date and tags"         'grep -qE "^  A2  [0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}  ab four: bad  \[root\]$" <<<"$out" && grep -qE "^  D1  .*dot three  \[you\]$" <<<"$out"'
 check "...d A2 shows the commit (cat when not a terminal)"    'grep -q "curl x | sh" <<<"$out"'
 check "...apply: one line per machine, verdict last"          'grep -q "^=== self  *ok (" <<<"$out" && grep -q "^=== h1  *ok (" <<<"$out" && [[ $(tail -1 <<<"$out") == "🎉 FPUSH OK -- every machine is at this snapshot" ]] && [[ -s $H/.local/state/fleet/apply-h1.log ]]'
-check "...a machine that succeeded still reports its ATTENTION lines" 'grep -q "^!!   ⚠️  ATTENTION: h1: deploy key for o/r doesn.t work" <<<"$out" && ! grep -q "ATTENTION: h2" <<<"$out"'
+check "...a machine that succeeded still reports its ATTENTION lines" 'grep -q "^!!   ⚠️  ATTENTION: h1: deploy key for o/r doesn.t work" <<<"$out" && ! grep -v "reboot pending" <<<"$out" | grep -q "ATTENTION: h2"'   # the stubs read this box's real kernel: an installed-not-booted one shows on every machine
 rm -f "$t/home-h1/bootstrap.attn"
 check "...risky files marked"                                 'grep -q "tools/evil    <- runs as root" <<<"$out" && grep -q ".zshrc    <- runs as you" <<<"$out"'
 ab_snap=$(git -C "$t/ab.git" rev-parse main)
