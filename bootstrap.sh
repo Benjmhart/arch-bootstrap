@@ -5288,6 +5288,45 @@ castiron_listen() {
 # through its API by Ben (runbook step 1); nothing here designates, imports or plays (the runbook forbids plays
 # before the import). catt comes from the AUR (pkglist-aur.txt, media-center only); deno is not installed: only a
 # deno plugin needs it and none is enabled.
+# castiron's data lives on /home (Ben 2026-11-23: "clean this up. move things to home"; station-maintenance
+# media-center 11): / is 32G, and at 4.8G this was the biggest thing on it. A bind mount puts it back at
+# /var/lib/castiron, so castiron.toml, castiron-deploy and the castiron user's home keep that path. The copy runs once,
+# with castiron stopped; the setup_castiron block after this starts it again.
+castiron_data_home() {
+  local home=/home/castiron data=/var/lib/castiron
+  if put_etc_file /etc/systemd/system/var-lib-castiron.mount "# Written by arch-bootstrap (castiron_data_home; station-maintenance media-center 11).
+[Unit]
+Description=castiron's data, kept on /home
+RequiresMountsFor=/home
+
+[Mount]
+What=$home
+Where=$data
+Type=none
+Options=bind
+
+[Install]
+WantedBy=local-fs.target" "castiron data: bind mount from $home"; then
+    run sudo systemctl daemon-reload
+  fi
+  if mountpoint -q "$data"; then ok "castiron data on $home (bind-mounted at $data)"; return 0; fi
+  (( DRY_RUN )) && { info "(dry run) would move $data to $home and bind-mount it back"; return 0; }
+  if [[ ! -d $home ]]; then
+    run sudo systemctl stop castiron
+    if ! { run sudo rsync -aHAX "$data/" "$home.new/" && run sudo mv "$home.new" "$home"; }; then
+      run sudo rm -rf "$home.new"; warn "castiron data: the copy to $home failed; left on /"; return 0
+    fi
+    run sudo mv "$data" "$data.moved" && run sudo install -d -m 750 -o castiron -g castiron "$data"
+  fi
+  if run sudo systemctl enable --now var-lib-castiron.mount && mountpoint -q "$data"; then
+    [[ -d $data.moved ]] && run sudo rm -rf "$data.moved"
+    did "castiron data moved to $home, bind-mounted at $data"
+  else
+    warn "castiron data: the bind mount failed; castiron reads the empty $data until fixed (data in $home, old copy $data.moved)"
+  fi
+  return 0
+}
+
 setup_castiron() {
   castiron_here || return 0
   local src=$HOME/.local/share/castiron-src pin=$CASTIRON_COMMIT bin=/usr/local/bin/castiron changed=0 listen rust b
@@ -5347,6 +5386,8 @@ setup_castiron() {
 [Unit]
 After=tailscaled.service
 Wants=tailscaled.service
+# its data is bind-mounted from /home (castiron_data_home)
+RequiresMountsFor=/var/lib/castiron
 
 [Service]
 StateDirectoryMode=0750
@@ -5369,6 +5410,7 @@ data_dir = \"/var/lib/castiron\"
     cfg+=$'\n'"$b = \"/usr/bin/$b\""
   done
   put_etc_file /etc/castiron/castiron.toml "$cfg" "castiron config (listen: $listen)" && changed=1
+  castiron_data_home
 
   if (( changed )); then run sudo systemctl daemon-reload; fi
   local started=0
