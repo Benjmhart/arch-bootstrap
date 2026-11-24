@@ -347,7 +347,11 @@ restart() {   # 0 restarted (/restart), 4 resumed (exit + claude --resume), 2 sk
   # Ben 2026-11-19: no Esc, no ctrl+d. Working, shells/subagents in flight, a background refusal, or a loop: asked once
   # to wind down at a safe point and say RESTART-READY. A READY counts only after this pid was asked.
   local ready=; [[ $ls == ready* && -n $pid && -e $state/ask-$pid ]] && ready=1
-  if [[ -z $ready ]] && [[ $(status "$pane") == working || -n $why || ( -n $pid && -e $state/bg-$pid ) || $ls == active* ]]; then
+  # A background refusal (bg-<pid>) holds it for an hour, as line 47 says: without the age the marker held the session
+  # for good, and carbon's trstn-meta (refused once 2026-11-21, then idle, loop stopped) failed every 10 min for 3 days
+  # as "still not RESTART-READY" (station-maintenance fleet 40, 2026-11-23).
+  local bg=; [[ -n $pid && -n $(find "$state/bg-$pid" -mmin -60 2>/dev/null) ]] && bg=1
+  if [[ -z $ready ]] && [[ $(status "$pane") == working || -n $why || -n $bg || $ls == active* ]]; then
     if [[ -e $state/ask-$pid ]]; then
       local age=$(( $(date +%s) - $(stat -c %Y "$state/ask-$pid") ))
       # dungeon-smash waited 1 h 48 min on a self-matching `pgrep -f` loop (2026-11-19): reported, with its shells
