@@ -17,6 +17,7 @@ clang
 cliphist
 clipmenu
 cmake
+ddcutil               # desktop monitor brightness over DDC/CI (dotfiles bin/brightness; station-maintenance beast-arch 148)
 direnv
 dmenu
 dmidecode

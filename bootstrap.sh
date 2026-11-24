@@ -4507,6 +4507,12 @@ put_etc_file() {   # <path> <content> <what>
 #   journald: the default 5-minute sync means a hard freeze loses the last
 #     minutes of kernel log -- exactly the minutes that would say why it froze.
 install_system_dropins() {
+  # i2c-dev at boot: ddcutil (desktop monitor brightness, dotfiles bin/brightness) talks DDC/CI through /dev/i2c-*, and
+  # nothing else loads the module (station-maintenance beast-arch 148, 2026-11-24). Next boot; `sudo modprobe i2c-dev` now.
+  put_etc_file /etc/modules-load.d/i2c-dev.conf \
+"# Written by arch-bootstrap.
+i2c-dev" "i2c-dev at boot (ddcutil)" || true
+
   put_etc_file /etc/systemd/coredump.conf.d/limits.conf \
 "# Written by arch-bootstrap.
 [Coredump]
