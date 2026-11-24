@@ -2122,6 +2122,48 @@ install_tui_plugins() {
   fi
 }
 
+# agent-upgrade (Ben's own, Benjmhart/agent-upgrade; station-maintenance fleet 40): restarts Claude Code sessions onto
+# the installed version gracefully (winds down loops and background work, Remote Control, /loop typed back). Replaced
+# chores/claude-restart 2026-11-23 (Ben: "1 thru 4"). The release copy sits at the newest v* tag, as HERDR_PLUGINS do;
+# its main moves only on a tagged release. beast-arch, where the orchestrator runs, drives it from herdr's startup
+# loop (`setup herdr`); the others from a systemd timer, a `once` pass every 10 min (`setup systemd`). State stays in
+# the chore's folder so its markers carry over. The Claude plugin (dotfiles settings.json) adds the hooks and
+# /upgrade-agents; its SessionStart hook keeps <state>/current pointing at it, which setup then prefers.
+AGENT_UPGRADE_HERDR_HOSTS="${AGENT_UPGRADE_HERDR_HOSTS:-beast-arch}"
+install_agent_upgrade() {
+  local d=$HOME/.local/share/agent-upgrade url=https://github.com/Benjmhart/agent-upgrade tag kind=systemd
+  # The bash chore shares upgrade.lock but not the heartbeat a systemd pass would stand aside on: never both.
+  if systemctl --user is-enabled --quiet chore-claude-restart.timer 2>/dev/null; then
+    run systemctl --user disable --now chore-claude-restart.timer && did "chore claude-restart off (agent-upgrade replaces it)"
+  fi
+  have python3 && have claude || return 0
+  tag=$(GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=true git ls-remote --tags --refs "$url" 'v*' 2>/dev/null </dev/null | sed 's#.*/##' | sort -V | tail -1)
+  [[ -n $tag ]] || { warn "agent-upgrade: no release tag found -- left as is"; return 0; }
+  [[ -d $d/.git ]] || run git clone -q "$url" "$d" || { warn "agent-upgrade: clone failed -- next run"; return 0; }
+  if [[ $(git -C "$d" describe --tags --exact-match 2>/dev/null) == "$tag" ]]; then
+    ok "agent-upgrade at $tag"
+  else
+    run git -C "$d" fetch -q --tags && run git -C "$d" -c advice.detachedHead=false checkout -q "$tag" \
+      && did "agent-upgrade at $tag" || { warn "agent-upgrade: checkout of $tag failed -- next run"; return 0; }
+  fi
+  [[ " $AGENT_UPGRADE_HERDR_HOSTS " == *" $(uname -n) "* ]] && kind=herdr
+  # An fpush runs over ssh: set the environment setup writes into its env file and units, rather than inherit it.
+  local -a e=(env -u AGENT_UPGRADE_TELL -u HERDR_SOCKET_PATH PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
+    AGENT_UPGRADE_STATE="$HOME/.local/state/claude-restart" AGENT_UPGRADE_MAX_WAIT=30)
+  [[ $kind == herdr ]] && e+=(AGENT_UPGRADE_TELL="$HOME/projects/orchestrator")
+  # setup(write=False) gives the files it would write: rerun it only when one differs (it relinks/re-enables).
+  if "${e[@]}" python3 -c 'import os,sys; sys.path.insert(0, sys.argv[1]); import agent_upgrade as a
+f = a.setup(sys.argv[2], write=False)
+sys.exit(0 if all(os.path.exists(p) and open(p).read() == c for p, c in f.items()) else 1)' "$d" "$kind" 2>/dev/null \
+     && if [[ $kind == systemd ]]; then systemctl --user is-enabled --quiet agent-upgrade.timer 2>/dev/null
+        else herdr plugin list 2>/dev/null | grep -q '^- benjmhart.agent-upgrade '; fi; then
+    ok "agent-upgrade scheduled ($kind)"
+  else
+    run "${e[@]}" python3 "$d/agent_upgrade.py" setup "$kind" && did "agent-upgrade scheduled ($kind)" \
+      || warn "agent-upgrade: setup $kind failed -- next run"
+  fi
+}
+
 # keybind-find (Benjmhart/keybind-find, public since 2026-10-27): xmonad's mod-/ writes the keymap and starts it
 # (station-maintenance beast-arch 108/127). Follows the NEWEST VERSION TAG (Ben, 2026-10-27: "track new releases going
 # forward"; 2026-10-31: 1.0 everywhere), so a new version reaches each host at its next run with no commit here and no
@@ -4136,7 +4178,7 @@ install_chores() {
   [[ $(uname -n) == "${FLEET_CANARY_HOST:-beast-arch}" ]] && extra+=" canary"   # the KVM host: the nightly VM canary (fleet 11)
   [[ $(uname -n) == "${TESTVM_HOST:-surfboard}" ]] && extra+=" testvm-idle"   # the shared test VMs: stopped when idle (fleet 37/39)
   [[ " ${HOME_ONLY_HOSTS:-carbon} " == *" $(uname -n) "* ]] && extra+=" home-only"   # heavy work only at home, on AC (fleet 45)
-  for c in low-disk virus-scan repo-hygiene clipboard-wipe vivaldi-theme claude-restart boot-time reminders tailnet-paths cpu-temp build-prune $extra $CHORES; do
+  for c in low-disk virus-scan repo-hygiene clipboard-wipe vivaldi-theme boot-time reminders tailnet-paths cpu-temp build-prune $extra $CHORES; do
     [[ -f $d/$c/chore-$c.timer ]] || { warn "CHORES names '$c', but there is no chores/$c/chore-$c.timer"; continue; }
     if systemctl --user is-enabled --quiet "chore-$c.timer" 2>/dev/null; then
       ok "chore $c scheduled"
@@ -6403,6 +6445,7 @@ stage_services() {
   install_herdr_integrations
   # Here, not in toolchains: fpush runs this stage by default, so plugins follow their releases (beast-arch 118/119).
   install_tui_plugins
+  install_agent_upgrade
   install_keybind_find
   install_terminactory
   set_default_pdf_viewer
