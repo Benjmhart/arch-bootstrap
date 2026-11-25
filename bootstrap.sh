@@ -2135,7 +2135,7 @@ install_tui_plugins() {
 # agent-upgrade (Ben's own, Benjmhart/agent-upgrade; station-maintenance fleet 40): restarts Claude Code sessions onto
 # the installed version gracefully (winds down loops and background work, Remote Control, /loop typed back). Replaced
 # chores/claude-restart 2026-11-23 (Ben: "1 thru 4"). The release copy sits at the newest v* tag, as HERDR_PLUGINS do;
-# its main moves only on a tagged release. beast-arch, where the orchestrator runs, drives it from herdr's startup
+# its main moves only on a tagged release. beast-arch drives it from herdr's startup
 # loop (`setup herdr`); the others from a systemd timer, a `once` pass every 10 min (`setup systemd`). State stays in
 # the chore's folder so its markers carry over. The Claude plugin (dotfiles settings.json) adds the hooks and
 # /upgrade-agents; its SessionStart hook keeps <state>/current pointing at it, which setup then prefers.
@@ -2160,7 +2160,10 @@ install_agent_upgrade() {
   # An fpush runs over ssh: set the environment setup writes into its env file and units, rather than inherit it.
   local -a e=(env -u AGENT_UPGRADE_TELL -u HERDR_SOCKET_PATH PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
     AGENT_UPGRADE_STATE="$HOME/.local/state/claude-restart" AGENT_UPGRADE_MAX_WAIT=30)
-  [[ $kind == herdr ]] && e+=(AGENT_UPGRADE_TELL="$HOME/projects/orchestrator")
+  # No AGENT_UPGRADE_TELL anywhere (Ben 2026-11-25, "is this firing every 10 mins? stop it."): the orchestrator is no
+  # longer told after restarts. setup copies the env file's values back in, so an old TELL line goes first.
+  [[ -f $HOME/.config/agent-upgrade/env ]] && grep -q '^AGENT_UPGRADE_TELL=' "$HOME/.config/agent-upgrade/env" \
+    && { run sed -i '/^AGENT_UPGRADE_TELL=/d' "$HOME/.config/agent-upgrade/env"; did "agent-upgrade: no longer tells the orchestrator"; }
   # setup(write=False) gives the files it would write: rerun it only when one differs (it relinks/re-enables).
   if "${e[@]}" python3 -c 'import os,sys; sys.path.insert(0, sys.argv[1]); import agent_upgrade as a
 f = a.setup(sys.argv[2], write=False)
