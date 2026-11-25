@@ -2051,7 +2051,6 @@ install_herdr_integrations() {
 # i don't want to manage these manually"; station-maintenance beast-arch 118/119). Updates are NOT reviewed one by one:
 # a plugin is arbitrary code (herdr-navigator v0.3.6 and smart-enter were read on 2026-10-18), Ben's accepted trade-off.
 # Keys and settings stay in the dotfiles; plugin code and yazi's package.toml live only on each machine.
-# Benjmhart/herdr-folders (Ben's own, published 2026-11-01): python3 only, but rides the cargo gate below with navigator.
 # Benjmhart/herdr-queues (Ben's own, 2026-11-13, station-maintenance fleet 25; was herdr-streams until 2026-11-14):
 # python3 only, same. Its jumps across machines also need `herdr-queues watch` (dotfiles, started by xmonad/sway).
 # Benjmhart/herdr-inandout (Ben's own, 2026-11-14, station-maintenance fleet 29; was herdr-theoldinout until 2026-11-20):
@@ -2060,7 +2059,7 @@ install_herdr_integrations() {
 # fleet 24): names tabs and panes after what runs in them. Its build step downloads the release binary and checks its sha256.
 # Benjmhart/herdr-machine-icons (Ben's own, 2026-11-15, fleet 25): python3 only. Each machine's icon on its panes
 # ($machine_icon in the sidebar rows); the icon list is in the dotfiles (~/.config/herdr/plugins/config/...).
-HERDR_PLUGINS="${HERDR_PLUGINS:-thanhdat77/herdr-navigator Benjmhart/herdr-folders Benjmhart/herdr-queues Benjmhart/herdr-inandout kryptamine/herdr-auto-title Benjmhart/herdr-machine-icons}"
+HERDR_PLUGINS="${HERDR_PLUGINS:-thanhdat77/herdr-navigator Benjmhart/herdr-queues Benjmhart/herdr-inandout kryptamine/herdr-auto-title Benjmhart/herdr-machine-icons}"
 YAZI_PLUGINS="${YAZI_PLUGINS:-yazi-rs/plugins:smart-enter ndtoan96/ouch Rolv-Apneseth/starship yazi-rs/flavors:dracula}"
 install_tui_plugins() {
   local repo tag p
@@ -2077,6 +2076,11 @@ install_tui_plugins() {
         run herdr plugin install "$repo" --ref "$tag" --yes && did "herdr plugin ${repo#*/} at $tag"
       fi
     done
+  fi
+  # herdr-folders is discontinued (Ben 2026-11-22: "we need never speak of it again"); uninstalled by hand on four hosts
+  # 2026-11-25, this catches the rest (micro).
+  if have herdr && herdr plugin list 2>/dev/null | grep -q '^- benjmhart.folders '; then
+    run herdr plugin uninstall benjmhart.folders >/dev/null && did "herdr plugin benjmhart.folders removed (discontinued)"
   fi
   # herdr-streams became herdr-queues (2026-11-14, fleet 25): the old id goes, its state is read by the new one.
   if have herdr && herdr plugin list 2>/dev/null | grep -q '^- benjmhart.streams '; then
