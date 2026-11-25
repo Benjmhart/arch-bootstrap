@@ -1313,7 +1313,13 @@ stage_packages() {
     # package (PGP signature)".
     if run sudo pacman -Syy --needed --noconfirm archlinux-keyring; then
       kernel_modules_hook_first || return 1
-      run sudo pacman -Suu --needed --noconfirm ${ignore:+--ignore "$ignore"} ${missing[@]+"${missing[@]}"} || return 1
+      # One retry: a single stalled download ends the transaction with nothing installed ("Operation too slow", chromium
+      # from both media-center:9129 and the archive, 2026-11-25 01:29: micro's fpush failed, Ben -2). The files already
+      # fetched stay in the cache, so the second try fetches only what failed.
+      run sudo pacman -Suu --needed --noconfirm ${ignore:+--ignore "$ignore"} ${missing[@]+"${missing[@]}"} || {
+        warn "pacman's upgrade failed (above); trying once more in 30 s"; sleep 30
+        run sudo pacman -Suu --needed --noconfirm ${ignore:+--ignore "$ignore"} ${missing[@]+"${missing[@]}"}
+      } || return 1
       did "packages at the archive of $date${missing[0]:+; installed ${#missing[@]}: ${missing[*]}}"
     elif (( ${#missing[@]} == 0 )) && synced_since_pin; then
       # The archive down (2026-11-21, hours, fleet-wide): a date this machine already holds needs no sync, so an
