@@ -2117,6 +2117,15 @@ install_tui_plugins() {
   if [[ -n $mi && -f $mi/machine_icons.py ]] && herdr status server 2>/dev/null | grep -q '^status: running'; then
     (cd "$mi" && python3 machine_icons.py) && ok "herdr machine icons tagged" || warn "herdr machine icons: tagging failed -- next run"
   fi
+  # herdr-queues parking on (Ben 2026-11-25: "parking should be an optional setting that is turned on in my config";
+  # station-maintenance fleet 51). The setting lives in herdr-queues' synced state, so this only matters on a fleet
+  # with none yet; the suggestion stays at its default (3 days, popup only, no sidebar token).
+  local qr
+  qr=$(herdr plugin list --plugin benjmhart.queues --json 2>/dev/null | jq -r '.result.plugins[0].plugin_root // empty' 2>/dev/null || true)
+  if [[ -n $qr && -f $qr/queues.py ]]; then
+    if (cd "$qr" && python3 queues.py park 2>/dev/null) | jq -e '.park == true' >/dev/null 2>&1; then ok "herdr-queues parking on"
+    else (cd "$qr" && run python3 queues.py park on >/dev/null) && did "herdr-queues parking on" || warn "herdr-queues: park on failed -- next run"; fi
+  fi
   # A running server keeps the config.toml it started with, so new key bindings (the navigator's prefix+t) did nothing
   # after an fpush until a reload (station-maintenance beast-arch 118, 2026-10-18).
   if have herdr && herdr status server 2>/dev/null | grep -q '^status: running'; then
@@ -4657,6 +4666,15 @@ vm.dirty_background_bytes = 134217728" "dirty page cache capped at 512M"; then
 [Slice]
 IOWriteBandwidthMax=/home $CI_WRITE_CAP" "ci.slice writes to /home capped at $CI_WRITE_CAP"; then
     run sudo systemctl daemon-reload || warn "daemon-reload failed -- the CI write cap applies at the next boot"
+  fi
+  # The agents' builds wrote 4x what CI did (user.slice 477 G in 21 h, 2026-11-26): the user manager gets the io
+  # controller too, so the dotfiles' agents.slice can cap its writes (IOWriteBandwidthMax). Takes effect when user@
+  # next starts (the next login), never restarted here.
+  if put_etc_file /etc/systemd/system/user@.service.d/delegate-io.conf \
+"# Written by arch-bootstrap (station-maintenance fleet 39): io for the user manager, so agents.slice can cap writes.
+[Service]
+Delegate=cpu memory pids io" "user manager gets the io controller (next login)"; then
+    run sudo systemctl daemon-reload || warn "daemon-reload failed -- io delegation applies at the next boot"
   fi
 }
 
