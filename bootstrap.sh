@@ -4634,6 +4634,32 @@ zram_only_swap() {
   ! awk 'NR>1 && $1 !~ /^\/dev\/zram/' /proc/swaps | grep -q .
 }
 
+# Disk stalls on a desktop that also builds CI (station-maintenance fleet 39, 2026-11-26; Ben: "yes go ahead with 1 + 2"):
+# CI wrote 113 G to beast-arch's system SSD in 21 h and every fsync/read on the box queued behind it in the drive, where
+# bfq's IOWeight can't reach (herdr and Rambox typing, xmonad workspace switches). Two caps:
+#  - ci.slice writes to /home (the runners' work dirs) capped at CI_WRITE_CAP (systemd's M is 10^6). systemd resolves
+#    /home through dm-crypt to the whole disk (beast-arch: io.max "8:0 wbps=150000000"), which still holds: CI's writes
+#    are charged on sda too. Applies to the running slice at daemon-reload (rehearsed 2026-11-26 10:45).
+#  - dirty page cache capped in bytes, not 20 % of RAM (~6 G): shorter stalls when writeback does pile up.
+DISK_STALL_HOSTS="${DISK_STALL_HOSTS:-beast-arch}"
+CI_WRITE_CAP="${CI_WRITE_CAP:-150M}"
+tune_disk_stalls() {
+  [[ " $DISK_STALL_HOSTS " == *" $(uname -n) "* ]] || return 0
+  if put_etc_file /etc/sysctl.d/90-dirty-bytes.conf \
+"# Written by arch-bootstrap (station-maintenance fleet 39). Bytes, not a share of RAM.
+vm.dirty_bytes = 536870912
+vm.dirty_background_bytes = 134217728" "dirty page cache capped at 512M"; then
+    run sudo sysctl -q -p /etc/sysctl.d/90-dirty-bytes.conf || warn "sysctl: dirty limits apply at the next boot"
+  fi
+  if [[ -f /etc/systemd/system/ci.slice ]] && put_etc_file /etc/systemd/system/ci.slice.d/write-cap.conf \
+"# Written by arch-bootstrap (station-maintenance fleet 39): CI writes to /home capped, so the desktop's own I/O still
+# reaches the SSD.
+[Slice]
+IOWriteBandwidthMax=/home $CI_WRITE_CAP" "ci.slice writes to /home capped at $CI_WRITE_CAP"; then
+    run sudo systemctl daemon-reload || warn "daemon-reload failed -- the CI write cap applies at the next boot"
+  fi
+}
+
 # Universal, but each part only where it applies. Added 2026-10-03 from micro.
 #   bfq: the I/O scheduler built for interactive latency on rotational disks. The
 #     rule matches rotational=1 only, so on SSD/NVMe machines it is inert.
@@ -6340,6 +6366,7 @@ stage_services() {
   setup_boot
   install_browser_search_policy
   tune_storage_and_swap
+  tune_disk_stalls
   apply_lean_profile
   set_console_font
   set_console_palette
