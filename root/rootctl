@@ -14,6 +14,8 @@
 #   rootctl restart|reload UNIT     only units in RESTARTABLE below
 #   rootctl paccache                keep the last 2 versions in pacman's cache
 #   rootctl journal-vacuum          shrink the journal to 500M
+#   rootctl games-start             start the games session on tty1 again: only where tty1 logs in for it
+#                                   (games-autologin.conf) and no X runs, so no desktop or game is ever cut
 set -uo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/bin
 # Units an fpush leaves "restart pending" that are safe to restart remotely. Not network (NetworkManager, tailscaled,
@@ -68,6 +70,12 @@ case $verb in
     (( $# == 0 )) || die "journal-vacuum takes no arguments"
     logger -t rootctl -- "${SUDO_USER:-?}: $CMDLINE"
     run journalctl --vacuum-size=500M ;;
+  games-start)   # play-surfboard (dotfiles; station-maintenance fleet 57): "play from bed" after a quit to the terminal
+    (( $# == 0 )) || die "games-start takes no arguments"
+    [[ -f /etc/systemd/system/getty@tty1.service.d/games-autologin.conf ]] || die "tty1 does not log in for the games session here"
+    pgrep -x Xorg >/dev/null && die "an X server is running: not cutting it (the games session may be up already)"
+    logger -t rootctl -- "${SUDO_USER:-?}: $CMDLINE"
+    run systemctl restart getty@tty1.service ;;
   ''|-h|--help|help)
     sed -n '2,/^set -uo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//' ;;
   *) die "unknown verb: $verb (rootctl help)" ;;

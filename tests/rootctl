@@ -14,4 +14,7 @@ no restart sshd.service; no restart tailscaled.service; no restart docker.servic
 no status 'x.service --root=/'; no journal '-o' ; no journal a.service b.service; no smart /dev/sda1; no smart /etc/shadow
 no log /etc/shadow; no log /var/log/../../etc/shadow; no log /var/log; no bash -c id; ok ''
 no paccache -rk0; no restart; no restart udisks2
+no games-start now; no restart getty@tty1.service
+# games-start on a machine without the games autologin (this one, in the test) is refused
+[[ -f /etc/systemd/system/getty@tty1.service.d/games-autologin.conf ]] || no games-start
 (( bad == 0 )) && echo "all checks passed" || { echo "$bad failed"; exit 1; }

@@ -4688,13 +4688,22 @@ IOWriteBandwidthMax=/home $CI_WRITE_CAP" "ci.slice writes to /home capped at $CI
 Delegate=cpu memory pids io" "user manager gets the io controller (next login)"; then
     run sudo systemctl daemon-reload || warn "daemon-reload failed -- io delegation applies at the next boot"
   fi
+
+}
+
+# CI yields while Ben is at the desk, or playing (desk-presence counts a game or a stream), on the machines with CI
+# runners: beast-arch, and surfboard, where the stream from the bedroom and its CI share one laptop (fleet 57, Ben
+# 2026-11-27). Split out of tune_disk_stalls so surfboard gets the yield without beast-arch's disk tuning.
+CI_YIELD_HOSTS="${CI_YIELD_HOSTS:-beast-arch surfboard}"
+setup_ci_desk_yield() {
+  [[ " $CI_YIELD_HOSTS " == *" $(uname -n) "* ]] || return 0
   # CI yields while Ben is at the desk and runs full speed while he is away (Ben 2026-11-27). The dotfiles'
   # desk-presence (his user service) writes 1/0 to $XDG_RUNTIME_DIR/desk-present; this root loop gives ci.slice CPU/IO
   # weight 10 or 100 from it (--runtime). No flag = at the desk. The flag is his user's alone (0700 runtime dir).
   [[ -f /etc/systemd/system/ci.slice ]] || return 0
   local uid; uid=$(id -u)
   put_etc_file /usr/local/lib/arch-bootstrap/ci-desk-yield \
-"# Written by arch-bootstrap (tune_disk_stalls; station-maintenance fleet 39). Run by ci-desk-yield.service.
+"# Written by arch-bootstrap (setup_ci_desk_yield; station-maintenance fleet 39). Run by ci-desk-yield.service.
 f=/run/user/$uid/desk-present last=
 while :; do
   now=\$(cat \$f 2>/dev/null || echo 1)
@@ -4705,7 +4714,7 @@ while :; do
   sleep 15
 done" "ci-desk-yield loop" || true
   if put_etc_file /etc/systemd/system/ci-desk-yield.service \
-"# Written by arch-bootstrap (tune_disk_stalls; station-maintenance fleet 39).
+"# Written by arch-bootstrap (setup_ci_desk_yield; station-maintenance fleet 39).
 [Unit]
 Description=CI yields while Ben is at the desk, full speed while he is away (station-maintenance fleet 39)
 
@@ -6459,6 +6468,7 @@ stage_services() {
   install_browser_search_policy
   tune_storage_and_swap
   tune_disk_stalls
+  setup_ci_desk_yield
   apply_lean_profile
   set_console_font
   set_console_palette
