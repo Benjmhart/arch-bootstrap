@@ -2079,7 +2079,9 @@ install_tui_plugins() {
       if herdr plugin list 2>/dev/null | grep -qF "[github:$repo@$tag]"; then
         ok "herdr plugin ${repo#*/} at $tag"
       else
-        run herdr plugin install "$repo" --ref "$tag" --yes && did "herdr plugin ${repo#*/} at $tag"
+        # Idle priority: a plugin with Rust code compiles a release build, which on micro held the machine at load 17
+        # while Ben was signing in (2026-11-28 fpush; people first).
+        run nice -n 19 ionice -c3 herdr plugin install "$repo" --ref "$tag" --yes && did "herdr plugin ${repo#*/} at $tag"
       fi
     done
   fi
