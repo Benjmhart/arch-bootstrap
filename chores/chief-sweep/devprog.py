@@ -57,17 +57,41 @@ try:
     al = json.loads(subprocess.run([os.path.expanduser("~/.local/bin/herdr"), "agent", "list"], capture_output=True, text=True).stdout)["result"]["agents"]
 except Exception:
     al = []
-ast = {}
+# "Waiting on Ben" is herdr-queues' own call (its newest installed checkout), so the dashboard and the popup agree:
+# a 🔖 flag, a reply that ends by asking him, or a blocked (permission) prompt; why = the popup's one line.
+import importlib.util
+hq = None
+try:
+    qp = sorted(glob.glob(os.path.expanduser("~/.config/herdr/plugins/github-installations/benjmhart.queues-*/*/checkout/queues.py")),
+                key=os.path.getmtime)[-1]
+    spec = importlib.util.spec_from_file_location("queues", qp); hq = importlib.util.module_from_spec(spec); spec.loader.exec_module(hq)
+    hstate = hq.load()
+except Exception:
+    hq = None
+def waiting(a):
+    if hq is None: return False, ""
+    try:
+        sid = (a.get("agent_session") or {}).get("value")
+        st = a.get("agent_status")
+        w = hq.revisit(hstate, a) or st == "blocked" or (st in ("done", "idle") and bool(sid) and hq.asks(sid))
+        return w, (hq.summary(hq.screen(None, a["pane_id"])) if w else "")
+    except Exception:
+        return False, ""
+ast, wait = {}, {}
 for a in al:
     if a.get("agent") == "muse": continue
-    ast.setdefault(os.path.basename(a.get("cwd", "")), a.get("agent_status"))
+    r = os.path.basename(a.get("cwd", ""))
+    if r not in REPOS: continue
+    ast.setdefault(r, a.get("agent_status"))
+    w, why = waiting(a)
+    if w: wait.setdefault(r, []).append(why[:200] or "(flagged)")
 import datetime
 today = datetime.date.today()
 rows, act = [], []
 for r in res:
     c = r["counts"]; t = r["total"] or 0
     d, ago, msg = (r["last_commit"].split(" ", 1)[0], r["last_commit"].split(" ", 1)[1].split("|")[0], r["last_commit"].split("|", 1)[1]) if r["last_commit"] else ("", "", "")
-    rows.append({"repo": r["repo"], "agent": ast.get(r["repo"], "none"), "stories": t,
+    rows.append({"repo": r["repo"], "agent": ast.get(r["repo"], "none"), "waiting_on_ben": len(wait.get(r["repo"], [])), "waiting_why": " / ".join(wait.get(r["repo"], []))[:400], "stories": t,
                  "done": c.get("done", 0), "review": c.get("review", 0), "in_progress": c.get("in progress", 0),
                  "ready": c.get("ready", 0), "backlog": c.get("backlog", 0), "deferred": c.get("deferred", 0) + c.get("blocked", 0),
                  "dropped": c.get("dropped", 0),
