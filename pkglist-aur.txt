@@ -47,3 +47,22 @@ zsa-keymapp-bin                      a2cddd725473d7becea6291e5aebacc8e8a254cc   
 # sees it, through a PreToolUse hook in the dotfiles' ~/.claude/settings.json. The release binary needs AVX2: on micro
 # (i3-3227U) it dies with SIGILL, so micro has none and the hook passes commands through there.
 rtk-bin                              ae456ba8773f65cbf54a8cc9d667fdb58519277e   # not: micro
+# Local AI toys on beast-arch's RX 580 and a roguelike (Ben 2026-11-28, station-maintenance fleet 59 follow-up).
+# llm (Simon Willison's CLI) with its Ollama plugin; its dependency chain comes first. PKGBUILDs read 2026-11-28:
+# each pulls a tagged upstream tarball with a sha256/sha512, except python-sqlite-fts4 (sha256 SKIP on a GitHub tag)
+# and click-default-group, whose curl is only in a latestver() helper the build never calls. No install scripts.
+python-sqlite-fts4                   5d1cb7398ac1b34b58922afb6c678246c7577e64   # only: beast-arch
+python-click-default-group           2b3f6b3b813a9400adc36f1664f65cecdd5c4c4b   # only: beast-arch
+python-condense-json                 3338d465eda89d918846d471bb3847b242055435   # only: beast-arch
+sqlite-utils                         8fdfb02444f754c3be499bd06b9b972c564f5d19   # only: beast-arch
+python-llm                           45ad2494efbe3fbe7ae240924260c8a9155d4ac3   # only: beast-arch
+python-ollama                        aa00ff36c9bfa3cc49bc4be2de6ecf3194a13280   # only: beast-arch
+python-llm-ollama                    1d556ff6846a8f8df2e75f53a8910bb279b07381   # only: beast-arch
+# Piper text-to-speech: upstream's prebuilt 2023.11.14 release + sha256, no install hooks. Not piper-tts 1.8.0: its
+# own check() fails in a clean Arch (CTest MainUtilsTest.ParseArgsG2pwDir, container build 2026-11-28). Voices are
+# not packaged: ~/.local/share/piper/en_US-lessac-medium.onnx (rhasspy/piper-voices v1.0.0) on beast-arch.
+piper-tts-bin                        020c9a986568e4ca5e6018d11d11a52b9316b911   # only: beast-arch
+# stable-diffusion.cpp, Vulkan build: upstream's own release zip + sha256 (the -git package builds unpinned branch heads).
+stable-diffusion.cpp-vulkan-bin      d8f83358c057c06dcf89f31b5b62221490b17299   # only: beast-arch
+# Brogue CE 1.15.1: upstream tag tarball, md5 only (weak but present); a launcher script, no install hooks.
+brogue-ce                            177bb6a6bf6195d4be424e6271a11e5582de1d1b   # not: media-center

@@ -255,6 +255,8 @@ zsa-udev              # only: beast-arch
 # scrcpy: the Pixel 5 as a microphone (station-maintenance beast-arch 115).
 scrcpy                # only: beast-arch
 hyperfine             # command timing (Ben 2026-11-08)
+just                  # per-repo task runner (Ben 2026-11-28)
+keyd                  # key remapping below X11, for fleet 5; installed, not enabled: no config yet (Ben 2026-11-28)
 dust                  # disk usage at a glance (Ben 2026-11-08)
 cava                  # the mod-s showcase (dotfiles rice-show; fleet 9, Ben 2026-11-08)
 yt-dlp                # mpv streams YouTube through it: the mod-s showcase song (fleet 9, Ben 2026-11-09)
