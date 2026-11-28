@@ -66,3 +66,6 @@ piper-tts-bin                        020c9a986568e4ca5e6018d11d11a52b9316b911   
 stable-diffusion.cpp-vulkan-bin      d8f83358c057c06dcf89f31b5b62221490b17299   # only: beast-arch
 # Brogue CE 1.15.1: upstream tag tarball, md5 only (weak but present); a launcher script, no install hooks.
 brogue-ce                            177bb6a6bf6195d4be424e6271a11e5582de1d1b   # not: media-center
+# Antigravity CLI 1.5.17 (`agy`), back for the google-automation agent in herdr (Ben 2026-11-28; removed 2026-11-05 as
+# unused). Google's own release tarball + sha256 into /usr/bin/agy, no install hooks (post_install only echoes).
+antigravity-cli                      927de6e0d79e46a41611a61d02fbc14a0d874017   # only: beast-arch
