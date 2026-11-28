@@ -3,12 +3,21 @@
 # wifi AND on AC power; away, it is stopped, and so is every unit that joined it. Heavy background work joins with
 #   [Unit] PartOf=home-only.target   [Install] WantedBy=home-only.target   (then `systemctl --user enable` it)
 # (station-maintenance fleet 45; Ben 2026-11-22: "stop the carbon conversion job until it re-joins the garfield wifi").
+# Travel mode follows the wifi alone: away.target (below).
 # ponytail: home = one wifi SSID; a wired-only home connection reads as away. Add an ethernet check if carbon ever docks.
 set -uo pipefail
 target=${HOME_ONLY_TARGET:-home-only.target}
 ssid=${HOME_SSID:-Garfield}
 why=""
 nmcli -t -f active,ssid dev wifi 2>/dev/null | grep -qxF "yes:$ssid" || why="not on $ssid"
+# Travel mode (station-maintenance fleet 58; Ben 2026-11-27: "it should go on whenever carbon leaves the garfield wifi
+# network"): away.target (dotfiles) on the wifi alone, whatever the power.
+away=${AWAY_TARGET:-away.target}
+if [[ -n $why ]]; then
+  systemctl --user is-active --quiet "$away" || { systemctl --user start "$away" && echo "travel mode on: started $away"; }
+else
+  systemctl --user is-active --quiet "$away" && systemctl --user stop "$away" && echo "home on $ssid: stopped $away (travel mode off)"
+fi
 ac=0; for s in /sys/class/power_supply/*; do
   [[ $(cat "$s/type" 2>/dev/null) == Mains && $(cat "$s/online" 2>/dev/null) == 1 ]] && ac=1; done
 (( ac )) || why+="${why:+, }on battery"
