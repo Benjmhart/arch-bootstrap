@@ -1,0 +1,12 @@
+[Unit]
+Description=Twice a day on micro: the chief of staff's sweep and Ben's brief (arch-bootstrap chores/chief-sweep, station-maintenance fleet 53)
+
+[Timer]
+# 08:45 follows fleet-health (08:30), so the morning brief has that day's report.
+OnCalendar=*-*-* 08:45
+OnCalendar=*-*-* 18:30
+Persistent=true
+Unit=chore@chief-sweep.service
+
+[Install]
+WantedBy=timers.target
