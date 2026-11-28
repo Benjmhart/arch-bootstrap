@@ -4676,6 +4676,38 @@ IOWriteBandwidthMax=/home $CI_WRITE_CAP" "ci.slice writes to /home capped at $CI
 Delegate=cpu memory pids io" "user manager gets the io controller (next login)"; then
     run sudo systemctl daemon-reload || warn "daemon-reload failed -- io delegation applies at the next boot"
   fi
+  # CI yields while Ben is at the desk and runs full speed while he is away (Ben 2026-11-27). The dotfiles'
+  # desk-presence (his user service) writes 1/0 to $XDG_RUNTIME_DIR/desk-present; this root loop gives ci.slice CPU/IO
+  # weight 10 or 100 from it (--runtime). No flag = at the desk. The flag is his user's alone (0700 runtime dir).
+  [[ -f /etc/systemd/system/ci.slice ]] || return 0
+  local uid; uid=$(id -u)
+  put_etc_file /usr/local/lib/arch-bootstrap/ci-desk-yield \
+"# Written by arch-bootstrap (tune_disk_stalls; station-maintenance fleet 39). Run by ci-desk-yield.service.
+f=/run/user/$uid/desk-present last=
+while :; do
+  now=\$(cat \$f 2>/dev/null || echo 1)
+  if [ \"\$now\" != \"\$last\" ]; then
+    w=10; [ \"\$now\" = 0 ] && w=100
+    systemctl set-property --runtime ci.slice CPUWeight=\$w IOWeight=\$w && echo \"ci.slice weight \$w (desk-present \$now)\" && last=\$now
+  fi
+  sleep 15
+done" "ci-desk-yield loop" || true
+  if put_etc_file /etc/systemd/system/ci-desk-yield.service \
+"# Written by arch-bootstrap (tune_disk_stalls; station-maintenance fleet 39).
+[Unit]
+Description=CI yields while Ben is at the desk, full speed while he is away (station-maintenance fleet 39)
+
+[Service]
+ExecStart=/bin/sh /usr/local/lib/arch-bootstrap/ci-desk-yield
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target" "ci-desk-yield unit"; then
+    run sudo systemctl daemon-reload || warn "daemon-reload failed"
+  fi
+  if systemctl is-enabled -q ci-desk-yield.service 2>/dev/null; then ok "ci-desk-yield enabled"
+  else run sudo systemctl enable --now ci-desk-yield.service && did "CI now follows desk presence" || warn "ci-desk-yield did not start"; fi
 }
 
 # Universal, but each part only where it applies. Added 2026-10-03 from micro.
