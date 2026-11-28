@@ -2239,8 +2239,8 @@ install_terminactory() {
 }
 
 # voxl (tembo/voxl, crate voxl-server; station-maintenance fleet 60, Ben 2026-11-28): this machine's screen in a browser
-# tab, with input and sound, and screenshots for agents. Served on 127.0.0.1:6901 only, by ~/.local/bin/voxl-start from
-# .xinitrc (dotfiles); viewers come through ssh (`peek <host>` on micro or carbon), so nothing listens on the tailnet.
+# tab, with input and sound, and screenshots for agents. Served on 127.0.0.1:6901 only, on demand by ~/.local/bin/voxl-start
+# (dotfiles); viewers come through ssh (`peek <host>` on micro or carbon), so nothing listens on the tailnet.
 # Not on a no-inbound host (micro): it only views. PINNED: a days-old remote-control server moves by a reviewed commit
 # here, never by itself. 62 s to build on beast-arch; at idle priority so nobody at the desk feels it. Deps (x264,
 # libyuv, opus, libpulse, clang, esbuild) are in pkglist-userspace.txt.
@@ -2257,13 +2257,8 @@ install_voxl() {
       && did "voxl at $VOXL_VERSION" \
       || { warn "voxl: build failed -- next run"; return 0; }
   fi
-  # First install, or voxl stopped: start it on the screen in use (xmonad's display), as .xinitrc does at login.
-  local xpid
-  if [[ -x $HOME/.local/bin/voxl-start ]] && ! pgrep -u "$USER" -x voxl >/dev/null \
-     && xpid=$(pgrep -u "$USER" -o -x xmonad-x86_64-l); then
-    env $(tr '\0' '\n' < "/proc/$xpid/environ" | grep -E '^(DISPLAY|XAUTHORITY)=') "$HOME/.local/bin/voxl-start" \
-      && did "voxl serving this screen on 127.0.0.1:6901 (peek $(uname -n))" || warn "voxl would not start: ~/.local/state/voxl.log"
-  fi
+  # Not started here or at login: voxl hides the desk's cursor while it runs (XFixesHideCursor, voxl-server 0.4.0
+  # src/desktop.rs:113). peek and voxl-shot start it on demand; it stops itself when idle (dotfiles voxl-start).
 }
 
 # The vault's sync is a service: enabled but stopped means notes stop moving. earlyoom killed it on beast-arch

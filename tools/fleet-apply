@@ -312,7 +312,7 @@ if [[ -d $DOTDIR ]]; then
   reload picom        "$X"' && [[ -x ~/bin/compositor-start ]]' '.config/picom.conf bin/compositor-start .xinitrc' \
     'env $xenv ~/bin/compositor-start' 'picom setup changed: picom restarted'
   reload voxl         "$X"' && pgrep -u "$USER" -x voxl' .local/bin/voxl-start \
-    'env $xenv ~/.local/bin/voxl-start' 'voxl-start changed: voxl restarted'
+    '~/.local/bin/voxl-start --stop' 'voxl-start changed: voxl stopped (it starts on demand: peek, voxl-shot)'
   reload wallpaper-rotate "$X"' && [[ -x ~/.local/bin/wallpaper-rotate ]]' .local/bin/wallpaper-rotate \
     "pkill -u \"\$USER\" -f '^(/bin/)?sh .*/\\.local/bin/wallpaper-rotate\$'; env \$xenv setsid -f ~/.local/bin/wallpaper-rotate >/dev/null 2>&1 </dev/null" \
     'wallpaper rotation restarted (new wallpaper now)'
