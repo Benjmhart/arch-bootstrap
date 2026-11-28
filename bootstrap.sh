@@ -4603,6 +4603,13 @@ install_browser_search_policy() {
     put_etc_file "$d/policies/managed/no-notifications.json" '{ "DefaultNotificationsSetting": 2 }' \
       "no notification prompts" || true
   done
+  # Memory Saver on lean hosts (micro: 3.6 GB, Chromium held 1.75 GB of it; Ben 2026-11-28: "yes to switching on
+  # chromium's memory saver"). Background tabs sleep until clicked; 2 = aggressive. Covers every Chromium profile there,
+  # the agents' CDP browsers included: a tab an agent left in the background reloads when it is next used.
+  if profile_on lean; then
+    put_etc_file /etc/chromium/policies/managed/memory-saver.json '{ "HighEfficiencyModeEnabled": true, "MemorySaverModeSavings": 2 }' \
+      "Chromium Memory Saver (aggressive)" || true
+  fi
   # Vimium in Vivaldi, fetched from Google's update service by the browser itself on
   # its next start -- no Web Store visit (task 22). normal_installed: installed and
   # kept installed, but it can be disabled. Settings come from tools/vimium-restore.
