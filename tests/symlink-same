@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# tests/symlink-same: fpush's pre-flight and fleet-apply must take an untracked symlink identical to the incoming one
+# as "already there" (2026-11-27: beast-arch's desk-presence enable link stopped an fpush; hash-object and cmp both
+# followed the link). Builds a throwaway repo; no network.
+set -u
+d=$(mktemp -d); trap 'rm -rf "$d"' EXIT; fail=0
+git init -q "$d/r" && cd "$d/r" && mkdir -p u/wants && echo unit > u/x.service && ln -s "$d/r/u/x.service" u/wants/x.service
+git add -A && git -c user.email=t@t -c user.name=t commit -qm one
+blob=$(git rev-parse HEAD:u/wants/x.service); sha=$(git rev-parse HEAD)
+# the pre-flight's rule (tools/fleet PRE_FILES)
+f=u/wants/x.service
+if [[ -L $f ]]; then h=$(printf %s "$(readlink "$f")" | git hash-object --stdin); else h=$(git hash-object -- "$f"); fi
+[[ $h == "$blob" ]] && echo "pass  pre-flight: an identical symlink hashes as the incoming blob" || { echo "FAIL  pre-flight hash ($h vs $blob)"; fail=1; }
+# fleet-apply's same() (copied from tools/fleet-apply, so a change there must change here)
+g=(git); top=$PWD
+eval "$(sed -n '/^    same() {/,/fi; }$/p' "$OLDPWD/tools/fleet-apply" 2>/dev/null || sed -n '/^    same() {/,/fi; }$/p' "$(dirname "$0")/../tools/fleet-apply")"
+declare -F same >/dev/null || { echo "FAIL  same() not found in tools/fleet-apply"; exit 1; }
+same "$sha" "$f" && echo "pass  apply: an identical symlink is the same" || { echo "FAIL  apply: identical symlink"; fail=1; }
+ln -sfn /elsewhere "$f"; same "$sha" "$f" && { echo "FAIL  apply: a different link target passed"; fail=1; } || echo "pass  apply: a different target is not the same"
+same "$sha" u/x.service && echo "pass  apply: a plain file still compares by content" || { echo "FAIL  plain file"; fail=1; }
+exit $fail

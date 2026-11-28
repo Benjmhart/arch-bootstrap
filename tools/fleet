@@ -600,8 +600,10 @@ PRE_FILES='g() { case $1 in ab) git -C ~/projects/arch-bootstrap "${@:2}" ;; *) 
 top() { case $1 in ab) echo ~/projects/arch-bootstrap ;; *) echo ~ ;; esac; }
 while read -r r blob p; do
   f=$(top "$r")/$p
-  [[ -f $f ]] || continue
-  [[ $blob != - && $(g "$r" hash-object -- "$f") == "$blob" ]] && continue
+  [[ -f $f || -L $f ]] || continue
+  # git stores a symlink as its target text: hash that, not the file it points to (desk-presence enable link, 2026-11-27)
+  if [[ -L $f ]]; then h=$(printf %s "$(readlink "$f")" | g "$r" hash-object --stdin); else h=$(g "$r" hash-object -- "$f"); fi
+  [[ $blob != - && $h == "$blob" ]] && continue
   if g "$r" ls-files --error-unmatch -- "$f" >/dev/null 2>&1; then
     g "$r" diff --quiet HEAD -- "$f" && continue
     if [[ $r == dot ]]; then echo "note $p: edited here; set aside and put back on top"

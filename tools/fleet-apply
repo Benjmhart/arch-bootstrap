@@ -129,9 +129,13 @@ move() {
     # then committed elsewhere: its xmonad.hs = cbd4f9a, while later commits changed the file again), and an untracked
     # file the snapshot adds with the same content (.local/bin/games copied over before its commit).
     local f pid top; top=$("${g[@]}" rev-parse --show-toplevel)
+    # same SHA PATH: the file here is exactly as SHA has it. git stores a symlink as its target text, so a link is
+    # compared by readlink, not by the file it points to (cmp follows it: the desk-presence enable link, 2026-11-27).
+    same() { if [[ -L $top/$2 ]]; then [[ $("${g[@]}" show "$1:$2" 2>/dev/null) == "$(readlink "$top/$2")" ]]
+             else cmp -s <("${g[@]}" show "$1:$2" 2>/dev/null) "$top/$2"; fi; }
     while IFS= read -r f; do
       [[ -n $f ]] || continue
-      if cmp -s <("${g[@]}" show "$sha:$f" 2>/dev/null) "$top/$f"; then
+      if same "$sha" "$f"; then
         "${g[@]}" checkout -q -- ":/$f" && echo "note  $label: $f was already as in ${sha:0:7} here; restored so the move can go on"
         continue
       fi
@@ -145,8 +149,8 @@ move() {
       done < <("${g[@]}" rev-list "$cur..$sha" -- ":/$f")
     done < <("${g[@]}" diff --name-only)
     while IFS= read -r f; do
-      [[ -n $f && -f $top/$f ]] && ! "${g[@]}" ls-files --error-unmatch -- ":/$f" >/dev/null 2>&1 \
-        && cmp -s <("${g[@]}" show "$sha:$f") "$top/$f" && rm -f -- "$top/$f" \
+      [[ -n $f ]] && [[ -f $top/$f || -L $top/$f ]] && ! "${g[@]}" ls-files --error-unmatch -- ":/$f" >/dev/null 2>&1 \
+        && same "$sha" "$f" && rm -f -- "$top/$f" \
         && echo "note  $label: untracked $f was already as in ${sha:0:7} here; removed so the move can add it"
     done < <("${g[@]}" diff --no-renames --name-only --diff-filter=A "$cur" "$sha")  # a renamed file is an add too (herdr-inandout, 2026-11-21)
     if [[ $label == secrets ]] && touches "$("${g[@]}" diff --name-only "$cur" "$sha")" && pgrep -x keepassxc >/dev/null; then
