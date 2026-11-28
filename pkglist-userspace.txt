@@ -293,3 +293,7 @@ ghostty               # needs OpenGL 4.3: micro's Ivy Bridge HD 4000 has 4.2 # n
 catimg                # images as terminal colour blocks
 kew                   # local music player in the terminal
 spotify-player        # Spotify in the terminal (spotify-tui is abandoned; needs Premium)
+esbuild
+libyuv
+opus
+x264

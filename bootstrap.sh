@@ -2238,6 +2238,34 @@ install_terminactory() {
   fi
 }
 
+# voxl (tembo/voxl, crate voxl-server; station-maintenance fleet 60, Ben 2026-11-28): this machine's screen in a browser
+# tab, with input and sound, and screenshots for agents. Served on 127.0.0.1:6901 only, by ~/.local/bin/voxl-start from
+# .xinitrc (dotfiles); viewers come through ssh (`peek <host>` on micro or carbon), so nothing listens on the tailnet.
+# Not on a no-inbound host (micro): it only views. PINNED: a days-old remote-control server moves by a reviewed commit
+# here, never by itself. 62 s to build on beast-arch; at idle priority so nobody at the desk feels it. Deps (x264,
+# libyuv, opus, libpulse, clang, esbuild) are in pkglist-userspace.txt.
+VOXL_VERSION=0.4.0
+install_voxl() {
+  have Xorg || { info "voxl: no X here, skipped"; return 0; }
+  grep -qx '# no-inbound' "$SECRETS_DIR/ssh/authorized_keys/$(uname -n)" 2>/dev/null \
+    && { info "voxl: a viewer here (no-inbound), not served"; return 0; }
+  have cargo && have esbuild || { warn "voxl: no cargo or esbuild -- not installed"; return 0; }
+  if [[ $(cargo install --list --root "$HOME/.local" 2>/dev/null) == *"voxl-server v$VOXL_VERSION:"* ]]; then
+    ok "voxl at $VOXL_VERSION"
+  else
+    run nice -n 19 ionice -c3 cargo install --locked --force --root "$HOME/.local" voxl-server --version "$VOXL_VERSION" \
+      && did "voxl at $VOXL_VERSION" \
+      || { warn "voxl: build failed -- next run"; return 0; }
+  fi
+  # First install, or voxl stopped: start it on the screen in use (xmonad's display), as .xinitrc does at login.
+  local xpid
+  if [[ -x $HOME/.local/bin/voxl-start ]] && ! pgrep -u "$USER" -x voxl >/dev/null \
+     && xpid=$(pgrep -u "$USER" -o -x xmonad-x86_64-l); then
+    env $(tr '\0' '\n' < "/proc/$xpid/environ" | grep -E '^(DISPLAY|XAUTHORITY)=') "$HOME/.local/bin/voxl-start" \
+      && did "voxl serving this screen on 127.0.0.1:6901 (peek $(uname -n))" || warn "voxl would not start: ~/.local/state/voxl.log"
+  fi
+}
+
 # The vault's sync is a service: enabled but stopped means notes stop moving. earlyoom killed it on beast-arch
 # (2026-10-30 21:56), it exited 0, Restart=on-failure left it down for 14 h, and the next fpush failed verify. Restart=
 # always fixes the cause (unit in the dotfiles); this heals a stopped one, and reloads first when the unit file changed,
@@ -6605,6 +6633,7 @@ stage_services() {
   install_agent_upgrade
   install_keybind_find
   install_terminactory
+  install_voxl
   set_default_pdf_viewer
   set_default_browser_lean
   keep_obsidian_sync_running
