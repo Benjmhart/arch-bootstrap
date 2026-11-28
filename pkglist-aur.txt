@@ -20,6 +20,12 @@ handy-bin                            de4af1f5b6f60f804f04723336aa3b1396b0efe3
 nvidia-580xx-utils                   0b45a07013d6cc1d19dbf61c110f9b97d6fc429b   # only: surfboard
 nvidia-580xx-dkms                    0b45a07013d6cc1d19dbf61c110f9b97d6fc429b nvidia-580xx-utils   # only: surfboard
 lib32-nvidia-580xx-utils             489271acfd01c91bc07201300e6b63f3d2a8e2ba   # only: surfboard
+# Sunshine, the game-stream host (station-maintenance fleet 57, Ben 2026-11-27: play surfboard's games from carbon/micro).
+# The upstream-maintained AUR package (LizardByte-bot), built from source: sunshine-bin's Sept binary predates the
+# openssl 4 move (surfboard has 4.1; this pkgrel carries upstream's openssl-4.1 patch). PKGBUILD read: git source at a
+# pinned upstream commit + sha256 patches/boost; its build runs npm for the web UI. No CUDA: Arch's cuda 13 has no
+# Maxwell, so no NVENC; it encodes with VAAPI on the Intel GPU (~/.config/sunshine/sunshine.conf, dotfiles).
+sunshine                             28deb52da8498102b32a46e792676b27c73a1c01   # only: surfboard
 # catt for CastIron's Chromecast backend (station-maintenance media-center 7): /usr/bin/catt, readable by its service user
 # (media-system's catt is in a venv under ~ben, mode 700). Its dependencies are all in the repos.
 catt                                 832f34616aba26531d35938d182e7c02f9654f68   # only: media-center

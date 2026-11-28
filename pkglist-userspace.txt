@@ -233,6 +233,7 @@ nvidia-prime          # only: surfboard
 # The `games` session (dotfiles ~/.local/bin/games, surfboard 05): openbox makes every window full screen and focused,
 # unclutter hides the idle cursor. gamescope was tried and dropped: games crash in it on the Maxwell's 580xx driver.
 openbox                    # only: surfboard
+moonlight-qt               # only: carbon,micro   # plays surfboard's Sunshine stream (fleet 57)
 unclutter                  # only: surfboard
 retroarch                  # only: surfboard
 retroarch-assets-ozone     # only: surfboard
