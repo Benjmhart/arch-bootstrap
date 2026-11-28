@@ -23,3 +23,5 @@ ascii-rain-git
 claude-desktop
 obs-studio    # not: beast-arch
 godot         # only: micro
+# Keymapp 1 (AUR zsa-keymapp-bin 1.3.7): replaced by Keymapp 2 from ZSA's .deb, install_keymapp (Ben 2026-11-28).
+zsa-keymapp-bin       # only: beast-arch

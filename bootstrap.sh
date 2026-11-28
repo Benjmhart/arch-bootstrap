@@ -4192,6 +4192,38 @@ install_cursor_theme() {
   fi
 }
 
+# ZSA Keymapp 2 (live Moonlander layers; station-maintenance beast-arch 108/148, Ben 2026-11-28: "we should upgrade to
+# keymapp 2"). Not in the AUR (zsa-keymapp-bin stops at 1.3.7, now in pkglist-remove.txt): ZSA's own .deb from
+# downloads.zsa.io, PINNED by version and sha256 (ZSA publishes no checksums: this is the hash of the file fetched
+# 2026-11-28). The binary goes to ~/.local/bin/keymapp (ahead of /usr/bin on PATH; xmonad's mod-o runs `keymapp`), with
+# its .desktop and icons. Only where zsa-udev is installed (beast-arch). Deps (webkit2gtk-4.1, gtk3,
+# libayatana-appindicator) are already there; ldd found none missing.
+KEYMAPP_VERSION=2.1.1
+KEYMAPP_SHA256=80ba8d939859aea43353ec25f8781b89ad26e38f85ee7b6c9efcdc0b0bfe41bc
+install_keymapp() {
+  pacman -Q zsa-udev &>/dev/null || return 0
+  local stamp="$HOME/.local/share/keymapp/installed-version" tmp
+  if [[ -x $HOME/.local/bin/keymapp && $(cat "$stamp" 2>/dev/null) == "$KEYMAPP_VERSION" ]]; then
+    ok "Keymapp at $KEYMAPP_VERSION"; return 0
+  fi
+  (( DRY_RUN )) && { info "(dry run) would install Keymapp $KEYMAPP_VERSION to ~/.local/bin"; return 0; }
+  tmp=$(mktemp -d)
+  if curl -fsSL -o "$tmp/k.deb" "https://downloads.zsa.io/files/keymapp/$KEYMAPP_VERSION/Keymapp_${KEYMAPP_VERSION}_amd64.deb" \
+     && echo "$KEYMAPP_SHA256  $tmp/k.deb" | sha256sum -c --quiet \
+     && bsdtar -xf "$tmp/k.deb" -C "$tmp" && mkdir "$tmp/d" && bsdtar -xf "$tmp"/data.tar.* -C "$tmp/d"; then
+    mkdir -p "$HOME/.local/bin" "$HOME/.local/share/applications" "${stamp%/*}"
+    install -m755 "$tmp/d/usr/bin/keymapp" "$HOME/.local/bin/keymapp"
+    sed "s#^Exec=keymapp#Exec=$HOME/.local/bin/keymapp#" "$tmp/d/usr/share/applications/Keymapp.desktop" \
+      > "$HOME/.local/share/applications/Keymapp.desktop"
+    cp -r "$tmp/d/usr/share/icons/." "$HOME/.local/share/icons/"
+    echo "$KEYMAPP_VERSION" > "$stamp"
+    did "Keymapp $KEYMAPP_VERSION in ~/.local/bin (restart it: mod-o twice)"
+  else
+    warn "Keymapp $KEYMAPP_VERSION: download or checksum failed -- the old one stays"
+  fi
+  rm -rf "$tmp"
+}
+
 # Chores: regular jobs as systemd user timers (chores/, beast-arch task 69). chore-run
 # and chores go on PATH; every chore shares the chore@.service template, and only the
 # timers named in CHORES are enabled. `systemctl --user link` rather than copying, so a
@@ -6471,6 +6503,7 @@ stage_services() {
   espanso_skip_wizard
   keepassxc_seed_config
   install_cursor_theme
+  install_keymapp
   install_icon_theme
   theme_launcher_icons
   setup_dracula_tray_images
