@@ -42,10 +42,16 @@ agents() {  # herdr agents on one machine: pane, repo, status (muse = queue head
   echo; echo "== newest fleet-health report"
   f=$(ls -t "$OPS/$self"-fleet-health-*.log 2>/dev/null | head -1)
   [[ -n $f ]] && { echo "($f)"; grep -E '^(PROBLEM|NEWS|NOTE)' "$f"; } || echo "(none)"
+  echo; echo "== dev-progress dashboard data (devprog.py on beast-arch)"
+  dp=$OPS/$self-chief-sweep-devprog
+  mkdir -p "$dp" && scp -q -o ConnectTimeout=8 -o BatchMode=yes "$(dirname "$(readlink -f "$0")")/devprog.py" beast-arch:/tmp/devprog.py \
+    && ssh -o ConnectTimeout=8 -o BatchMode=yes beast-arch 'python3 /tmp/devprog.py /tmp' \
+    && scp -q -o BatchMode=yes beast-arch:/tmp/devprog-repos.json beast-arch:/tmp/devprog-activity.json "$dp/" \
+    && echo "$dp/devprog-repos.json $dp/devprog-activity.json" || echo "(beast-arch offline: dashboard not refreshed)"
 } >"$facts" 2>&1
 [[ ${CHIEF_SWEEP_NO_PROMPT:-0} == 1 ]] && { echo "facts only (CHIEF_SWEEP_NO_PROMPT): $facts"; exit 0; }
 
-msg="Chief-of-staff sweep: the facts are in $facts. Read them with decisions.md and the fleet index; settle and route what decisions.md already answers (inbox, ack each chief-of-staff message you handled); republish Ben's brief (the brief.html Artifact, edition +1) with only real decisions under Needs you; flag yourself 🔖 only if there is a new decision for Ben. Read-only otherwise: no pushes, no root, nothing new decided. Log one line in fleet 53."
+msg="Chief-of-staff sweep: the facts are in $facts. Read them with decisions.md and the fleet index; settle and route what decisions.md already answers (inbox, ack each chief-of-staff message you handled); republish Ben's brief (the brief.html Artifact, edition +1); if the facts list devprog JSON files, upload them to the dev-progress dashboard (https://claude.ai/artifact/Tx1dPdoPrGB2kZ333zrvi8) and point its repos and activity datasets at the new uploads (update, with updated.at) with only real decisions under Needs you; flag yourself 🔖 only if there is a new decision for Ben. Read-only otherwise: no pushes, no root, nothing new decided. Log one line in fleet 53."
 pane() {  # the station-maintenance agent here, if idle and not in front of Ben
   herdr agent list 2>/dev/null | jq -r '[.result.agents[] | select(.agent == "claude" and (.cwd | endswith("/station-maintenance")))] | sort_by(.pane_id) | .[0] | select(. != null) | "\(.pane_id) \(.agent_status) \(.focused)"'
 }
