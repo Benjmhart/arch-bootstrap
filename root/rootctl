@@ -1,0 +1,74 @@
+#!/bin/bash
+# rootctl -- the routine root steps an agent may take without Ben (station-maintenance fleet 55, Ben 2026-11-27:
+# "the root helper is ok"). Installed root-owned at /usr/local/bin/rootctl by arch-bootstrap (setup_rootctl), with
+# one sudoers line: `ben ALL=(root) NOPASSWD: /usr/local/bin/rootctl`. Everything it allows is listed here, in this
+# root-owned file; nothing it reads from a user-writable place widens it. Anything else is refused: new tuning goes
+# through arch-bootstrap and fpush, credentials stay Ben's. Every run is logged: `journalctl -t rootctl`.
+#
+#   rootctl journal [UNIT]          last 300 lines of this boot's journal (one unit or all)
+#   rootctl dmesg                   last 200 kernel lines
+#   rootctl smart DISK              smartctl -a /dev/sdX or /dev/nvmeN
+#   rootctl log FILE                tail -n 300 of a file under /var/log
+#   rootctl failed                  failed system units
+#   rootctl status UNIT             systemctl status of any unit (read only)
+#   rootctl restart|reload UNIT     only units in RESTARTABLE below
+#   rootctl paccache                keep the last 2 versions in pacman's cache
+#   rootctl journal-vacuum          shrink the journal to 500M
+set -uo pipefail
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/bin
+# Units an fpush leaves "restart pending" that are safe to restart remotely. Not network (NetworkManager, tailscaled,
+# sshd, wg-quick: a restart can cut the session), not docker (it kills CI containers), not display/login managers.
+RESTARTABLE=" udisks2.service upower.service tlp-pd.service nix-daemon.service pacoloco.service dirmngr@etc-pacman.d-gnupg.service fwupd.service "
+UNIT_RE='^[A-Za-z0-9@_.:-]+\.(service|timer|socket|mount|target|path)$'
+
+die() { echo "rootctl: $*" >&2; logger -t rootctl -- "REFUSED by ${SUDO_USER:-?}: $CMDLINE ($*)"; exit 2; }
+CMDLINE="$*"
+[[ ${ROOTCTL_DRY:-0} == 1 ]] && run() { printf 'DRY:'; printf ' %q' "$@"; echo; } || run() { "$@"; }
+(( EUID == 0 )) || [[ ${ROOTCTL_DRY:-0} == 1 ]] || { echo "rootctl: run it with sudo" >&2; exit 2; }
+
+verb=${1:-}; shift || true
+case $verb in
+  journal)
+    (( $# <= 1 )) || die "journal takes at most one unit"
+    if (( $# == 1 )); then [[ $1 =~ $UNIT_RE ]] || die "not a unit name: $1"; set -- -u "$1"; fi
+    logger -t rootctl -- "${SUDO_USER:-?}: $CMDLINE"
+    run journalctl -b --no-pager -n 300 "$@" ;;
+  dmesg)
+    (( $# == 0 )) || die "dmesg takes no arguments"
+    logger -t rootctl -- "${SUDO_USER:-?}: $CMDLINE"
+    run dmesg -T | tail -n 200 ;;
+  smart)
+    (( $# == 1 )) && [[ $1 =~ ^/dev/(sd[a-z]+|nvme[0-9]+(n[0-9]+)?)$ ]] || die "smart takes one disk: /dev/sdX or /dev/nvmeN"
+    logger -t rootctl -- "${SUDO_USER:-?}: $CMDLINE"
+    run smartctl -a "$1" ;;
+  log)
+    (( $# == 1 )) || die "log takes one file under /var/log"
+    f=$(realpath -e -- "$1" 2>/dev/null) || die "no such file: $1"
+    [[ $f == /var/log/* && -f $f ]] || die "only regular files under /var/log"
+    logger -t rootctl -- "${SUDO_USER:-?}: $CMDLINE"
+    run tail -n 300 -- "$f" ;;
+  failed)
+    (( $# == 0 )) || die "failed takes no arguments"
+    logger -t rootctl -- "${SUDO_USER:-?}: $CMDLINE"
+    run systemctl --failed --no-pager ;;
+  status)
+    (( $# == 1 )) && [[ $1 =~ $UNIT_RE ]] || die "status takes one unit name (with its suffix)"
+    logger -t rootctl -- "${SUDO_USER:-?}: $CMDLINE"
+    run systemctl status --no-pager -- "$1" ;;
+  restart|reload)
+    (( $# == 1 )) && [[ $1 =~ $UNIT_RE ]] || die "$verb takes one unit name (with its suffix)"
+    [[ $RESTARTABLE == *" $1 "* ]] || die "$1 is not on rootctl's restart list (add it in arch-bootstrap root/rootctl)"
+    logger -t rootctl -- "${SUDO_USER:-?}: $CMDLINE"
+    run systemctl "$verb" -- "$1" ;;
+  paccache)
+    (( $# == 0 )) || die "paccache takes no arguments"
+    logger -t rootctl -- "${SUDO_USER:-?}: $CMDLINE"
+    run paccache -rk2 ;;
+  journal-vacuum)
+    (( $# == 0 )) || die "journal-vacuum takes no arguments"
+    logger -t rootctl -- "${SUDO_USER:-?}: $CMDLINE"
+    run journalctl --vacuum-size=500M ;;
+  ''|-h|--help|help)
+    sed -n '2,/^set -uo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//' ;;
+  *) die "unknown verb: $verb (rootctl help)" ;;
+esac

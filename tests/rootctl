@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# tests/rootctl -- rootctl allows exactly its verbs and refuses the rest (station-maintenance fleet 55). Runs unprivileged
+# with ROOTCTL_DRY=1: commands are printed, never run. Run: tests/rootctl
+set -uo pipefail
+r=$(cd "$(dirname "$0")/.." && pwd)/root/rootctl
+bad=0
+logger() { :; }; export -f logger
+ok()  { if out=$(ROOTCTL_DRY=1 "$r" "$@" 2>&1); then echo "pass  allowed: $*"; else echo "FAIL  refused: $* ($out)"; bad=$((bad+1)); fi; }
+no()  { if out=$(ROOTCTL_DRY=1 "$r" "$@" 2>&1); then echo "FAIL  allowed: $* ($out)"; bad=$((bad+1)); else echo "pass  refused: $*"; fi; }
+ok journal; ok journal pacoloco.service; ok dmesg; ok smart /dev/sda; ok smart /dev/nvme0n1; ok failed
+ok status sshd.service; ok restart udisks2.service; ok reload pacoloco.service; ok paccache; ok journal-vacuum
+ok log /var/log/pacman.log
+no restart sshd.service; no restart tailscaled.service; no restart docker.service; no restart 'udisks2.service;id'
+no status 'x.service --root=/'; no journal '-o' ; no journal a.service b.service; no smart /dev/sda1; no smart /etc/shadow
+no log /etc/shadow; no log /var/log/../../etc/shadow; no log /var/log; no bash -c id; ok ''
+no paccache -rk0; no restart; no restart udisks2
+(( bad == 0 )) && echo "all checks passed" || { echo "$bad failed"; exit 1; }

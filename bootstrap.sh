@@ -6251,6 +6251,35 @@ polkit.addRule(function(action, subject) {
   rm -f "$tmp"
 }
 
+# rootctl (station-maintenance fleet 55, Ben 2026-11-27: "the root helper is ok"): the routine root steps an agent may
+# take without Ben -- read logs, SMART, failed units, restart units on a fixed list, prune caches. Its whole allowlist
+# lives in the root-owned copy (/usr/local/bin/rootctl, from root/rootctl here); `sudo rootctl` is the only NOPASSWD.
+setup_rootctl() {
+  local src="$SCRIPT_DIR/root/rootctl" bin=/usr/local/bin/rootctl sf=/etc/sudoers.d/22-rootctl tmp
+  [[ -f $src ]] || { warn "rootctl: $src missing"; return 0; }
+  if sudo -n cmp -s "$src" "$bin" 2>/dev/null; then
+    ok "rootctl in place ($bin)"
+  elif (( DRY_RUN )); then
+    info "(dry run) would install $bin"
+  elif run sudo install -m 755 -o root -g root "$src" "$bin"; then
+    did "installed $bin"
+  else
+    warn "could not install $bin"; return 0
+  fi
+  tmp=$(mktemp)
+  printf '%s\n' "$USER ALL=(root) NOPASSWD: $bin" >"$tmp"
+  if sudo -n cmp -s "$tmp" "$sf" 2>/dev/null; then
+    ok "sudo rootctl: no password"
+  elif (( DRY_RUN )); then
+    info "(dry run) would write $sf"
+  elif run sudo visudo -cqf "$tmp" && run sudo install -m 440 -o root -g root "$tmp" "$sf"; then
+    did "sudo rootctl: no password ($sf)"
+  else
+    warn "could not write $sf"
+  fi
+  rm -f "$tmp"
+}
+
 # gh-dash (Ben 2026-11-08): PRs and issues across repos in one terminal dashboard, as a gh extension from its author's
 # repo (dlvhdr/gh-dash; the AUR copies have 2-3 votes). Only where gh is logged in: it is useless without a token,
 # and tokens stay off the dirty machines (beast-arch 94). Kept on the latest release, as the herdr plugins are.
@@ -6409,6 +6438,7 @@ stage_services() {
   user_tmp_cleanup
   install_system_dropins
   setup_rescue_ventoy_upgrade
+  setup_rootctl
   setup_yubikey
   setup_zsa
   setup_wake
