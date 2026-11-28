@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily on beast-arch: the morning /comms-check in the personal-comms pane (arch-bootstrap chores/comms-check, station-maintenance fleet 53)
+
+[Timer]
+# 07:30: the normal run is done before micro's 08:45 chief-of-staff sweep.
+OnCalendar=*-*-* 07:30
+Persistent=true
+Unit=chore@comms-check.service
+
+[Install]
+WantedBy=timers.target

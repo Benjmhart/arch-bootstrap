@@ -4199,6 +4199,7 @@ install_chores() {
   fi
   [[ $(uname -n) == "${FLEET_CANARY_HOST:-beast-arch}" ]] && extra+=" canary"   # the KVM host: the nightly VM canary (fleet 11)
   [[ $(uname -n) == "${TESTVM_HOST:-surfboard}" ]] && extra+=" testvm-idle"   # the shared test VMs: stopped when idle (fleet 37/39)
+  [[ $(uname -n) == "${COMMS_CHECK_HOST:-beast-arch}" ]] && extra+=" comms-check"   # the morning /comms-check in the personal-comms pane (fleet 53)
   [[ " ${HOME_ONLY_HOSTS:-carbon} " == *" $(uname -n) "* ]] && extra+=" home-only"   # heavy work only at home, on AC (fleet 45)
   for c in low-disk virus-scan repo-hygiene clipboard-wipe vivaldi-theme boot-time reminders tailnet-paths cpu-temp build-prune $extra $CHORES; do
     [[ -f $d/$c/chore-$c.timer ]] || { warn "CHORES names '$c', but there is no chores/$c/chore-$c.timer"; continue; }
