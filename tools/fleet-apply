@@ -307,7 +307,7 @@ if [[ -d $DOTDIR ]]; then
   reload fcitx5       'pgrep -u "$USER" -x fcitx5' .config/fcitx5 'env $bus fcitx5-remote -r >/dev/null' 'fcitx5 config reloaded'
   reload dunst        'pgrep -u "$USER" -x dunst' .config/dunst 'env $bus dunstctl reload >/dev/null' 'dunst config reloaded'
   reload xmobar       "$X" .xmobarrc 'env $xenv xmonad --restart' 'xmobar config changed: xmonad restarted, bars reloaded'
-  reload stalonetray  "$X"' && pgrep -u "$USER" -x stalonetray' .stalonetrayrc \
+  reload stalonetray  "$X"' && pgrep -u "$USER" -x stalonetray' '.stalonetrayrc bin/stalonetray-start' \
     'pkill -u "$USER" -x stalonetray; sleep 0.5; env $xenv setsid -f ~/bin/stalonetray-start >/dev/null 2>&1 </dev/null' 'tray config changed: stalonetray restarted'
   reload picom        "$X"' && [[ -x ~/bin/compositor-start ]]' '.config/picom.conf bin/compositor-start .xinitrc' \
     'env $xenv ~/bin/compositor-start' 'picom setup changed: picom restarted'
