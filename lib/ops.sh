@@ -16,8 +16,8 @@ if [[ -t 1 || -n ${OPS_COLOR:-} ]]; then _ops_colors; else _G="" _Y="" _R="" _B=
 step()   { printf '\n%s▶  %s  %s%s\n' "$_B" "$(date +%T)" "$*" "$_0"; }
 ok()     { printf '%sok   ✅ %s%s\n' "$_G" "$*" "$_0"; }
 note()   { printf '     %s\n' "$*"; }
-attn()   { printf '%s!!   ⚠️  ATTENTION: %s%s\n' "$_Y" "$*" "$_0"; }
-fail()   { printf '%s!!!  ❌ FAILED: %s%s\n' "$_R" "$*" "$_0"; exit 1; }
+attn()   { _OPS_ATTN=$*; printf '%s!!   ⚠️  ATTENTION: %s%s\n' "$_Y" "$*" "$_0"; }
+fail()   { _OPS_FAIL=$*; printf '%s!!!  ❌ FAILED: %s%s\n' "$_R" "$*" "$_0"; exit 1; }
 nogo()   { printf '%s!!!  ❌ NO-GO: %s%s\n' "$_R" "$*" "$_0"; }   # a blocker found by a check that goes on to the next (fail stops)
 finish() { printf '\n%s🎉 %s%s\n' "$_G" "$*" "$_0"; }
 # ops_log NAME: everything from here also goes to $OPS/NAME.log, colours kept (read it with `less -R`).
@@ -101,7 +101,19 @@ new_secret() {
   done
 }
 forget_secrets() { local k; for k in "${!_SECRET[@]}"; do _SECRET[$k]=""; done; _SECRET=(); }
-trap forget_secrets EXIT
+# The script tells the agent that wrote it how it ended, so Ben never goes back to type "script ran" (52 times on
+# beast-arch 2026-09-30..11-27; station-maintenance fleet 56). The agent sets OPS_FROM=<its herdr pane, e.g. w2:pA>
+# before ops_log (<machine>:<pane> for an agent on another host); agent-prompt submits it there as a new turn.
+# No OPS_FROM, no message.
+ops_report() {
+  [[ -n ${OPS_FROM:-} && -n ${OPS_LOG:-} && -x ~/.local/bin/agent-prompt ]] || return 0
+  local how="finished ok"
+  [[ -n ${_OPS_ATTN:-} ]] && how="finished with ATTENTION: $_OPS_ATTN"
+  (( $1 != 0 )) && how="FAILED (exit $1)${_OPS_FAIL:+: $_OPS_FAIL}"
+  ~/.local/bin/agent-prompt "$OPS_FROM" "[ops] Ben ran \$OPS/$(basename "$OPS_LOG" .log).sh: $how. Log: $OPS_LOG" >/dev/null 2>&1 \
+    && printf '     ↩ told the agent that wrote this script (%s)\n' "$OPS_FROM"
+}
+trap 'rc=$?; forget_secrets; ops_report $rc' EXIT
 
 # --- 3. retry -------------------------------------------------------------------------------------------------------
 # with_secret NAME TRIES CMD...: runs CMD with the secret on stdin. CMD exits 3 for "wrong password" (asked again, up to
