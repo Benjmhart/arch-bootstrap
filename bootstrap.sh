@@ -4549,6 +4549,17 @@ SyncIntervalSec=10s" "journald 10s sync"; then
     run sudo systemctl restart systemd-journald
   fi
 
+  # Ollama on the GPU through Vulkan (station-maintenance fleet 53, Ben 2026-11-27): ollama-vulkan only uses it with
+  # OLLAMA_VULKAN=1, or it runs on the CPU (a Gemma try on beast-arch was too slow). Tested 2026-11-27: qwen3:8b 100 %
+  # on the RX 580, ~30 tok/s. The unit is disabled on every host, so only a daemon-reload; a manual `ollama serve`
+  # gets the same variable from the dotfiles' .zshenv.
+  if pacman -Qq ollama-vulkan >/dev/null 2>&1 && put_etc_file /etc/systemd/system/ollama.service.d/vulkan.conf \
+"# Written by arch-bootstrap (install_system_dropins).
+[Service]
+Environment=OLLAMA_VULKAN=1" "ollama: Vulkan on"; then
+    run sudo systemctl daemon-reload
+  fi
+
   # The weekly pacman cache cleanup keeps 1 version per package, not 3, and drops packages no longer installed
   # (Ben 2026-10-17, station-maintenance beast-arch 116: /var/cache/pacman held 5.3 G on a full root). The repos are
   # pinned to the Arch Linux Archive, so any older version can be fetched again for a downgrade.
