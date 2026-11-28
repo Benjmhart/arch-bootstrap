@@ -14,7 +14,7 @@ dracula-gtk-theme                    3f4c6f263e23a97a63e5be911474541053946456
 eww                                  756d212e04e2909b7408f33a8fee16e186d38aa5   # only: micro,beast-arch,carbon,media-center   # the dashboard (fleet 28, Ben 2026-11-14); PKGBUILD read: signed upstream commit (validpgpkeys, verified) + b2sums
 espanso-x11                          f66257bbb59116dea6d002ab486be930c06c6d19 espanso
 google-chrome                        f9e8dc5fdc173f1da4a33bdfe273ac4b233c35de
-handy-bin                            de4af1f5b6f60f804f04723336aa3b1396b0efe3
+handy-bin                            f7d6f29052701da5aeb52c9586463b2117fabecd
 # surfboard's Quadro M600M (Maxwell): the 580xx legacy driver, utils before the DKMS module and lib32 (both depend
 # on it). Pinned at 580.178.04 (2026-10-05/08-08); 580.196.07 landed 2026-10-23, inside the 3-day cooldown.
 nvidia-580xx-utils                   0b45a07013d6cc1d19dbf61c110f9b97d6fc429b   # only: surfboard
