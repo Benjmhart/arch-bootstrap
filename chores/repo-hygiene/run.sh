@@ -31,6 +31,15 @@ for d in "$HOME"/projects/*/; do
   fi
   g=(git -C "$d")
   timeout 120 "${g[@]}" fetch -q --all --prune 2>/dev/null || out "FETCH-FAILED $p: fetch failed (no network, or a key that needs a person)"
+  # station-maintenance only: fast-forward the clone, because every agent reads decisions.md and the task files from
+  # it (station-maintenance fleet 53; carbon's was 8 days stale 2026-11-27). Never the system repos (they move
+  # through fpush) and never a project repo (its agent's). A dirty or diverged tree is left alone: git refuses.
+  if [[ ${d##*/} == station-maintenance && -z ${REPO_HYGIENE_DRY:-} ]]; then
+    was=$("${g[@]}" rev-parse --short HEAD)
+    "${g[@]}" merge -q --ff-only '@{u}' >/dev/null 2>&1
+    now=$("${g[@]}" rev-parse --short HEAD)
+    [[ $was != "$now" ]] && out "PULLED $p: $was -> $now"
+  fi
   while read -r b u; do
     if [[ -z $u ]]; then out "SUGGEST $p: branch $b has no upstream -- push it to GitHub (git push -u origin $b) or delete it"; (( suggest++ )); continue; fi
     read -r ahead behind < <("${g[@]}" rev-list --left-right --count "$b...$u" 2>/dev/null) || continue
